@@ -79,7 +79,7 @@ export function renderPlanEnded(vars: PlanEndedVars): RenderedEmail {
   // (#344) the library row (title, BPM, key) outlives the audio. No "until": the ended email
   // states no date it cannot vouch for (see the test).
   const libraryLine =
-    'Songs already in your library keep their audio for 30 more days. Then the audio and everything made from it is deleted, but each song’s title, BPM and key stay. On the Free plan, a new song’s audio is deleted after 24 hours.';
+    'Songs already in your library keep their audio for 30 more days. Then the audio, stems, loops and other files made from it are deleted, but each song stays in your library with its title, BPM and key. On the Free plan, a new song’s audio is deleted after 24 hours.';
   const paragraphs = onFree ? [lead, detailText(rows), freeLine, libraryLine] : [lead, detailText(rows)];
 
   const cta = { label: 'Go to your account', url: `${base}/account` };

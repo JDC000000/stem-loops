@@ -63,7 +63,8 @@ export default function HistoryPage() {
       </p>
       {signedIn && (
         // Set lists have no nav item of their own (A4: three phone items), so the library links
-        // to them. A real link with a 44 px tap target; the UA focus ring is left alone.
+        // to them. A real link with a 44 px tap target; its focus ring is the global :focus-visible
+        // style (styles/stem-color.css).
         <p style={{ margin: '4px 0 0' }}>
           <a
             href="/sets"

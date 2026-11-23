@@ -1,4 +1,4 @@
-"""Offline tests for scripts/or4-merge.sh (gate v3.3): protected-path regex + verdict-marker parsing.
+"""Offline tests for scripts/or4-merge.sh (gate v3.4): protected-path regex, overlap guard, verdict-marker parsing.
 
 The script is sourced with OR4_LIB=1, which defines PROTECTED_RE / marker_ok and returns before
 touching gh or git, so the tests use the script's own single definitions (no copy to drift).
@@ -96,6 +96,85 @@ class ProtectedDecision(unittest.TestCase):
                     {"JON_PR": "363"}):
             with self.subTest(env=env):
                 self.assertEqual(decision(prot="scripts/x.sh", **env).returncode, 1)
+
+
+def overlap(behind, pr, main, listing=True):
+    """Run overlap_decision on NUL-separated lists written to temp files (listing=False: empty main list)."""
+    with tempfile.TemporaryDirectory() as d:
+        pf, mf = os.path.join(d, "pr"), os.path.join(d, "main")
+        put(pf, "".join(p + "\0" for p in pr))
+        put(mf, "".join(p + "\0" for p in main) if listing else "")
+        return subprocess.run(["bash", "-c", f'OR4_LIB=1 source "{SCRIPT}" || exit 99\noverlap_decision "$@"', "bash",
+                               str(behind), pf, mf], capture_output=True, text=True)
+
+
+class OverlapGuard(unittest.TestCase):
+    def test_not_behind_passes(self):
+        self.assertEqual(overlap(0, ["a.ts"], []).returncode, 0)
+        self.assertEqual(overlap(0, ["a.ts"], ["a.ts"]).returncode, 0)  # behind 0 => lists irrelevant
+
+    def test_disjoint_passes(self):
+        r = overlap(3, ["apps/web/a.ts", "docs/x.md"], ["apps/worker/b.py"])
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertEqual(overlap(20, ["a"], ["b"]).returncode, 0)
+
+    def test_overlap_fails(self):
+        r = overlap(2, ["apps/web/a.ts", "docs/x.md"], ["docs/x.md", "z"])
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("overlap/hot file: update-branch first", r.stdout)
+        self.assertIn("docs/x.md", r.stdout)
+
+    def test_hot_file_either_side_fails(self):
+        hot = ["pnpm-lock.yaml", "apps/web/package-lock.json", "yarn.lock", "apps/worker/uv.lock", "poetry.lock", "Cargo.lock",
+               "package.json", "apps/web/package.json", "apps/worker/migrations/035_x.sql", "AGENTS.md", ".github/CODEOWNERS",
+               "CODEOWNERS", ".github/workflows/ci.yml", "tsconfig.json", "apps/web/tsconfig.build.json", "apps/web/next.config.mjs",
+               "pnpm-workspace.yaml", "APPS/WEB/PACKAGE.JSON"]
+        for h in hot:
+            with self.subTest(h=h, side="pr"):
+                self.assertEqual(overlap(1, [h, "ok.ts"], ["other.ts"]).returncode, 1)
+            with self.subTest(h=h, side="main"):
+                self.assertEqual(overlap(1, ["ok.ts"], ["other.ts", h]).returncode, 1)
+
+    def test_non_hot_lookalikes_pass(self):
+        for f in ["docs/package.json.md", "apps/web/src/tsconfig-notes.md", "my-pnpm-lock.yaml.txt", ".github/ISSUE_TEMPLATE/a.md",
+                  "apps/web/next-config.ts", "docs/migrations.md"]:
+            with self.subTest(f=f):
+                self.assertEqual(overlap(1, [f], ["other.ts"]).returncode, 0, f)
+
+    def test_listing_failure_fails_closed(self):
+        self.assertEqual(overlap(2, ["a.ts"], [], listing=False).returncode, 1)
+        self.assertEqual(overlap(2, [], ["b.ts"]).returncode, 1)
+        for bad in ("", "x", "-1", "1.5"):
+            with self.subTest(bad=bad):
+                self.assertEqual(overlap(bad, ["a"], ["b"]).returncode, 1)
+
+    def test_stale_cap(self):
+        r = overlap(21, ["a.ts"], ["b.ts"])
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("stale", r.stdout)
+
+    def test_lists_at_most_five_offenders(self):
+        r = overlap(1, [f"f{i}.ts" for i in range(9)], [f"f{i}.ts" for i in range(9)])
+        self.assertEqual(r.returncode, 1)
+        self.assertEqual(r.stdout.count(".ts"), 5)
+
+    def test_renames_listed_both_sides(self):
+        """A rename on main (old+new names listed) collides with a PR edit of the OLD name, and vice versa."""
+        with tempfile.TemporaryDirectory() as d:
+            git(d, "init", "-q", "-b", "main")
+            for rel in ("src/old.ts", "keep.ts"):
+                os.makedirs(os.path.dirname(os.path.join(d, rel)) or d, exist_ok=True)
+                put(os.path.join(d, rel), "line\n" * 30)
+            git(d, "add", "-A"); git(d, "commit", "-qm", "base")
+            base = subprocess.run(["git", "-C", d, "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+            git(d, "mv", "src/old.ts", "src/new.ts"); git(d, "commit", "-qam", "rename on main")
+            out = os.path.join(d, ".git", "ml")
+            r = sh('list_changed "$1" "$2" HEAD "$3" && tr "\\0" "\\n" <"$3"', d, base, out)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(set(r.stdout.split()), {"src/old.ts", "src/new.ts"})
+            self.assertEqual(overlap(1, ["src/old.ts"], ["src/old.ts", "src/new.ts"]).returncode, 1)
+            self.assertEqual(overlap(1, ["src/new.ts"], ["src/old.ts", "src/new.ts"]).returncode, 1)
+            self.assertEqual(overlap(1, ["keep.ts"], ["src/old.ts", "src/new.ts"]).returncode, 0)
 
 
 class ChangedFiles(unittest.TestCase):

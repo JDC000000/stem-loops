@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
-# or4-merge.sh <pr> <review-file> <reviewed-sha> — OR-4 gate v3.3 (S18).
+# or4-merge.sh <pr> <review-file> <reviewed-sha> — OR-4 gate v3.4 (S19A).
+# v3.4 (JON 2026-11-23 16:34, "require branches up to date" OFF on ruleset 26478884; LEDGER-19A rows 63/65): behind_by==0 is no
+#   longer required. If behind_by>0 the gate passes only when the PR's changed files and the files changed on v3/main since the
+#   merge-base are DISJOINT and neither side has a hot file (lockfiles, package.json, migrations/, AGENTS.md, CODEOWNERS,
+#   workflows, tsconfig*, next.config.*, pnpm-workspace.yaml); behind_by>20 FAILS (stale). Listings fail closed.
 # v3.3 (rules v3.4 review R1): a PR labelled needs-jon-approval/[billing], or touching a protected path
 #   (.github/, scripts/, **/.claude/, AGENTS.md, CLAUDE*, .mcp.json, **/SKILL.md, CODEOWNERS, any migrations/, .env*, billing|stripe|entitlement|auth|service-role|secret)
 #   FAILS unless JON_ROW=<ledger row of Jon's named approval for this PR> is set in the environment.
@@ -37,6 +41,22 @@ protected_decision() {
 # list_changed <repo> <base> <head> <outfile>: NUL-separated changed paths, renames split into delete+add (old AND new
 # names), unquoted. rc 0 only if git succeeded AND the list is non-empty (fail closed).
 list_changed() { [ -n "$2" ] && git -C "$1" -c core.quotePath=false diff --no-renames --name-only -z "$2" "$3" >"$4" 2>/dev/null && [ -s "$4" ]; }
+# v3.4: HOT_RE = files where a textual merge can succeed but the result is still semantically stale/unsafe.
+HOT_RE='(^|/)(pnpm-lock\.yaml|package-lock\.json|yarn\.lock|uv\.lock|poetry\.lock|Cargo\.lock|package\.json|AGENTS\.md|CODEOWNERS|pnpm-workspace\.yaml)$|(^|/)migrations/|^\.github/workflows/|(^|/)tsconfig[^/]*\.json$|(^|/)next\.config\.[^/]*$'
+# overlap_decision <behind_by> <pr-files> <main-files>: files are NUL-separated lists (main-files = changed on v3/main since the
+# PR's merge-base). rc 0 = pass. behind==0 passes; non-numeric, >20, empty/missing list when behind, overlap or any hot file FAIL.
+overlap_decision() {
+  local bb=$1 pf=$2 mf=$3 bad
+  [[ "$bb" =~ ^[0-9]+$ ]] || { echo "FAIL: behind_by not numeric ($bb)"; return 1; }
+  [ "$bb" -eq 0 ] && return 0
+  [ "$bb" -le 20 ] || { echo "FAIL: behind_by=$bb > 20 (stale): update-branch first"; return 1; }
+  { [ -s "$pf" ] && [ -s "$mf" ]; } || { echo "FAIL: behind_by=$bb and a changed-file listing is empty/unavailable (fail closed)"; return 1; }
+  bad=$( { sort -zu "$pf" | comm -z -12 - <(sort -zu "$mf") | tr '\0' '\n'
+           cat "$pf" "$mf" | grep -zEi "$HOT_RE" | tr '\0' '\n'; } | sort -u | head -5 | tr '\n' ' ')
+  [ -z "$bad" ] || { echo "FAIL: behind_by=$bb overlap/hot file: update-branch first: $bad"; return 1; }
+  echo "behind_by=$bb: no file overlap, no hot file -> ok"
+  return 0
+}
 if [ "${OR4_LIB:-0}" = 1 ]; then
   return 0 2>/dev/null
   echo "OR4_LIB set: library mode, NOT a merge" >&2; exit 2
@@ -59,7 +79,7 @@ pid() { local mb; mb=$(git -C $REPO merge-base origin/v3/main "$1" 2>/dev/null) 
 a=$(pid "$REVIEWED") || a=""; b=$(pid "$H") || b=""
 EMPTY=$(printf '' | sha256sum | cut -c1-16); echo "pr-content reviewed=$a head=$b"
 { [ -n "$a" ] && [ "$a" != "$EMPTY" ] && [ "$a" = "$b" ]; } || { echo "FAIL: PR content at head ≠ reviewed (or not computable)"; fail=1; }
-bb=$(gh api $R/compare/v3/main...$H --jq .behind_by); [ "$bb" = 0 ] || { echo "FAIL: behind_by=$bb"; fail=1; }
+bb=$(gh api $R/compare/v3/main...$H --jq .behind_by) || bb=""
 d=$(gh api $R/pulls/$PR --jq .draft); [ "$d" = false ] || { echo "FAIL: draft"; fail=1; }
 l=$(gh api $R/pulls/$PR --jq '[.labels[].name]|join(",")') || { echo "FAIL: cannot read PR labels"; fail=1; l=""; }; echo "labels=$l"
 echo "$l" | grep -qE "fast-path|rollback-safe|adversarial-reviewed" && { echo "FAIL: merge-bot label present"; fail=1; }
@@ -73,6 +93,10 @@ else
   echo "FAIL: cannot list PR changed files (merge-base/diff failed or empty)"; fail=1; prot=""
 fi
 protected_decision "$l" "$T" "$prot" "$PR" || fail=1
+# v3.4: overlap guard (replaces behind_by==0). main-side listing only needed when behind; list_changed fails closed.
+ml=$(mktemp); trap 'rm -f "$fl" "$ml"' EXIT
+if [[ "$bb" =~ ^[1-9][0-9]*$ ]]; then list_changed "$REPO" "$mb" origin/v3/main "$ml" || : >"$ml"; fi
+overlap_decision "$bb" "$fl" "$ml" || fail=1
 n=$(gh api "$R/commits/$H/check-runs?per_page=100" --jq '[.check_runs[]|select(.conclusion!="success" and .conclusion!="skipped")]|length')
 [ "$n" = 0 ] || { echo "FAIL: $n checks not success/skipped"; fail=1; }
 t=$(gh api "$R/commits/$H/check-runs?per_page=100" --jq '.total_count'); [ "${t:-0}" -ge 10 ] || { echo "FAIL: only ${t:-0} check-runs registered (need ≥10)"; fail=1; }

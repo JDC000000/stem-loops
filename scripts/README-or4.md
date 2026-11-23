@@ -1,4 +1,4 @@
-# or4-merge.sh — orchestrator merge gate (OR-4 v3.3, §11 R6)
+# or4-merge.sh — orchestrator merge gate (OR-4 v3.4, §11 R6)
 
 The orchestrator's merge gate. It squash-merges a PR **only** if every check below
 passes; otherwise it prints each `FAIL:` line and exits 1 without merging. It is
@@ -27,7 +27,7 @@ The script fetches into the main clone at `/home/claude/stem-loops`.
 | 1 | Verdict marker | Last `^VERDICT: ` line in the review file must be exactly `VERDICT: PASS <91–100> HEAD <sha>`, where `<sha>` (7–40 hex) is a prefix of `<reviewed-sha>`. No marker = refuse (no fallback). |
 | 2 | SHA named | Review file must contain the first 7 chars of `<reviewed-sha>`. |
 | 3 | PR-content equality | `git diff --binary --full-index -M` from merge-base(v3/main) to each of `<reviewed-sha>` and PR head, piped through `git patch-id --stable`, hashed. Must be equal. **Fails closed** if either side can't be computed or is empty. |
-| 4 | Up to date | `compare v3/main...head` `behind_by` must be `0`. |
+| 4 | Overlap guard (v3.4) | `behind_by == 0` passes. If `behind_by` is 1..20, the PR's changed files and the files changed on v3/main since the merge-base (`git diff -z --no-renames --name-only <merge-base> origin/v3/main`, quotePath off) must be **disjoint** and neither side may contain a **hot file** (below); else `FAIL: overlap/hot file: update-branch first` listing up to 5 paths. `behind_by > 20` fails (stale). Any listing error or empty listing while behind fails closed. |
 | 5 | Not draft | PR `draft == false`. |
 | 6 | No merge-bot labels | None of `fast-path`, `rollback-safe`, `adversarial-reviewed`. |
 | 7 | Checks green | Every check-run on the head SHA has conclusion `success` or `skipped` (pending counts as failing). |
@@ -35,6 +35,18 @@ The script fetches into the main clone at `/home/claude/stem-loops`.
 | 9 | Check-run count (v3.2) | At least 10 check-runs must be registered on the head SHA, or refuse. |
 | 10 | Commit statuses (v3.2) | Every commit status on the head must be `success` (failure/error/pending refuse). |
 | 11 | Merge | `PUT pulls/<pr>/merge` with `merge_method=squash` and `sha=<head>` pinned, so a push between check and merge is rejected by GitHub. Exit 1 unless the PUT succeeds **and** `merged_at` is set. |
+
+## Overlap guard (v3.4)
+
+Jon turned off "require branches up to date" on ruleset 26478884 (2026-11-23 16:34 Vancouver, LEDGER-19A rows 63/65), so
+the gate no longer forces update-branch + a full CI rerun after every merge. Hot files (`HOT_RE` in `or4-merge.sh`, any depth,
+case-insensitive): lockfiles (`pnpm-lock.yaml`, `package-lock.json`, `yarn.lock`, `uv.lock`, `poetry.lock`, `Cargo.lock`), any
+`package.json`, any `migrations/` path, `AGENTS.md`, `CODEOWNERS`, `.github/workflows/**`, `tsconfig*.json`, `next.config.*`,
+`pnpm-workspace.yaml`. A hot file changed on either side forces update-branch even without overlap.
+
+**Residual risk:** a semantic conflict with no file overlap (PR A changes a function's contract, PR B calls it from another
+file) can still land. The backstop is v3/main push CI (M-5: main red means all merges stop). Checks 7, 9, 10, 3 and the
+`sha=<head>` pin on the merge PUT are unchanged.
 
 ## Protected class and `JON_ROW` (v3.3)
 
@@ -56,7 +68,7 @@ itself; never set them without Jon's named approval, and unset them after the ru
 
 ## Tests
 
-`python3 -m unittest scripts/test_or4_merge.py` (offline, no `gh`/network). It sources `or4-merge.sh` with
+`python3 -m unittest scripts/test_or4_merge.py` (offline, no `gh`/network). Also covers `overlap_decision` (disjoint pass, overlap, hot file on either side, listing failure, behind 21, renames). It sources `or4-merge.sh` with
 `OR4_LIB=1`, which defines `PROTECTED_RE` and `marker_ok` and returns before any network call, so the
 tests exercise the script's own definitions: the protected-path regex (35 protected paths, 6 ordinary), the protected decision with stubbed inputs
 (JON_ROW/JON_PR/label/title/paths), rename and non-ASCII regressions in a temp git repo, fail-closed listing, and
@@ -64,7 +76,7 @@ verdict markers `PASS 91..100` are accepted while `PASS 90`, `FAIL 95`, missing 
 
 ## When a rebase changes the patch-id (delta-review path)
 
-Rebasing onto a newer v3/main (needed for check 4) normally keeps the patch-id,
+Rebasing onto a newer v3/main (needed when check 4 fails) normally keeps the patch-id,
 so the original review still applies. If the rebase **changes the PR content**
 (conflict resolution, dropped/added hunks), check 3 fails, by design. Then:
 

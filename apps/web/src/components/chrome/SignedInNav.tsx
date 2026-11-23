@@ -37,6 +37,7 @@
 // label hint reads the cookie after mount; both are view concerns.
 import { usePathname } from 'next/navigation';
 import { useEffect, useState } from 'react';
+import { isSongLibraryPath, songLibraryCurrent, type AriaCurrent } from '@/lib/nav-current';
 
 export type SignedInNavProps = {
   /**
@@ -58,6 +59,8 @@ type Item = {
   label: string;
   href: string;
   match: (p: string) => boolean;
+  /** The aria-current value when `match` holds; default "page". */
+  current?: (p: string) => AriaCurrent | null;
   outlined?: true;
   /** Set on the two product items: the tag shown beside the wordmark. */
   product?: string;
@@ -111,7 +114,10 @@ export default function SignedInNav({ signedIn }: SignedInNavProps) {
   const items: Item[] = [
     { label: 'Play along', short: 'Play', href: '/', match: (p) => p === '/' || p.startsWith('/jobs/'), product: 'Play along' },
     { label: 'Download loops', href: '/loops', match: (p) => p === '/loops' || p.startsWith('/loops/'), product: 'Download loops', wideOnly: true },
-    { label: 'Song library', short: 'Songs', href: '/history', match: (p) => p === '/history' },
+    // Current on /history and on the set-list pages, /sets and /sets/<id> (B2 follow-up): set
+    // lists have no item of their own (three phone items, A4), and they are lists of library songs.
+    // There it is the current section, not the page: aria-current="true" (review R1, S1).
+    { label: 'Song library', short: 'Songs', href: '/history', match: isSongLibraryPath, current: songLibraryCurrent },
     // P6 (Jon, 2026-11-17): Pricing is in the bar, signed in and out, on every
     // page including the landing. It belongs to neither product, so it carries
     // no `product` tag.
@@ -149,11 +155,12 @@ export default function SignedInNav({ signedIn }: SignedInNavProps) {
         <nav id="sin-menu" className="sin-nav" aria-label="Main">
           {items.map((it) => {
             const current = it.match(pathname);
+            const ariaCurrent = current ? (it.current?.(pathname) ?? 'page') : null;
             const cls = ['sin-item', current ? 'sin-current' : '', it.outlined ? 'sin-outlined' : '', it.wideOnly ? 'sin-wide-only' : '']
               .filter(Boolean)
               .join(' ');
             return (
-              <a key={it.label} className={cls} href={it.href} {...(current ? { 'aria-current': 'page' as const } : {})}>
+              <a key={it.label} className={cls} href={it.href} {...(ariaCurrent === 'page' ? { 'aria-current': 'page' as const } : ariaCurrent === 'true' ? { 'aria-current': 'true' as const } : {})}>
                 {it.short ? (
                   // One label per width: the hidden one is display:none, so the accessible name
                   // always matches what is on screen.

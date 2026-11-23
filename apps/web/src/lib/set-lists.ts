@@ -163,6 +163,36 @@ export function moveItem<T>(order: readonly T[], i: number, delta: -1 | 1): T[] 
   return out;
 }
 
+/**
+ * The order after taking item `from` out and putting it back at index `to` (drag to reorder,
+ * B2 follow-up). Every other item keeps its relative order. Either index out of range, or
+ * `from === to`: the same order, copied.
+ */
+export function reorderItem<T>(order: readonly T[], from: number, to: number): T[] {
+  const out = [...order];
+  if (!Number.isInteger(from) || !Number.isInteger(to)) return out;
+  if (from < 0 || from >= out.length || to < 0 || to >= out.length || from === to) return out;
+  const [it] = out.splice(from, 1);
+  out.splice(to, 0, it);
+  return out;
+}
+
+/**
+ * Where a dragged row lands. `mids` are the vertical centres of the rows as laid out when the
+ * drag began (index order), `from` is the dragged row and `y` is where its centre is now. The
+ * row lands after every OTHER row whose centre it has passed, so it moves one place as soon
+ * as its centre crosses a neighbour's. Always in 0..mids.length - 1.
+ */
+export function dropIndex(mids: readonly number[], from: number, y: number): number {
+  if (mids.length === 0) return 0;
+  let to = 0;
+  for (let i = 0; i < mids.length; i += 1) {
+    if (i === from) continue;
+    if (y > mids[i]) to += 1;
+  }
+  return Math.min(to, mids.length - 1);
+}
+
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 /** A well-formed uuid (route params and bodies are checked before any query). */
 export const isUuid = (v: unknown): v is string => typeof v === 'string' && UUID_RE.test(v);

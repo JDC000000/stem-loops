@@ -90,6 +90,7 @@ function world(o = {}) {
 
   async function lockRow(key, tx) {
     if (!tx) throw new Error('FOR UPDATE outside a transaction');
+    (st.lockOrder ??= []).push(key);
     while (locks.has(key) && locks.get(key).owner !== tx) await locks.get(key).p;
     if (!locks.has(key)) {
       let release;
@@ -124,7 +125,10 @@ function world(o = {}) {
     if (/^UPDATE public\.job_allowance_debits/.test(s)) {
       st.log.push('CLAIM_RESTORE');
       const d = st.debits.get(params[0]);
-      if (d && (d.restored_at === null || d.restored_at === undefined)) {
+      // Honours the statement's own guard (#345, mutant R3): without `AND restored_at IS NULL`
+      // the UPDATE would overwrite an already-restored row's audit fields.
+      const guarded = /AND restored_at IS NULL/.test(s);
+      if (d && (!guarded || d.restored_at === null || d.restored_at === undefined)) {
         const prev = { ...d };
         Object.assign(d, { restored_at: 'now', allowance_restored: false, trial_restored: false });
         tx.undo.push(() => st.debits.set(params[0], prev));
@@ -849,8 +853,45 @@ test('restore lands between the lock-free read and the lock → the retry is CHA
   assert.equal(w.st.restoredEarly, true, 'precondition: the restore ran inside the window');
   assert.equal(w.st.jobsUsed, 1, '1 spent → 0 given back → 1 spent again by the retry');
   assert.deepEqual(w.st.debits.get(child(w).id).trial_song, false);
-  assert.equal(w.st.burst, 2, 'the gates ran again for the charged decision');
+  assert.equal(w.st.burst, 1, 'one request, one burst row: the re-run does not record a second (#345)');
+  assert.equal(w.st.log.filter((x) => x === 'checkBurstLimit').length, 1);
+  assert.equal(w.st.log.filter((x) => x === 'checkAdmission').length, 2, 'the other gates ran again for the charged decision');
   assert.ok(w.st.log.includes('checkMonthlyQuota'), 'the charged retry was quota-checked');
+}));
+
+// ── #345: B3 residue ─────────────────────────────────────────────────────────────────────
+
+test('#345 lock order: the retry locks the parent\'s debit row BEFORE the parent job row (the worker restore\'s order)', withYoutube(async () => {
+  for (const restore of [PENDING, RESTORED]) {
+    const w = W0({ restore, jobsUsed: 1 });
+    assert.equal((await post(w)).status, 201);
+    assert.deepEqual(w.st.lockOrder, ['debit:' + PARENT, PARENT], JSON.stringify(restore));
+  }
+}));
+
+test('#345 lock order: the parent checks still answer first (an already-retried parent is 200 with its child, a capped one 429)', withYoutube(async () => {
+  const w = W0({ restore: RESTORED, jobsUsed: 1 });
+  const r1 = await post(w);
+  assert.equal(r1.status, 201);
+  const r2 = await post(w);
+  assert.deepEqual([r2.status, r2.body.id], [200, r1.body.id]);
+  const capped = W0({ restore: RESTORED, parent: { retry_depth: 2 } });
+  assert.deepEqual([(await post(capped)).status, child(capped)], [429, undefined]);
+}));
+
+test('#345 mutant R3: a CHARGED retry leaves an already-restored debit row\'s audit fields untouched', withYoutube(async () => {
+  for (const restore of [
+    RESTORED,
+    { restored_at: '2026-11-20T00:00:00Z', allowance_restored: true, trial_restored: true },
+    { restored_at: '2026-11-20T00:00:00Z', allowance_restored: false, trial_restored: true },
+  ]) {
+    const w = W0({ restore, jobsUsed: 1, trial: { used: 1, limit: 3 } });
+    const before = { ...w.st.debits.get(PARENT) };
+    const r = await post(w);
+    assert.equal(r.status, 201, JSON.stringify(r.body));
+    assert.ok(w.st.log.includes('CLAIM_RESTORE'), 'the claim statement ran');
+    assert.deepEqual(w.st.debits.get(PARENT), before, JSON.stringify(restore));
+  }
 }));
 
 test('GET says free for an expired trial, and refuses (no button) for a used-up one', withYoutube(async () => {

@@ -63,7 +63,7 @@ jobs:
         with:
           python-version: '3.11'
           cache: 'pip'
-      - name: Merge gate fixtures (no fast-path; agent-instruction files need Jon)
+      - name: Merge gate fixtures (one reviewed merge path; agent-instruction files need Jon)
         # Replaces the fast-path allowlist gate (retired with the fast-path arm,
         # AGENTIC-L5-PLAN §11 R5). Runs FIRST, before any linter, because it is
         # a governance check: it EXECUTES auto-merge.yml's job `if` and

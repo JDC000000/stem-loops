@@ -230,7 +230,7 @@ jobs:
           # .github/CODEOWNERS. There are now THREE copies of this path set;
           # scripts/check_codeowners_drift.py fails CI if they diverge, so do
           # not hand-sync them and hope.
-          CO_RE='^(apps/web/src/lib/billing/|apps/worker/src/worker/billing/|apps/web/src/app/api/billing/|apps/web/src/app/api/entitlements/|apps/worker/migrations/[^/]*_v3_commercial[^/]*\.sql$|\.github/workflows/|\.github/CODEOWNERS$|(.*/)?AGENTS\.md$|(.*/)?CLAUDE\.md$|(.*/)?\.claude/|(.*/)?SKILL\.md$|scripts/)'
+          CO_RE='^(apps/web/src/lib/billing/|apps/worker/src/worker/billing/|apps/web/src/app/api/billing/|apps/web/src/app/api/entitlements/|apps/worker/migrations/[^/]*_v3_commercial[^/]*\.sql$|\.github/workflows/|\.github/CODEOWNERS$|(.*/)?AGENTS\.md$|(.*/)?CLAUDE\.md$|(.*/)?\.claude/|(.*/)?SKILL\.md$|(.*/)?CLAUDE\.local\.md$|(.*/)?\.mcp\.json$|scripts/)'
 
           BLOCK_REASON=""
           # Sets BLOCK_REASON and returns 0 when the PR must go to Jon.
@@ -246,7 +246,11 @@ jobs:
             # not, which is the worse half, because a CODEOWNERS path could sit
             # on the page that never arrived.
             set +e
-            changed=$(gh api --paginate "repos/$REPO/pulls/$pr/files?per_page=100" --jq '.[].filename')
+            # previous_filename too (R5 review R1, should-fix 3): a RENAME of an
+            # owned file (e.g. .claude/settings.json -> docs/x.json) removes the
+            # owned path, so it must count as touching it. `.filename` alone
+            # reported only the new, unowned name.
+            changed=$(gh api --paginate "repos/$REPO/pulls/$pr/files?per_page=100" --jq '.[] | .filename, (.previous_filename // empty)')
             rc=$?
             set -e
             if [ "$rc" -ne 0 ]; then

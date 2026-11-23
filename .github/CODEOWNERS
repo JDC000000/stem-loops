@@ -28,7 +28,7 @@
 # See claude/merge-autonomy-recommendations.md §3 and
 # claude/session-7-handover.md §4 for the rationale.
 #
-# THE 12 PATTERNS (keep this list in sync with the entries below AND with the
+# THE 14 PATTERNS (keep this list in sync with the entries below AND with the
 # regex in .github/workflows/auto-label-codeowners.yml and auto-merge.yml's
 # CO_RE — a pattern missing from that regex is a GAP; a regex alternation
 # missing from here is a LEAK; scripts/check_codeowners_drift.py fails CI on
@@ -45,12 +45,14 @@
 #   9  CLAUDE.md          (any depth)        — added 2026-11-22, §11 R5
 #  10  **/.claude/**      (any depth)        — added 2026-11-22, §11 R5
 #  11  **/SKILL.md        (any depth)        — added 2026-11-22, §11 R5
-#  12  scripts/**                            — added 2026-11-22, §11 R5
+#  12  CLAUDE.local.md    (any depth)        — added 2026-11-22, §11 R5 review
+#  13  .mcp.json          (any depth)        — added 2026-11-22, §11 R5 review
+#  14  scripts/**                            — added 2026-11-22, §11 R5
 #
-# Audited 2026-11-05: the regex covers all 8, so there is no live GAP or LEAK.
-# Both this header and the workflow previously said "6", which is why the
-# count is now enumerated rather than stated — a bare number goes stale
-# silently, a list does not.
+# The count is enumerated rather than stated because a bare number goes stale
+# silently (this header once said "6" when the real count was 8). Agreement
+# with the regex copies is no longer an audit claim here: it is enforced on
+# every PR by scripts/check_codeowners_drift.py, run in the required Lint job.
 # ──────────────────────────────────────────────────────────────────────────────
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -100,6 +102,10 @@ AGENTS.md                                       @JDC000000
 CLAUDE.md                                       @JDC000000
 **/.claude/**                                   @JDC000000
 **/SKILL.md                                     @JDC000000
+# Also loaded by Claude Code as instructions/config: personal memory file and
+# MCP server definitions (which servers an agent session connects to).
+CLAUDE.local.md                                 @JDC000000
+.mcp.json                                       @JDC000000
 
 # ──────────────────────────────────────────────────────────────────────────────
 # scripts/** — the merge rail (safe_merge.sh), every CI gate (check_*.py,

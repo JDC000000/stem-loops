@@ -85,10 +85,34 @@ OWNED_CASES = (
     "apps/web/CLAUDE.md",
     ".claude/settings.json",
     "skills/foo/SKILL.md",
+    "CLAUDE.local.md",
+    "apps/worker/.mcp.json",
     "scripts/safe_merge.sh",
+)
+# RENAMES of an owned file to an unowned path (review R1, should-fix 3). The
+# owned path disappears from the tree, so the PR touches it. REST reports the
+# old name only in `previous_filename`. Each is (new name, previous name).
+RENAME_CASES = (
+    ("docs/settings.json", ".claude/settings.json"),
+    ("docs/notes.md", "CLAUDE.md"),
+    ("tools/safe_merge.sh", "scripts/safe_merge.sh"),
 )
 # A path nobody owns: used for the positive control and for fast-path cases.
 UNOWNED = "docs/guide.md"
+# An unowned->unowned rename: positive control for the rename handling.
+UNOWNED_RENAME = ("docs/guide-v2.md", "docs/guide.md")
+
+# Static scans over EVERY workflow file (review R1, should-fix 1).
+# The only non-comment line allowed to mention fast-path anywhere: the
+# hygiene removal list in drop-stale-review, which removes and grants nothing.
+FAST_PATH_ALLOWED_LINES = ("const toRemove = ['adversarial-reviewed', 'fast-path'];",)
+# Anything that merges a PR or arms GitHub auto-merge.
+MERGE_CALL_RE = re.compile(
+    r"pulls/[^\s\"']*/merge\b|gh\s+pr\s+merge\b|mergePullRequest|"
+    r"enablePullRequestAutoMerge|pulls\.merge\s*\(|--auto\b"
+)
+# The one sanctioned merge site, as (file name, job id).
+MERGE_SITE = ("auto-merge.yml", "enable-auto-merge")
 APPROVAL_LABELS = ("rollback-safe", "adversarial-reviewed", "fast-path")
 
 # The stub `gh`. It serves fixtures from $GATE_FIX and logs `pr edit` calls.
@@ -220,10 +244,20 @@ def ctx_for(mode: str, labels: set[str]) -> dict:
     }
 
 
-def write_fixture(d: Path, files: list[str], labels: dict[str, str]) -> None:
-    """labels: name -> labeled-at timestamp."""
-    (d / "files.txt").write_text("".join(f + "\n" for f in files))
-    (d / "files.json").write_text(json.dumps([{"filename": f} for f in files]))
+def write_fixture(d: Path, files: list, labels: dict[str, str]) -> None:
+    """files: each a path, or a (new, previous) tuple for a rename.
+    labels: name -> labeled-at timestamp."""
+    rows = []
+    for f in files:
+        if isinstance(f, tuple):
+            rows.append(
+                {"filename": f[0], "status": "renamed", "previous_filename": f[1]}
+            )
+        else:
+            rows.append({"filename": f, "status": "modified"})
+    # files.txt mimics `gh pr diff --name-only`, which lists NEW names only.
+    (d / "files.txt").write_text("".join(r["filename"] + "\n" for r in rows))
+    (d / "files.json").write_text(json.dumps(rows))
     pr = {
         "number": int(PR_NUM),
         "state": "open",
@@ -373,6 +407,31 @@ def main() -> int:
             problems.append(
                 f"VACUOUS  labeller applied needs-jon-approval to {UNOWNED!r}"
             )
+        # Unowned rename: positive control for the previous_filename handling.
+        for mode in ("pull_request_target", "workflow_run"):
+            if not can_merge(expr, resolve, mode, [UNOWNED_RENAME], ok_labels):
+                problems.append(
+                    f"VACUOUS  unowned rename {UNOWNED_RENAME} refused in {mode}"
+                )
+        if labeller_adds_label(labeller, [UNOWNED_RENAME]):
+            problems.append(
+                f"VACUOUS  labeller applied needs-jon-approval to {UNOWNED_RENAME}"
+            )
+        # The needs-jon-approval LABEL is a hard stop on its own (review R1,
+        # should-fix 2): an UNOWNED diff, fully reviewed, CI green, but carrying
+        # the label set by a human, must be refused. Checked against `resolve`
+        # directly in workflow_run mode, because there the job `if` does not
+        # look at labels; resolve's label check is the only thing that stops it.
+        held = dict(ok_labels, **{"needs-jon-approval": FRESH_AT})
+        if resolve_proceeds(resolve, "workflow_run", [UNOWNED], held):
+            problems.append(
+                "HOLD     workflow_run: resolve proceeded on a PR labelled "
+                "needs-jon-approval (the label hard-stop is gone)"
+            )
+        if can_merge(expr, resolve, "pull_request_target", [UNOWNED], held):
+            problems.append(
+                "HOLD     pull_request_target: a PR labelled needs-jon-approval could merge"
+            )
         # A stale review must not count (post-CI path).
         stale = {"rollback-safe": FRESH_AT, "adversarial-reviewed": STALE_AT}
         if can_merge(expr, resolve, "workflow_run", [UNOWNED], stale):
@@ -393,8 +452,9 @@ def main() -> int:
                             "could merge without rollback-safe + adversarial-reviewed"
                         )
 
-        # 1 + 2 — owned paths: labelled, and never mergeable under any labels.
-        for owned in OWNED_CASES:
+        # 1 + 2 — owned paths (edited, or renamed away): labelled, and never
+        # mergeable under any labels.
+        for owned in OWNED_CASES + RENAME_CASES:
             files = [UNOWNED, owned]
             if not labeller_adds_label(labeller, files):
                 problems.append(
@@ -419,6 +479,43 @@ def main() -> int:
             file=sys.stderr,
         )
         return EXIT_BROKEN
+
+    # 5 — every workflow file, not just the modelled job (review R1, should-fix 1).
+    merge_sites = []
+    for wf in sorted(WF.glob("*.y*ml")):
+        job = None
+        in_jobs = False
+        for n, ln in enumerate(wf.read_text(encoding="utf-8").splitlines(), 1):
+            if re.match(r"^jobs:\s*$", ln):
+                in_jobs = True
+                continue
+            if re.match(r"^\S", ln):
+                in_jobs = False
+                job = None
+            elif in_jobs and (m := re.match(r"^  ([A-Za-z0-9_-]+):\s*$", ln)):
+                job = m.group(1)
+            s = ln.strip()
+            if not s or s.startswith(("#", "//")):
+                continue
+            if "fast-path" in s and s not in FAST_PATH_ALLOWED_LINES:
+                problems.append(
+                    f"FASTPATH {wf.name}:{n} mentions fast-path outside the one "
+                    f"allowed hygiene line: {s[:100]!r}"
+                )
+            if MERGE_CALL_RE.search(s) and "--disable-auto" not in s:
+                merge_sites.append((wf.name, job, n, s))
+    sanctioned = [m for m in merge_sites if (m[0], m[1]) == MERGE_SITE]
+    for name, job, n, s in merge_sites:
+        if (name, job) != MERGE_SITE:
+            problems.append(
+                f"MERGESITE {name}:{n} (job {job}) merges or arms auto-merge outside "
+                f"{MERGE_SITE[0]}/{MERGE_SITE[1]}: {s[:100]!r}"
+            )
+    if len(sanctioned) != 1:
+        problems.append(
+            f"MERGESITE expected exactly ONE merge call in {MERGE_SITE[0]}/"
+            f"{MERGE_SITE[1]}, found {len(sanctioned)}"
+        )
 
     # 4 — static pins.
     if RETIRED.exists():
@@ -452,7 +549,9 @@ def main() -> int:
 
     print(
         f"check_merge_gate: ok - positive control merges in both modes; stale review "
-        f"refused; fast-path-only refused; {len(OWNED_CASES)} owned paths labelled "
+        f"refused; label hard-stop holds; fast-path-only refused; no fast-path in any "
+        f"workflow; one merge site; {len(OWNED_CASES)} owned paths + "
+        f"{len(RENAME_CASES)} renames-away labelled "
         f"needs-jon-approval and unmergeable under all {2 ** len(APPROVAL_LABELS)} label "
         f"subsets x 2 event modes; merge-path actions SHA-pinned."
     )

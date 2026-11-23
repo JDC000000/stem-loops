@@ -77,6 +77,8 @@ EXTRA_NEGATIVES = (
     "fixtures/SKILL.md.json",
     "apps/web/scripts/build.mjs",
     "docs/design/play-screen.md",
+    "docs/mcp.json",
+    "docs/CLAUDE.local.md.bak",
 )
 
 # The R5 exit criterion, pinned as concrete paths (AGENTIC-L5-PLAN §11 R5):
@@ -94,6 +96,10 @@ MUST_BE_OWNED = (
     ".claude/skills/foo/SKILL.md",
     "apps/web/.claude/agents/x.md",
     "skills/foo/SKILL.md",
+    "CLAUDE.local.md",
+    "apps/web/CLAUDE.local.md",
+    ".mcp.json",
+    "apps/worker/.mcp.json",
     "scripts/safe_merge.sh",
     "scripts/check_codeowners_drift.py",
     "scripts/check_merge_gate.py",

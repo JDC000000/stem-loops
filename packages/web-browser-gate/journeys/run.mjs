@@ -26,6 +26,7 @@ const ALL = [
   'j10-link-signin-first',
   'j11-library',
   'j12-set-lists',
+  'j13-retry',
 ];
 
 const want = process.argv.slice(2);

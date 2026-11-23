@@ -88,7 +88,7 @@ test('AC 9: an expired link row shows title (16 px), BPM · key (13 px), "Audio 
       const btn = row.querySelector('[data-testid="library-remake"]');
       assert.equal(btn.textContent, 'Re-make · uses 1 of your songs');
       assert.equal(btn.style.minHeight, '44px');
-      assert.equal(row.querySelector('a[href^="/jobs/"]'), null, 'an expired row does not link to a job (it has none)');
+      assert.equal(row.querySelector('a[href^="/jobs/"]') === null, true, 'an expired row does not link to a job (it has none)');
       // A live row next to it keeps its job link and shows BPM · key too.
       const live = dom.find(`a[href="/jobs/${LIVE}"]`);
       assert.equal(live.querySelector('[data-testid="song-meta"]').textContent, '95 BPM · G major');

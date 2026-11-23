@@ -50,7 +50,7 @@ export function renderPlanEnding(vars: PlanEndingVars): RenderedEmail {
   // library (#357). The list of files is not exhaustive on purpose ("other files"): naming
   // every file would pull this template into the DB-17 switch scan. Keep the c-word out of
   // this file, comments included (the scan reads the raw text).
-  const after = 'Then the audio, stems, loops and other files made from it are deleted, but each song stays in your library with its title, BPM and key. Download anything you want to keep.';
+  const after = 'Then the audio, stems, loops and other files made from it are deleted, but each song stays in your library with its title, and its BPM and key where we found them. Download anything you want to keep.';
   const library = ends
     ? `Your songs keep their audio for 30 days after ${ends}. ${after}`
     : `Your songs keep their audio for 30 days after your plan ends. ${after}`;

@@ -322,25 +322,25 @@ test('library retention: welcome no longer promises 24 h deletion to a subscribe
 
 test('library retention: R5 names the 30 days after the end date; R6 says 30 more days, Free 24 h', () => {
   const ending = renderPlanEnding({ plan_code: 'studio', period_end: '2027-01-15T00:00:00Z' });
-  assert.match(ending.text, /Your songs keep their audio for 30 days after 15 January 2027\. Then the audio, stems, loops and other files made from it are deleted, but each song stays in your library with its title, BPM and key\. Download anything you want to keep\./);
+  assert.match(ending.text, /Your songs keep their audio for 30 days after 15 January 2027\. Then the audio, stems, loops and other files made from it are deleted, but each song stays in your library with its title, and its BPM and key where we found them\. Download anything you want to keep\./);
   assert.match(ending.html, /Your songs keep their audio for 30 days after 15 January 2027/);
   // #344: since B1 the library row outlives the audio; the email must not say the songs are deleted.
   const endingNoDate = renderPlanEnding({ plan_code: 'pro', period_end: null });
   for (const o of [ending, endingNoDate]) {
     assert.doesNotMatch(o.text + o.html, /then they are deleted/);
-    assert.match(o.text, /each song stays in your library with its title, BPM and key\./);
+    assert.match(o.text, /each song stays in your library with its title, and its BPM and key where we found them\./);
     // #357: the songs do not leave the library, and "everything made from it" over-claimed
     // (saved corrections and the credit shell survive).
     assert.doesNotMatch(o.text + o.html, /stay in your library for 30 days|everything made from it/);
   }
   assert.match(endingNoDate.text, /keep their audio for 30 days after your plan ends\. Then the audio, stems, loops/);
   const ended = renderPlanEnded({ plan_code: 'pro', period_end: null, now: '2026-11-14T00:00:00Z', free_quota: 5 });
-  assert.match(ended.text, /Songs already in your library keep their audio for 30 more days\. Then the audio, stems, loops and other files made from it are deleted, but each song stays in your library with its title, BPM and key\. On the Free plan, a new song’s audio is deleted after 24 hours\./);
+  assert.match(ended.text, /Songs already in your library keep their audio for 30 more days\. Then the audio, stems, loops and other files made from it are deleted, but each song stays in your library with its title, and its BPM and key where we found them\. On the Free plan, a new song’s audio is deleted after 24 hours\./);
   // #344: R6 must never again say library songs are deleted outright, with or without an end date.
   const endedDated = renderPlanEnded({ plan_code: 'studio', period_end: '2027-01-15T00:00:00Z', now: '2027-01-15T12:00:00Z', free_quota: 5 });
   for (const o of [ended, endedDated]) {
     assert.doesNotMatch(o.text + o.html, /kept for 30 more days, then deleted|everything made from it/);
-    assert.match(o.text, /each song stays in your library with its title, BPM and key\./);
+    assert.match(o.text, /each song stays in your library with its title, and its BPM and key where we found them\./);
   }
   assert.match(ended.html, /Songs already in your library keep their audio for 30 more days/);
   const other = renderPlanEnded({ plan_code: 'pro', period_end: null, now: '2026-11-14T00:00:00Z', on_free: false });

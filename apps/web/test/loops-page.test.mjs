@@ -268,11 +268,12 @@ test('a pasted link to a song this browser has never seen, answered 404, is clos
     assert.deepEqual(calls.fetchJob, [STRANGER], 'the pasted id was not lowercased or not used');
     assert.equal(dom.find('[data-testid="lp-closed"]')?.getAttribute('data-reason'), 'not_found');
     assert.equal(dom.find('[data-testid="cut-loops"]').disabled, true);
-    // #357: since B1 only the audio goes at 24 h on Free; a signed-in song keeps its library row.
+    // #357: since B1 only the audio goes at 24 h on Free.
     const closed = dom.find('[data-testid="lp-closed"]').textContent;
     assert.match(closed, /On Free, a song’s audio is deleted 24 hours after it is split/);
-    assert.match(closed, /If you were signed in, its title, BPM and key stay in your song library\./);
     assert.doesNotMatch(closed, /songs are deleted 24 hours after they are split/);
+    // A 404 may be a demo, unfinished, someone else's or mistyped song: no library promise.
+    assert.doesNotMatch(closed, /library|title, BPM and key/i);
   });
 });
 

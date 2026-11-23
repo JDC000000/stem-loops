@@ -322,8 +322,15 @@ test('library retention: welcome no longer promises 24 h deletion to a subscribe
 
 test('library retention: R5 names the 30 days after the end date; R6 says 30 more days, Free 24 h', () => {
   const ending = renderPlanEnding({ plan_code: 'studio', period_end: '2027-01-15T00:00:00Z' });
-  assert.match(ending.text, /Your songs stay in your library for 30 days after 15 January 2027, then they are deleted\./);
+  assert.match(ending.text, /Your songs stay in your library for 30 days after 15 January 2027\. Then their audio and everything made from it is deleted, but each song’s title, BPM and key stay\. Download anything you want to keep\./);
   assert.match(ending.html, /Your songs stay in your library for 30 days after 15 January 2027/);
+  // #344: since B1 the library row outlives the audio; the email must not say the songs are deleted.
+  const endingNoDate = renderPlanEnding({ plan_code: 'pro', period_end: null });
+  for (const o of [ending, endingNoDate]) {
+    assert.doesNotMatch(o.text + o.html, /then they are deleted/);
+    assert.match(o.text, /each song’s title, BPM and key stay\./);
+  }
+  assert.match(endingNoDate.text, /30 days after your plan ends\. Then their audio/);
   const ended = renderPlanEnded({ plan_code: 'pro', period_end: null, now: '2026-11-14T00:00:00Z', free_quota: 5 });
   assert.match(ended.text, /Songs already in your library are kept for 30 more days, then deleted\. Songs you start on the Free plan are deleted after 24 hours\./);
   assert.match(ended.html, /Songs already in your library are kept for 30 more days/);

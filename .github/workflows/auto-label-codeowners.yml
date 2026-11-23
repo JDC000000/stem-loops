@@ -32,7 +32,13 @@ jobs:
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          changed=$(gh pr diff "$PR_NUM" --repo "$REPO" --name-only)
+          # REST file list, NOT `gh pr diff --name-only`, and previous_filename
+          # too (R5 review R1, should-fix 3): renaming an owned file (e.g.
+          # CLAUDE.md -> docs/notes.md) deletes the owned path, so it must be
+          # labelled. `pr diff --name-only` lists only the new name. Under
+          # `set -euo pipefail` a failed or partial read fails this job loudly
+          # (and auto-merge.yml's CO_RE check fails closed independently).
+          changed=$(gh api --paginate "repos/$REPO/pulls/$PR_NUM/files?per_page=100" --jq '.[] | .filename, (.previous_filename // empty)')
           echo "Changed files in PR #$PR_NUM:"
           echo "$changed"
           echo
@@ -47,12 +53,18 @@ jobs:
           # by .claude/settings.json deny rules (for subagents) and the main
           # session's safe_merge.sh discipline. See claude/session-7-handover.md §4.
           #
-          # Alternation, in order, 8 terms:
+          # Alternation, in order, 14 terms:
           #   1 apps/web/src/lib/billing/        5 commercial migrations
           #   2 apps/worker/src/worker/billing/  6 .github/workflows/
           #   3 apps/web/src/app/api/billing/    7 .github/CODEOWNERS
-          #   4 apps/web/src/app/api/entitlements/  8 AGENTS.md
-          if echo "$changed" | grep -qE '^(apps/web/src/lib/billing/|apps/worker/src/worker/billing/|apps/web/src/app/api/billing/|apps/web/src/app/api/entitlements/|apps/worker/migrations/[^/]*_v3_commercial[^/]*\.sql$|\.github/workflows/|\.github/CODEOWNERS$|(.*/)?AGENTS\.md$)'; then
+          #   4 apps/web/src/app/api/entitlements/  8 AGENTS.md (any depth)
+          #   9 CLAUDE.md (any depth)           11 SKILL.md (any depth)
+          #  10 .claude/ (any depth)            12 CLAUDE.local.md (any depth)
+          #  13 .mcp.json (any depth)           14 scripts/
+          # 9-14 added 2026-11-22 (AGENTIC-L5-PLAN §11 R5): agent-instruction
+          # files and the gate scripts. Byte-identical to auto-merge.yml CO_RE;
+          # scripts/check_codeowners_drift.py fails Lint if they diverge.
+          if echo "$changed" | grep -qE '^(apps/web/src/lib/billing/|apps/worker/src/worker/billing/|apps/web/src/app/api/billing/|apps/web/src/app/api/entitlements/|apps/worker/migrations/[^/]*_v3_commercial[^/]*\.sql$|\.github/workflows/|\.github/CODEOWNERS$|(.*/)?AGENTS\.md$|(.*/)?CLAUDE\.md$|(.*/)?\.claude/|(.*/)?SKILL\.md$|(.*/)?CLAUDE\.local\.md$|(.*/)?\.mcp\.json$|scripts/)'; then
             echo "PR touches a CODEOWNERS path. Applying needs-jon-approval label."
             gh pr edit "$PR_NUM" --repo "$REPO" --add-label needs-jon-approval
           else

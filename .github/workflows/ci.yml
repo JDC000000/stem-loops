@@ -622,8 +622,19 @@ jobs:
     # *** NOT YET A REQUIRED STATUS CHECK. *** The v3/main ruleset lists its
     # required contexts by name and only the repo owner can edit it. Until
     # "Chord chip fit (real Chromium)" is added there this job reports but blocks
-    # nothing. No path filter, on purpose: a required check that does not run
-    # for some PRs waits forever.
+    # nothing. No JOB-level path filter, on purpose: a required check that does
+    # not run for some PRs waits forever. The IN-JOB gate below ("Decide whether
+    # chord rendering can have changed") keeps the job always-run, always-report:
+    # when no changed path can affect chord rendering it ends SUCCESS in ~30 s
+    # with every heavy step `if:`-skipped, so the check still reports green.
+    # Push builds (main / v3/main) and any git failure always run the full sweep.
+    # The path set is deliberately generous (when in doubt, run): the job runs
+    # ALL packages/web-browser-gate/test/*.test.mjs, which bundle the real Player,
+    # History page, ProcessingHeading and globals.css from apps/web, plus its
+    # fixtures, and apps/web/tsconfig.json maps @stem-loops/types to
+    # packages/types/src. Hence: apps/web/, packages/, fixtures/contracts/
+    # (harte-labels.json), root package.json / lockfile / workspace / .npmrc, and
+    # this workflow file (so edits to this job are self-validated).
     #
     # MERGE ORDER (a transition, not a steady state): this job is RED on any tree
     # that lacks PR #212's chip-fit fixes, `v3/main` included -- correctly. So
@@ -638,28 +649,59 @@ jobs:
     # downloads will not be the one the pinned library launches.
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 2  # PR checkout is a merge commit; HEAD^1 is the base
+      - name: Decide whether chord rendering can have changed
+        id: gate
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT_NAME" != "pull_request" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "Not a pull_request build: always run the full sweep."
+            exit 0
+          fi
+          if ! changed="$(git diff --name-only HEAD^1 HEAD)" || [ -z "$changed" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "Could not compute a changed-file list: run (fail safe)."
+            exit 0
+          fi
+          echo "$changed"
+          if echo "$changed" | grep -qE '^(apps/web/|packages/|fixtures/contracts/|package\.json$|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|\.npmrc$|\.nvmrc$|\.github/workflows/ci\.yml$)'; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "No chord-rendering path changed; skipping install, Chromium and the sweep (reporting success)."
+          fi
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        if: steps.gate.outputs.run == 'true'
         with:
           node-version: '22'
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        if: steps.gate.outputs.run == 'true'
       - name: pnpm install
+        if: steps.gate.outputs.run == 'true'
         run: pnpm install --frozen-lockfile
         env:
           PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
       - name: Resolve pinned Playwright version
+        if: steps.gate.outputs.run == 'true'
         id: pw
         run: echo "version=$(pnpm --filter @stem-loops/web-browser-gate exec node -p "require('playwright/package.json').version")" >> "$GITHUB_OUTPUT"
       - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        if: steps.gate.outputs.run == 'true'
         id: pw-cache
         with:
           path: ~/.cache/ms-playwright
           key: playwright-chromium-${{ runner.os }}-${{ steps.pw.outputs.version }}
       - name: Install Chromium and its system libraries
+        if: steps.gate.outputs.run == 'true'
         # --with-deps also installs the OS libraries and fonts Chromium needs
         # (apt). The browser download is skipped on a cache hit; the apt step is
         # not cacheable and is most of the cost.
         run: pnpm --filter @stem-loops/web-browser-gate exec playwright install --with-deps chromium
       - name: Chord chips fit (real Chromium)
+        if: steps.gate.outputs.run == 'true'
         run: pnpm --filter @stem-loops/web-browser-gate test
         env:
           CHORD_GATE_LOG: "1"

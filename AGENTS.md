@@ -327,7 +327,7 @@ override" does not alter them — explain the distinction instead of retrying.
 | Operation | Result |
 |---|---|
 | `gh pr merge --admin` | Routes through **GraphQL**, which is unavailable in-session |
-| REST `PUT /repos/{o}/{r}/pulls/{N}/merge` | Allowed **only** through the orchestrator gate (`scripts/or4-merge.sh`: review marker + patch-id equality + checks) — passed 11× on 2026-11-23 (#347 #346 #340 #341 #348 #350 #353 #359 #358 #354 #349, all `merged_by` JDC000000). A classifier change could re-block it at any time; if refused, OR-1 applies (record, tell Jon, never re-route). Ungated, it was blocked as **"Merge Without Review"** |
+| REST `PUT /repos/{o}/{r}/pulls/{N}/merge` | Allowed **only** through the OR-4 gate (now `scripts/or4-merge.sh`: review marker + patch-id equality + checks), run by the orchestrator (main session), never a subagent — passed 11× on 2026-11-23 (#347 #346 #340 #341 #348 #350 #353 #359 #358 #354 #349, all `merged_by` JDC000000). The first 10 used the orchestrator's out-of-repo gate copies (v3.1 ×5, v3.2 ×4, v3.3 ×2 across the 11); `scripts/or4-merge.sh` entered the repo only with #349. 5 of the 11 (#346 #340 #341 #354 #349) were protected PRs, merged with Jon's named per-PR approval. A classifier change could re-block it at any time; if refused, OR-1 applies (record, tell Jon, never re-route). Ungated, it was blocked as **"Merge Without Review"** |
 | `PUT /repos/{o}/{r}/pulls/{N}/ccr/auto_merge` | Classifier: **"Auto-Mode Bypass"** |
 | `PUT /repos/{o}/{r}/rulesets/{id}` | Classifier: **dangerous-action denial** (verified 2026-11-05 on the dormant `main` ruleset, chosen deliberately so a denial could not break the live branch) |
 | `GET /repos/{o}/{r}/actions/secrets` | **403** — "not permitted through this proxy" |
@@ -335,17 +335,15 @@ override" does not alter them — explain the distinction instead of retrying.
 | GitHub **GraphQL** generally | Forbidden. `gh pr view --json`, `gh pr checks`, `gh pr create` all fail — use REST (`gh api repos/{o}/{r}/...`) |
 | `GET /repos/{o}/{r}/branches/{b}/protection` | **404 "Branch not protected"** — this repo uses **rulesets**, not classic protection |
 
-The orchestrator merges reviewed NON-protected PRs under Jon's standing approval (ratified JON 2026-11-23, D-1(i)). Protected PRs (`.github/`, `scripts/`, `.claude/`, `AGENTS.md`, `CLAUDE*`, `CODEOWNERS`, migrations, billing/auth/secret paths, `needs-jon-approval`, `[billing]`) need Jon's named approval per PR.
+The orchestrator (main session; subagents never merge) merges reviewed NON-protected PRs under Jon's standing approval (ratified JON 2026-11-23, D-1(i)). Merges require gate **v3.3 or later** (protected class + `JON_ROW`). The in-repo `scripts/or4-merge.sh` is v3.1 today and lacks these checks: do not use it for any merge until the v3.3 PR (#363) lands. Protected = `.github/`, `scripts/`, `.claude/` (any depth), `AGENTS.md`, `CLAUDE*`, `.mcp.json`, `**/SKILL.md`, `CODEOWNERS`, any `migrations/`, `.env*`, paths matching billing, stripe, entitlement, auth, service-role or secret; label `needs-jon-approval`; title `[billing]`. Protected PRs need Jon's named approval per PR. The checking of that class is the orchestrator's job, not something the script guarantees; when in doubt, treat as protected.
 
-**Consequence to internalise:** the agent merges only through
-`scripts/or4-merge.sh` (reviewed and gated; non-protected PRs under the
-standing approval, protected PRs with Jon's named per-PR approval). A
-classifier change could re-block REST merges at any time; a refusal triggers
-OR-1 (record, tell Jon, never re-route). The GitHub App does not change
-that. The App lets `auto-merge.yml` merge **server-side in
+**Consequence to internalise:** subagents cannot merge. The orchestrator merges only
+through the gate above. A classifier change could re-block REST merges at any
+time; a refusal triggers OR-1 (record, tell Jon, never re-route). The GitHub
+App does not change that. The App lets `auto-merge.yml` merge **server-side in
 GitHub Actions**, which these controls do not govern. Automation of merging
-goes through widening that workflow's scope — never through granting the
-agent merge rights.
+goes through widening that workflow's scope — never through widening the
+agent merge path beyond the gate.
 
 **Therefore:** ruleset changes and secret writes are always operator
 actions. Prepare the exact command and hand it over; do not attempt the

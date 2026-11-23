@@ -337,8 +337,12 @@ override" does not alter them — explain the distinction instead of retrying.
 
 The orchestrator merges reviewed NON-protected PRs under Jon's standing approval (ratified JON 2026-11-23, D-1(i)). Protected PRs (`.github/`, `scripts/`, `.claude/`, `AGENTS.md`, `CLAUDE*`, `CODEOWNERS`, migrations, billing/auth/secret paths, `needs-jon-approval`, `[billing]`) need Jon's named approval per PR.
 
-**Consequence to internalise:** the agent cannot merge, and the GitHub App
-does not change that. The App lets `auto-merge.yml` merge **server-side in
+**Consequence to internalise:** the agent merges only through
+`scripts/or4-merge.sh` (reviewed and gated; non-protected PRs under the
+standing approval, protected PRs with Jon's named per-PR approval). A
+classifier change could re-block REST merges at any time; a refusal triggers
+OR-1 (record, tell Jon, never re-route). The GitHub App does not change
+that. The App lets `auto-merge.yml` merge **server-side in
 GitHub Actions**, which these controls do not govern. Automation of merging
 goes through widening that workflow's scope — never through granting the
 agent merge rights.

@@ -295,12 +295,12 @@ class GateWiring(unittest.TestCase):
             n = len(main_files) + len(main_rm) + len(main_mv) if behind is None else behind
             cmp_out = f"{n}\t{abase or main}\t{amb or base}"
             put_log = os.path.join(t, "put.log"); cnt = os.path.join(t, "cnt")
-            shim = shim_bin(t, '''  *PUT*) echo "$a" >"$SHIM_PUT"; [ -n "$SHIM_PUTFAIL" ] && { echo "HTTP 422 boom" >&2; exit 1; }; echo "merged=true sha=abc";;
+            shim = shim_bin(t, '''  *PUT*) echo "$a" >"$SHIM_PUT"; [ -n "$SHIM_PUTFAIL" ] && { echo "HTTP 422 boom" >&2; exit 1; }; echo "${SHIM_PUTOUT-merged=true sha=abc}";;
   *merged_at*) [ -n "$SHIM_MAFAIL" ] && exit 1; echo "${SHIM_MA:-2026-11-23T00:00:00Z JDC000000}";;
   *branches/*) n=$(cat "$SHIM_CNT" 2>/dev/null || echo 0); echo $((n+1)) >"$SHIM_CNT"
     if [ "$n" -ge 1 ] && [ -n "$SHIM_BRERR" ]; then echo "HTTP 502" >&2; exit 1; fi
     if [ "$n" -ge 1 ] && [ -n "$SHIM_MOVED" ]; then echo "$SHIM_MOVED"; else echo "$SHIM_MAIN"; fi;;
-  *pulls/[0-9]) printf '%s\\n' "$SHIM_PRJSON";;
+  *pulls/[0-9]) [ -n "$SHIM_PRFAIL" ] && { echo "HTTP 500" >&2; exit 1; }; printf '%s\\n' "$SHIM_PRJSON";;
   *compare/*) printf '%s\\n' "$SHIM_CMP";;
   *.head.sha*) echo "$SHIM_H";;
   *.draft*) echo false;;
@@ -319,7 +319,7 @@ class GateWiring(unittest.TestCase):
             env = dict(os.environ, PATH=shim + ":" + os.environ["PATH"], OR4_REPO=clone, OR4_TEST="1", DRY_RUN="1", SHIM_H=head,
                        SHIM_CMP=cmp_out, SHIM_MAIN=amain or main, SHIM_LABELS=labels, ALLOW_BEHIND="1",
                        SHIM_PUT=put_log, SHIM_CNT=cnt, SHIM_MOVED=moved or "", SHIM_TITLE=title, SHIM_PRJSON=prjson)
-            for k in ("JON_ROW", "JON_PR", "OR4_LIB", "MAX_BEHIND"):
+            for k in ("JON_ROW", "JON_PR", "OR4_LIB", "MAX_BEHIND", "MONEY"):
                 env.pop(k, None)
             script = SCRIPT
             if real:   # real-merge path: no DRY_RUN/OR4_TEST/OR4_REPO; the hard-coded clone path is swapped for the temp clone in a COPY
@@ -561,6 +561,12 @@ MONEY_PATHS = ["apps/web/src/lib/billing/plans.ts", "apps/web/src/lib/stripe.ts"
                "apps/web/src/lib/admission.ts", "apps/web/src/app/api/uploads/route.ts", "apps/worker/src/worker/retention.py",
                "apps/web/src/lib/spend.ts", "apps/worker/src/worker/replicate_client.py", "apps/worker/src/worker/klangio.py",
                "apps/web/src/lib/pricing.ts", "apps/web/src/lib/pricing-copy.ts", "apps/web/src/lib/credits.ts",
+               "apps/web/src/lib/jobs/create-link-job.ts", "apps/web/src/lib/job-access.ts", "apps/web/src/app/api/users/me/claim-jobs/route.ts",
+               "apps/web/src/app/api/users/me/trial/consume/route.ts", "apps/worker/tests/test_refund_reaped_jobs.py",
+               "apps/web/test/auth-helper.test.mjs", "apps/web/test/auth-callback.test.mjs", "apps/worker/tests/test_fetch_gates_restricted_role.py",
+               "apps/web/src/app/api/checkout/route.ts", "apps/web/src/lib/emails/templates/subscription-changed.ts",
+               "apps/web/src/lib/emails/templates/plan-ended.ts", "apps/worker/src/worker/cleanup.py", "apps/worker/src/worker/pipeline.py",
+               "apps/web/src/app/api/users/me/route.ts", "apps/web/src/lib/r2.ts", "apps/web/src/app/login/page.tsx",
                "apps/web/src/lib/sessions.ts", "apps/worker/src/worker/service_role.py", "docs/secrets.md",
                "apps/worker/db/rls_policies.sql", "apps/worker/db/grants.sql", "apps/web/src/app/api/jobs/create/route.ts"]
 NON_MONEY_PATHS = ["apps/web/src/components/x/Y.tsx", "docs/design/a.md", "packages/ui/src/b.ts", "README.md", "scripts/x.sh"]
@@ -652,7 +658,7 @@ class Gate36(unittest.TestCase):
 
     def test_money_second_review_also_needs_scores(self):
         r, _, _ = self.run_gate([], review=MONEY_OK, review2=self.P2, JON_ROW="95", JON_PR="7", title="[billing] x")
-        self.assertIn("DRY_RUN fail=1", r.stdout); self.assertIn("review2.md needs marker score", r.stdout)
+        self.assertIn("DRY_RUN fail=1", r.stdout); self.assertIn("review2.md needs line 1", r.stdout)
 
     def test_pr_json_unreadable_is_money(self):
         r, _, _ = self.run_gate([], review=self.P1, SHIM_PRJSON="garbage{")
@@ -711,6 +717,90 @@ class Gate36(unittest.TestCase):
     def test_merged_at_regetting_error_exits_nonzero(self):
         r, _, _ = self.run_gate([], real=True, SHIM_MAFAIL="1")
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr); self.assertIn("cannot re-read PR after merge PUT", r.stdout)
+
+
+    # ---- v3.6 R1 fixes ----
+    def test_verdict_must_be_unique_and_line_one(self):
+        cases = {
+            "FAIL then later PASS": "VERDICT: FAIL 40 HEAD @H\nSCORES: M-9 95 M-11 95\nfix text\nVERDICT: PASS 95 HEAD @H\n",
+            "two PASS lines": "VERDICT: PASS 95 HEAD @H\nSCORES: M-9 95 M-11 95\nVERDICT: PASS 95 HEAD @H\n",
+            "VERDICT not line 1": "notes\nVERDICT: PASS 95 HEAD @H\nSCORES: M-9 95 M-11 95\n",
+            "mixed-case second verdict": "VERDICT: PASS 95 HEAD @H\nSCORES: M-9 95 M-11 95\nVerdict: FAIL 20 (revised)\n",
+        }
+        for name, text in cases.items():
+            with self.subTest(name=name, which="review1 non-protected"):
+                r, _, _ = self.run_gate([], review=text)
+                self.assertIn("DRY_RUN fail=1", r.stdout, r.stdout); self.assertIn("exactly one VERDICT", r.stdout)
+            with self.subTest(name=name, which="review2 protected"):
+                r, _, _ = self.run_gate([], review=self.P1, review2=text, **self.PROT_PR)
+                self.assertIn("DRY_RUN fail=1", r.stdout, r.stdout)
+            with self.subTest(name=name, which="review1 protected"):
+                r, _, _ = self.run_gate([], review=text, review2=self.P2, **self.PROT_PR)
+                self.assertIn("DRY_RUN fail=1", r.stdout, r.stdout)
+
+    def test_money_scores_single_line_and_marker_line_ends_at_sha(self):
+        for name, text in {
+            "second SCORES line": "VERDICT: PASS 95 HEAD @H\nSCORES: M-9 95 M-11 95\nSCORES: M-9 40 M-11 20\n",
+            "marker trailing text": "VERDICT: PASS 95 HEAD @H but really FAIL\nSCORES: M-9 95 M-11 95\n",
+        }.items():
+            with self.subTest(name=name):
+                r = self.money(text)
+                self.assertIn("DRY_RUN fail=1", r.stdout, r.stdout); self.assertIn("FAIL: money PR", r.stdout)
+
+    def test_second_scores_in_review2_fails(self):
+        r, _, _ = self.run_gate([], review=MONEY_OK, review2="VERDICT: PASS 94 HEAD @H\nSCORES: M-9 94 M-11 94\nSCORES: M-9 1 M-11 1\n", **self.MONEY_PR)
+        self.assertIn("DRY_RUN fail=1", r.stdout, r.stdout)
+
+    def test_near_duplicate_reviews_fail(self):
+        for name, r2 in {"trailing space": self.P1.replace("\n", "  \n"), "blank lines": self.P1 + "\n\n",
+                         "CRLF": self.P1.replace("\n", "\r\n"), "trailing ws line": self.P1 + "   \n"}.items():
+            with self.subTest(name=name):
+                r, _, _ = self.run_gate([], review=self.P1, review2=r2, **self.PROT_PR)
+                self.assertIn("DRY_RUN fail=1", r.stdout, r.stdout)
+                self.assertIn("identical after whitespace normalisation", r.stdout)
+        r, _, _ = self.run_gate([], review=self.P1, review2=self.P1.replace("body", "different words"), **self.PROT_PR)
+        self.assertIn("DRY_RUN fail=0", r.stdout, r.stdout)
+
+    def test_money_env_only_raises(self):
+        r, _, _ = self.run_gate([], review=self.P1, MONEY="1")                     # non-money PR, MONEY=1: now protected+money
+        self.assertIn("money=1", r.stdout); self.assertIn("DRY_RUN fail=1", r.stdout)
+        r, _, _ = self.run_gate([], review=MONEY_OK, review2=MONEY_OK2, MONEY="1", JON_ROW="95", JON_PR="7")
+        self.assertIn("DRY_RUN fail=0", r.stdout, r.stdout)
+        r, _, _ = self.run_gate([], review=self.P1, review2=self.P2, MONEY="0", **{**self.MONEY_PR})   # MONEY=0 cannot lower
+        self.assertIn("money=1", r.stdout); self.assertIn("DRY_RUN fail=1", r.stdout)
+        for bad in ("2", "true", "", " 1"):
+            with self.subTest(bad=bad):
+                r, _, _ = self.run_gate([], review=self.P1, MONEY=bad)
+                self.assertEqual(r.returncode, 1); self.assertIn("MONEY must be 0 or 1", r.stdout)
+
+    def test_non_utf8_path_cannot_hide(self):
+        env = dict(os.environ, LC_ALL="C.UTF-8", LANG="C.UTF-8")
+        for fn, path in (("protected_match", b".github/workflows/dep\xffloy.yml"), ("money_paths", b"apps/web/src/billing/caf\xe9.ts")):
+            with self.subTest(fn=fn):
+                r = subprocess.run(["bash", "-c", f'OR4_LIB=1 source "{SCRIPT}" || exit 99\n{fn} | grep -aq .'], input=path + b"\0",
+                                   capture_output=True, env=env)
+                self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_pr_json_read_failure_fails_closed(self):
+        r, _, _ = self.run_gate([], review=self.P1, SHIM_PRFAIL="1")
+        self.assertIn("money=1", r.stdout); self.assertIn("DRY_RUN fail=1", r.stdout)
+
+    def test_put_without_merged_true_exits_nonzero(self):
+        for out in ("merged=false sha=abc", "sha=abc", ""):
+            with self.subTest(out=out):
+                r, _, _ = self.run_gate([], real=True, SHIM_PUTOUT=out)
+                self.assertEqual(r.returncode, 1, r.stdout + r.stderr); self.assertIn("did not report merged=true", r.stdout)
+                self.assertNotIn("merged_at merged_by", r.stdout)
+
+    def test_empty_merged_at_exits_nonzero(self):
+        r, _, _ = self.run_gate([], real=True, SHIM_MA=" login")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr); self.assertIn("merged_at null", r.stdout)
+
+    def test_header_does_not_claim_label_is_money(self):
+        with open(SCRIPT) as f:
+            head = f.read().split("# v3.5.1 (TIGHTENING", 1)[0]
+        self.assertNotIn("or\n#   `needs-jon-approval` label, parsed", head)
+        self.assertIn("makes a PR PROTECTED, not money", head)
 
     def test_real_merge_still_succeeds(self):
         r, _, _ = self.run_gate([], real=True)

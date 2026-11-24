@@ -12,7 +12,7 @@ loosening changes are HELD for Jon (AGENTS.md M-8). When in doubt whether a chan
 | v3.4-R2 | 19B local copy, #385 | opt-in `ALLOW_BEHIND=1`; non-protected only; ≤ 5; no overlap; no coupled file; no main deletions/renames | `branches/v3/main` re-checked right before the PUT |
 | v3.5 | main | strictest union of both (below) | + #384: git env scrub, `git replace` refs FAIL, `OR4_REPO` guard tested for rc and zero network calls |
 | v3.5.1 | main | unchanged from v3.5 | **tightening only** (#391, #393): strict `DRY_RUN`/`ALLOW_BEHIND`; PUT `sha=<head>` and pre-PUT main-moved tests; gate text names the `JON_ROW` ledger row |
-| **v3.6** | **this branch** | unchanged | **tightening only** (D-7, #396): money class (marker >= 93 + `SCORES:` line 2); protected needs two review files; merge-tail fails closed |
+| **v3.6** | **this branch** | unchanged | **tightening only** (D-7, #396): money class (marker >= 93 + `SCORES:` line 2); protected needs two review files; one `VERDICT:` line per review; `LC_ALL=C`; merge-tail fails closed |
 
 The orchestrator's merge gate. It squash-merges a PR **only** if every check below
 passes; otherwise it prints each `FAIL:` line and exits 1 without merging. It is
@@ -67,20 +67,28 @@ The script fetches into the main clone at `/home/claude/stem-loops`.
 
 ## v3.6 (tightening only; no check removed or loosened)
 
-- **Money class (D-7, AGENTS.md M-SA condition 6).** A PR is *money* if a changed path matches `MONEY_RE` (billing, stripe, entitlement, auth/authz/oauth,
-  credits, sessions, service-role, secret, `rls`, grants, webhook, `api/jobs`, job creation/admission, admission, upload, retention, spend, replicate, klangio,
-  pricing; case-insensitive) or its title has `[billing]` (title read with `jq`; an unreadable/unparsable PR = money, fail closed). The `needs-jon-approval`
-  label is protected, **not** money. **Money implies protected:** a money PR gets every protected requirement (numeric `JON_ROW` + matching `JON_PR`,
-  behind 0 and `ALLOW_BEHIND` refused, two review files) even when no path matches `PROTECTED_RE`. For every review file the gate sees, a money PR also needs
-  marker score **>= 93** and **line 2 exactly** `SCORES: M-9 <n> M-11 <n>` (both integers 93-100, no extra text, no CRLF). Free-text or table scores, or the line
-  anywhere else, do not count. `MONEY_RE` over-matches on purpose (e.g. `chordnet-session.ts`, `smoke-staging-session.test.mjs`): when in doubt, money.
+- **Money class (D-7, AGENTS.md M-SA condition 6).** A PR is *money* if a changed path matches `MONEY_RE` or its title has `[billing]` (title read with `jq`;
+  an unreadable/unparsable PR = money, fail closed), or the orchestrator sets `MONEY=1`. **`MONEY_RE` is a floor, not the classification:** it over-matches
+  on purpose (billing, stripe, entitlement, auth/login/oauth, credits, sessions, service-role, secret, rls, roles, grants, webhook, job creation/admission/access,
+  claim-jobs, uploads, retention/cleanup, spend, replicate, klangio, worker pipeline, r2, pricing/price/plan-/checkout/subscription/refund/trial/payment/quota,
+  `users/me`, ...) and still misses money code at paths with no such word. The orchestrator keeps classifying by reading the changed-file list and sets
+  `MONEY=1` when in doubt. `MONEY` must be unset, `0` or `1` (anything else fails before any network call); it can only **raise** the class, `MONEY=0`
+  never lowers it. The `needs-jon-approval` label is protected, **not** money. **Money implies protected:** a money PR gets every protected requirement
+  (numeric `JON_ROW` + matching `JON_PR`, behind 0 and `ALLOW_BEHIND` refused, two review files) even when no path matches `PROTECTED_RE`. For every review
+  file the gate sees, a money PR also needs line 1 = `VERDICT: PASS <93-100> HEAD <sha>` (nothing after the sha) and **line 2 exactly**
+  `SCORES: M-9 <n> M-11 <n>` (both integers 93-100, no extra text, no CRLF) as the **only** `SCORES:` line. Free-text or table scores do not count.
+- **Review file format (all PRs).** Every review file must have exactly one `VERDICT:` line (any case counted), it must be line 1, and it must be a PASS marker.
+  An earlier FAIL followed by a quoted later PASS line therefore refuses.
 - **Two reviews for protected PRs.** The second review file is the **4th positional argument** (not an env var). Both need a valid PASS marker at the same
-  `<reviewed-sha>` and must name it; they must be different files (not the same path or a hard/symlink) and not byte-identical. Non-protected PRs still need one.
-  A money+protected PR needs `SCORES` in both.
+  `<reviewed-sha>` and must name it; they must be different files (not the same path or a hard/symlink), not byte-identical, and not identical after
+  normalisation (CRLF -> LF, trailing whitespace stripped, blank lines dropped). **This is a byte-level check, not proof of independence:** an edited copy
+  still passes. Non-protected PRs still need one. A money+protected PR needs line 1 and `SCORES` in both.
+- **Locale.** The gate exports `LC_ALL=C` and matches paths with `grep -a`, so a path containing a non-UTF-8 byte cannot be skipped as "binary" under a UTF-8 locale.
 - **Merge tail (#396).** The pre-PUT main re-check fails closed on any `gh` error (`FAIL: cannot re-read v3/main`, no PUT). A PUT error exits 1 with
   `FAIL: merge PUT failed, NOT merged: <gh output>`, and a PUT response without `merged=true` exits 1. After the PUT the PR is re-read: a `gh` error or a null/empty
   `merged_at` exits 1.
-- **Not enforced (process):** that the reviewers are on different models, or that the second file is really a second reviewer's work; byte-difference only stops copies.
+- **Not enforced (process):** that the reviewers are on different models, or that the second file is really a second reviewer's work; the orchestrator verifies and
+  logs both reviewers (M-SA).
 
 ## Behind guard and `ALLOW_BEHIND` (v3.5)
 

@@ -1,4 +1,4 @@
-"""Offline tests for scripts/or4-merge.sh (gate v3.5 = v3.4 ∪ 19B v3.4-R2 ∪ #384): protected-path regex, behind guard
+"""Offline tests for scripts/or4-merge.sh (gate v3.5.1 = v3.4 ∪ 19B v3.4-R2 ∪ #384): protected-path regex, behind guard
 (ALLOW_BEHIND, protected, <=5, overlap, hot/coupled, main deletions/renames), snapshot pin, pre-PUT main re-check, git env/replace
 hardening, OR4_REPO guard, verdict-marker parsing.
 
@@ -262,7 +262,7 @@ class GateWiring(unittest.TestCase):
     PR = "7"
 
     def run_gate(self, main_files, behind=None, abase=None, amb=None, amain=None, main_rm=(), main_mv=(), labels="",
-                 replace=False, **env_extra):
+                 replace=False, real=False, moved=None, **env_extra):
         """main_files: files added on main (one commit each); main_rm: base files deleted on main; main_mv: (old, new) renames.
         env_extra defaults to ALLOW_BEHIND=1; pass ALLOW_BEHIND=None to drop it."""
         with tempfile.TemporaryDirectory() as t:
@@ -291,7 +291,11 @@ class GateWiring(unittest.TestCase):
             # the clone is made BEFORE the gate fetches the PR ref, like the real clone
             n = len(main_files) + len(main_rm) + len(main_mv) if behind is None else behind
             cmp_out = f"{n}\t{abase or main}\t{amb or base}"
-            shim = shim_bin(t, '''  *branches/*) echo "$SHIM_MAIN";;
+            put_log = os.path.join(t, "put.log"); cnt = os.path.join(t, "cnt")
+            shim = shim_bin(t, '''  *PUT*) echo "$a" >"$SHIM_PUT"; echo "merged=true sha=abc";;
+  *merged_at*) echo "2026-11-23T00:00:00Z JDC000000";;
+  *branches/*) n=$(cat "$SHIM_CNT" 2>/dev/null || echo 0); echo $((n+1)) >"$SHIM_CNT"
+    if [ "$n" -ge 1 ] && [ -n "$SHIM_MOVED" ]; then echo "$SHIM_MOVED"; else echo "$SHIM_MAIN"; fi;;
   *compare/*) printf '%s\\n' "$SHIM_CMP";;
   *.head.sha*) echo "$SHIM_H";;
   *.draft*) echo false;;
@@ -302,15 +306,26 @@ class GateWiring(unittest.TestCase):
   */status*) echo 0;;''')
             rv = os.path.join(t, "review.md"); put(rv, f"VERDICT: PASS 95 HEAD {head[:7]}\n")
             env = dict(os.environ, PATH=shim + ":" + os.environ["PATH"], OR4_REPO=clone, OR4_TEST="1", DRY_RUN="1", SHIM_H=head,
-                       SHIM_CMP=cmp_out, SHIM_MAIN=amain or main, SHIM_LABELS=labels, ALLOW_BEHIND="1")
+                       SHIM_CMP=cmp_out, SHIM_MAIN=amain or main, SHIM_LABELS=labels, ALLOW_BEHIND="1",
+                       SHIM_PUT=put_log, SHIM_CNT=cnt, SHIM_MOVED=moved or "")
             for k in ("JON_ROW", "JON_PR", "OR4_LIB", "MAX_BEHIND"):
                 env.pop(k, None)
+            script = SCRIPT
+            if real:   # real-merge path: no DRY_RUN/OR4_TEST/OR4_REPO; the hard-coded clone path is swapped for the temp clone in a COPY
+                src = open(SCRIPT).read(); old = "REPO=/home/claude/stem-loops"
+                self.assertEqual(src.count(old), 1, "REPO default moved: update the test")
+                script = os.path.join(t, "or4-copy.sh"); put(script, src.replace(old, f"REPO={clone}"))
+                for k in ("DRY_RUN", "OR4_TEST", "OR4_REPO"):
+                    env.pop(k, None)
             for k, v in env_extra.items():
                 if v is None:
                     env.pop(k, None)
                 else:
                     env[k] = v
-            return subprocess.run(["bash", SCRIPT, self.PR, rv, head], capture_output=True, text=True, env=env), main, base
+            r = subprocess.run(["bash", script, self.PR, rv, head], capture_output=True, text=True, env=env)
+            self.put_args = open(put_log).read() if os.path.exists(put_log) else None
+            self.head = head
+            return r, main, base
 
     def test_disjoint_behind_passes(self):
         r, _, _ = self.run_gate(["m1.txt"])
@@ -335,6 +350,61 @@ class GateWiring(unittest.TestCase):
         r, _, _ = self.run_gate(["m1.txt"], amb="1" * 40)
         self.assertIn("DRY_RUN fail=1", r.stdout); self.assertIn("main moved during gate", r.stdout)
 
+    # ---- v3.5.1 (tightening only; #391) ----
+    def test_real_merge_put_pins_sha_and_squash(self):
+        """M38: the merge PUT carries sha=<head> (and squash); captured from the shimmed gh."""
+        r, _, _ = self.run_gate([], real=True)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIsNotNone(self.put_args, "no merge PUT reached the shim")
+        self.assertIn(f"-f sha={self.head}", self.put_args)
+        self.assertIn("merge_method=squash", self.put_args)
+        self.assertIn(f"pulls/{self.PR}/merge", self.put_args)
+
+    def test_main_moves_before_put_fails_without_put(self):
+        """M09: main moves between the snapshot and the pre-PUT re-check: FAIL 'main moved; re-run', exit 1, NO PUT."""
+        r, main, _ = self.run_gate([], real=True, moved="9" * 40)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("FAIL: main moved; re-run", r.stdout)
+        self.assertIsNone(self.put_args, "PUT happened although main moved")
+        self.assertNotIn("merged_at merged_by", r.stdout)
+
+    def test_dry_run_and_allow_behind_strict(self):
+        """#391: any value other than unset/0/1 FAILS before ANY gh/git call; unset/0/1 are accepted."""
+        for var in ("DRY_RUN", "ALLOW_BEHIND"):
+            for bad in ("true", "yes", "TRUE", "2", " 1", "1 ", "", "01", "on"):
+                with self.subTest(var=var, bad=bad), tempfile.TemporaryDirectory() as t:
+                    log = os.path.join(t, "calls.log"); put(log, "")
+                    shim = shim_bin(t, "  *) exit 1;;", log=log)
+                    env = dict(os.environ, PATH=shim + ":" + os.environ["PATH"])
+                    for k in ("DRY_RUN", "ALLOW_BEHIND", "OR4_REPO", "OR4_TEST", "OR4_LIB"):
+                        env.pop(k, None)
+                    env[var] = bad
+                    r = subprocess.run(["bash", SCRIPT, "7", "/nonexistent/rv.md", SHA], capture_output=True, text=True, env=env)
+                    self.assertEqual(r.returncode, 1, r.stdout)
+                    self.assertEqual(r.stdout.strip(), f"FAIL: {var} must be 0 or 1")
+                    self.assertEqual(open(log).read(), "", "gh/git called before the strict switch check")
+        for v in (None, "0", "1"):   # allowed values get past the switch check (PR=x then fails 'PR not numeric', still no network)
+            for var in ("DRY_RUN", "ALLOW_BEHIND"):
+                with self.subTest(var=var, ok=v):
+                    env = dict(os.environ); [env.pop(k, None) for k in ("DRY_RUN", "ALLOW_BEHIND", "OR4_REPO", "OR4_LIB")]
+                    if v is not None:
+                        env[var] = v
+                    r = subprocess.run(["bash", SCRIPT, "x", "/nonexistent/rv.md", SHA], capture_output=True, text=True, env=env)
+                    self.assertEqual(r.stdout.strip(), "FAIL: PR not numeric")
+
+    def test_strict_switch_check_precedes_any_command(self):
+        with open(SCRIPT) as f:
+            body = f.read().split('if [ "${OR4_LIB:-0}" = 1 ]; then', 1)[1]
+        self.assertLess(body.index("DRY_RUN must be 0 or 1"), body.index("OR4_REPO set outside test mode"))
+        self.assertLess(body.index("ALLOW_BEHIND must be 0 or 1"), body.index("gh api"))
+        self.assertLess(body.index("ALLOW_BEHIND must be 0 or 1"), body.index("git -C"))
+
+    def test_gate_text_names_jon_row_ledger(self):
+        with open(SCRIPT) as f:
+            src = f.read()
+        self.assertNotIn("Jon's named approval", src)
+        self.assertEqual(src.count("D-6 standing row 95 for self-approved merges, per AGENTS.md M-8"), 2)
+
     def test_behind_21_and_garbage_fail(self):
         r, _, _ = self.run_gate(["m1.txt"], behind=21)
         self.assertIn("DRY_RUN fail=1", r.stdout); self.assertIn("stale", r.stdout)
@@ -355,7 +425,7 @@ class GateWiring(unittest.TestCase):
 
     # ---- v3.5 additions ----
     def test_behind_without_allow_behind_fails(self):
-        for v in (None, "0", "yes"):
+        for v in (None, "0"):
             with self.subTest(v=v):
                 r, _, _ = self.run_gate(["m1.txt"], ALLOW_BEHIND=v)
                 self.assertIn("DRY_RUN fail=1", r.stdout); self.assertIn("ALLOW_BEHIND!=1", r.stdout)

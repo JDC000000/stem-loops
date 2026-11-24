@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# or4-merge.sh <pr> <review-file> <reviewed-sha> — OR-4 gate v3.5 (S19A): ONE gate for 19A and 19B.
+# or4-merge.sh <pr> <review-file> <reviewed-sha> — OR-4 gate v3.5.1 (S19A): ONE gate for 19A and 19B.
+# v3.5.1 (TIGHTENING ONLY; #391, #393): DRY_RUN and ALLOW_BEHIND must each be unset, "0" or "1" (anything else, incl. true/yes/"2"/" 1"/"",
+#   FAILS before any network call); text: approval is JON_ROW (see v3.3 below). No check removed or loosened.
 # v3.5 = the STRICTEST union of v3.4 (19A, #382) and v3.4-R2 (19B, #385; Jon 2026-11-23 23:29Z "structurally solve" merge
 #   contention) plus #384 (I1, I2):
 #   - behind_by==0 passes the behind guard as before. behind_by>0 passes ONLY if ALLOW_BEHIND=1 AND the PR is NOT protected AND
@@ -13,7 +15,7 @@
 # v3.4 (JON 2026-11-23 16:34, "require branches up to date" OFF on ruleset 26478884; LEDGER-19A rows 63/65): overlap/hot guard.
 # v3.3 (rules v3.4 review R1): a PR labelled needs-jon-approval/[billing], or touching a protected path
 #   (.github/, scripts/, **/.claude/, AGENTS.md, CLAUDE*, .mcp.json, **/SKILL.md, CODEOWNERS, any migrations/, .env*, billing|stripe|entitlement|auth|service-role|secret)
-#   FAILS unless JON_ROW=<ledger row of Jon's named approval for this PR> is set in the environment.
+#   FAILS unless JON_ROW=<ledger row of the approval (D-6 standing row 95 for self-approved merges, per AGENTS.md M-8)> is set in the environment.
 # v3.2 (PR #349 review R1): PR must be numeric; ≥10 check-runs must exist (required set) or FAIL; commit statuses
 #   in failure/error/pending FAIL; exit 1 unless the merge PUT succeeds AND merged_at is set. Merges ONLY if every check passes.
 # v3 (L5-plan review R2, B2): (1) an explicit "Verdict: PASS" line is required; any FAIL/REVISE/BLOCK/CHANGES/
@@ -44,7 +46,7 @@ protected_decision() {
     echo "protected: labels/title/paths -> ${prot:-label-or-title}"
     [ -n "${JON_ROW:-}" ] && echo "JON_ROW=$JON_ROW JON_PR=${JON_PR:-}"
     [[ "${JON_ROW:-}" =~ ^[0-9]+$ ]] && [[ "${JON_PR:-}" =~ ^[0-9]+$ ]] && [ "$JON_PR" = "$pr" ] && return 0
-    echo "FAIL: protected PR needs JON_ROW=<ledger row with Jon's named approval> and JON_PR=$pr"
+    echo "FAIL: protected PR needs JON_ROW=<ledger row of the approval (D-6 standing row 95 for self-approved merges, per AGENTS.md M-8)> and JON_PR=$pr"
     return 1
   fi
   return 0
@@ -119,6 +121,10 @@ if [ "${OR4_LIB:-0}" = 1 ]; then
   return 0 2>/dev/null
   echo "OR4_LIB set: library mode, NOT a merge" >&2; exit 2
 fi
+# v3.5.1 (#391): strict switches, checked before ANY gh/git call (and before the OR4_REPO guard that reads DRY_RUN). Unset, "0" or "1" only;
+# a set-but-other value (true, yes, TRUE, 2, " 1", empty) FAILS rather than silently meaning "not dry-run" / "not allowed".
+if [ -n "${DRY_RUN+x}" ] && [ "$DRY_RUN" != 0 ] && [ "$DRY_RUN" != 1 ]; then echo "FAIL: DRY_RUN must be 0 or 1"; exit 1; fi
+if [ -n "${ALLOW_BEHIND+x}" ] && [ "$ALLOW_BEHIND" != 0 ] && [ "$ALLOW_BEHIND" != 1 ]; then echo "FAIL: ALLOW_BEHIND must be 0 or 1"; exit 1; fi
 PR=$1; REVIEW=$2; REVIEWED=$3; R=repos/JDC000000/stem-loops; REPO=/home/claude/stem-loops; fail=0
 # v3.4 R3: OR4_REPO (test clone) is honoured ONLY with DRY_RUN=1 AND OR4_TEST=1; otherwise set => refuse (fail closed, never ignored).
 if [ -n "${OR4_REPO:-}" ]; then

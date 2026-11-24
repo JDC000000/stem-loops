@@ -27,7 +27,7 @@ export default async function ResetPasswordPage() {
   return (
     <main
       style={{
-        minHeight: '100dvh',
+        minHeight: 'var(--page-min-h)',
         padding: '24px 16px',
         maxWidth: 400,
         margin: '0 auto',

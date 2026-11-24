@@ -12,7 +12,7 @@ export default async function DeleteAccountPage() {
   if (!user) redirect('/login?return_to=/account/delete');
 
   return (
-    <main style={{ minHeight: '100dvh', padding: '24px 16px', maxWidth: 560, margin: '0 auto', boxSizing: 'border-box' }}>
+    <main style={{ minHeight: 'var(--page-min-h)', padding: '24px 16px', maxWidth: 560, margin: '0 auto', boxSizing: 'border-box' }}>
       <h1 style={{ fontSize: 'var(--text-2xl)', margin: 0, color: 'var(--text-primary)' }}>Delete account</h1>
       <p style={{ color: 'var(--text-secondary)' }}>
         This permanently deletes your stem-loops account. It cannot be undone.

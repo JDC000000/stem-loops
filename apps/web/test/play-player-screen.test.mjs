@@ -176,9 +176,9 @@ test('P1.1: the one-time light-audio note is a dismissible hint, and always live
   });
 });
 
-test('P1.1: viewportFit "cover" is set on /jobs/[id] ONLY', () => {
+test('P1.1: viewportFit "cover" is set on /jobs/[id] and, since #360, the root layout (every page pads by the insets)', () => {
   assert.match(read('src/app/jobs/[id]/page.tsx'), /export const viewport: Viewport = \{ viewportFit: 'cover' \};/);
-  assert.doesNotMatch(read('src/app/layout.tsx'), /viewportFit/);
+  assert.match(read('src/app/layout.tsx'), /viewportFit: 'cover'/);
   assert.doesNotMatch(read('src/app/jobs/layout.tsx'), /viewportFit/);
 });
 

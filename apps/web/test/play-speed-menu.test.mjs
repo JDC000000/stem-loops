@@ -107,3 +107,23 @@ test('styles: selected = #222 fill + 2px #fff edge (brand tokens), ≥44 px targ
   const beta = css.match(/\.beta \{[^}]*\}/)[0];
   assert.ok(!/accent|lime|amber|warn|background/i.test(beta), beta);
 });
+
+test('R2-1: route latency is wall-clock; at speed r the chord playhead holds back latency × r song-seconds', () => {
+  const ready = { kind: 'ready' };
+  for (const rate of [1, 0.9, 0.75]) {
+    for (const L of [0, 0.1, 0.25]) {
+      const s = snap({ status: 'playing', positionSec: 40, playbackRate: rate });
+      const got = Player.chordPositionFor(ready, s, L);
+      assert.ok(Math.abs(got - (40 - L * rate)) < 1e-12, `r=${rate} L=${L}: ${got}`);
+    }
+  }
+  // No playbackRate in the snapshot = 100%, exactly as before.
+  assert.equal(Player.chordPositionFor(ready, snap({ status: 'playing', positionSec: 40 }), 0.25), 39.75);
+  // Loop-head fold (QA C-11) in song time: 0.1 s after the wrap at 75% with 250 ms latency,
+  // 0.1875 song-s of the loop's end is still being heard.
+  const loop = { startSec: 20, endSec: 30 };
+  const got = Player.chordPositionFor(ready, snap({ status: 'playing', positionSec: 20.1, playbackRate: 0.75, loop }), 0.25);
+  assert.ok(Math.abs(got - (30 - 0.0875)) < 1e-12, String(got));
+  // Paused: never shifted.
+  assert.equal(Player.chordPositionFor(ready, snap({ status: 'ready', positionSec: 40, playbackRate: 0.75 }), 0.25), 40);
+});

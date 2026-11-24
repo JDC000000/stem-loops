@@ -27,6 +27,7 @@ import {
   writeSpeed,
 } from '../src/lib/play/stretch.ts';
 import { PLAYABLE_STEMS } from '../src/lib/play/types.ts';
+import { wireMediaSession } from '../src/lib/play/background-audio.ts';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
@@ -452,4 +453,56 @@ test('speedLabel: a pill only below 100%', () => {
   assert.equal(speedLabel(0.9), '90%');
   assert.equal(speedLabel(0.75), '75%');
   assert.equal(speedLabel(0.5), null);
+});
+
+// ─── round 2 (review R1 of #383) ────────────────────────────────────────────
+
+test('R2-3: a stretched run says "ended" only after its last latency has been heard; 100% stays synchronous', async () => {
+  const { engine, ctx } = await rig();
+  engine.play();
+  await slowTo(engine, 0.75);
+  for (const s of ctx.live()) s.onended?.();
+  assert.equal(engine.getSnapshot().status, 'playing', 'the tail is still coming out of the pipeline');
+  await new Promise((r) => setTimeout(r, 200)); // > 121 ms
+  assert.equal(engine.getSnapshot().status, 'ended');
+  assert.equal(engine.getSnapshot().positionSec, 60);
+  // A pause inside that window wins; the late 'ended' is dropped.
+  engine.seek(10);
+  engine.play();
+  for (const s of ctx.live()) s.onended?.();
+  engine.pause();
+  await new Promise((r) => setTimeout(r, 200));
+  assert.equal(engine.getSnapshot().status, 'ready');
+  // At 100% (direct path) it is immediate, as before.
+  const b = await rig();
+  b.engine.play();
+  for (const s of b.ctx.live()) s.onended?.();
+  assert.equal(b.engine.getSnapshot().status, 'ended');
+});
+
+function fakeMs() {
+  return { playbackState: 'none', positions: [], setActionHandler() {}, setPositionState(st) { this.positions.push(st); } };
+}
+
+test('R2-2: the lock screen gets the real speed, and the drift check uses it', () => {
+  const ms = fakeMs();
+  let clock = 0;
+  const w = wireMediaSession(
+    { navigator: { mediaSession: ms }, MediaMetadata: class { constructor(i) { Object.assign(this, i); } } },
+    { title: 't', onPlay() {}, onPause() {}, onSeek() {}, getPosition: () => 0, getDuration: () => 100, now: () => clock },
+  );
+  w.update({ status: 'playing', positionSec: 10, durationSec: 100, playbackRate: 0.75 });
+  assert.equal(ms.positions.at(-1).playbackRate, 0.75);
+  // 4 s later at 75% the song moved 3 s: on schedule, nothing re-pushed.
+  clock = 4000;
+  w.update({ status: 'playing', positionSec: 13, durationSec: 100, playbackRate: 0.75 });
+  assert.equal(ms.positions.length, 1);
+  // A speed change is pushed at once.
+  w.update({ status: 'playing', positionSec: 13, durationSec: 100, playbackRate: 1 });
+  assert.equal(ms.positions.at(-1).playbackRate, 1);
+  // No rate in the snapshot reads as 1 (engines without slow-down).
+  const ms2 = fakeMs();
+  const w2 = wireMediaSession({ navigator: { mediaSession: ms2 } }, { title: 't', onPlay() {}, onPause() {}, onSeek() {}, getPosition: () => 0, getDuration: () => 1, now: () => 0 });
+  w2.update({ status: 'playing', positionSec: 1, durationSec: 100 });
+  assert.equal(ms2.positions.at(-1).playbackRate, 1);
 });

@@ -487,6 +487,8 @@ export class WebAudioPlayEngine implements PlayEngine {
   /** Context time until which the previous stretched run may still be draining. */
   private drainUntil = 0;
   private unlinkTimer: ReturnType<typeof setTimeout> | null = null;
+  /** A stretched run's 'ended', held back by the pipeline latency. */
+  private endTimer: ReturnType<typeof setTimeout> | null = null;
 
   private ctx: AudioContext | null = null;
   /** Where every GainNode connects. Created once with the context. */
@@ -1267,10 +1269,23 @@ export class WebAudioPlayEngine implements PlayEngine {
         if (this.disposed || run !== this.runId) return; // our own stop, ignore
         this.voices.delete(name);
         if (this.voices.size > 0) return;
-        this.stopFrameLoop();
-        this.pausedAt = this.durationSec;
-        this.status = 'ended';
-        this.emit();
+        const finish = () => {
+          this.endTimer = null;
+          if (this.disposed || run !== this.runId) return;
+          this.stopFrameLoop();
+          this.pausedAt = this.durationSec;
+          this.status = 'ended';
+          this.emit();
+        };
+        // Through the stretch pipeline the last `latency` of the song is still
+        // to be heard when the sources end. Say 'ended' only once it has been,
+        // so nothing downstream (the phone route pauses its <audio> element on
+        // leaving 'playing') cuts the tail. At 100% this stays synchronous.
+        if (latency > 0) {
+          this.endTimer = setTimeout(finish, Math.ceil(latency * 1000));
+          return;
+        }
+        finish();
       };
       this.voices.set(name, src);
     }
@@ -1284,6 +1299,8 @@ export class WebAudioPlayEngine implements PlayEngine {
   private stopVoices(): void {
     const ctx = this.ctx;
     this.runId++; // invalidate this run's `onended`
+    if (this.endTimer) clearTimeout(this.endTimer);
+    this.endTimer = null;
     this.stopFrameLoop();
     for (const src of Array.from(this.voices.values())) {
       try {

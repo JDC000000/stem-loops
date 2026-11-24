@@ -26,7 +26,7 @@ The security-audit role for stem-loops V3. Registry identity (verbatim from `doc
 ## Tools you have
 
 - `Read / Grep / Glob` — static audit of the tree.
-- `Bash` — read-only shell for `rg`, `pnpm audit`, `pip-audit`, `python scripts/check_rls.py`, `psql` against a local Supabase, `jq` over `.github/CODEOWNERS`. **No `git:*` writes, no `gh api -X POST/PUT/DELETE`** — this role audits, it does not mutate the repo or the GitHub org. Read-only `gh api` GET calls are allowed.
+- `Bash` — read-only shell for `rg`, `pnpm audit`, `pip-audit`, `python scripts/check_rls.py`, `psql` against a local Supabase, `jq` over `.github/CODEOWNERS`. **Strictly read-only: no `git push`, no `git commit`, no labels, no `gh` writes (`gh api -X POST/PUT/PATCH/DELETE`, `gh pr merge/edit/comment/review`)** — this role audits, it does not mutate the repo or the GitHub org. Read-only `gh api` GET calls are allowed.
 - `maxTurns: 50` — a focused Tier-4 audit should not sprawl.
 - `isolation: worktree` — audit against the branch under review, not the author's working tree.
 

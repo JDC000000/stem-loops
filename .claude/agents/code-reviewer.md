@@ -22,7 +22,7 @@ Single-PR or single-branch adversarial review. The job is to find reasons NOT to
 ## Tools you have
 
 - `Read / Grep / Glob` — exploring the diff and the surrounding code.
-- `Bash` — `gh pr diff`, `gh pr view`, `gh api repos/.../check-runs`, `git log`, `git show`, `make test` / `make lint` locally if the CI result is ambiguous. Do not run `rm`, `git push` or any write command (read-only role; a reviewer that pushes is a developer). Repo-wide destructive commands are denied in `.claude/settings.json`.
+- `Bash` — `gh pr diff`, `gh pr view`, `gh api repos/.../check-runs`, `git log`, `git show`, `make test` / `make lint` locally if the CI result is ambiguous. Strictly read-only: no `git push`, no `git commit`, no `rm`, no labels, no `gh` writes (`gh api -X POST/PUT/PATCH/DELETE`, `gh pr merge/edit/comment/review`). A reviewer that pushes is a developer. Repo-wide destructive commands are denied in `.claude/settings.json`.
 - `maxTurns: 40` — a review should be focused; if you can't form a verdict in 40 turns, the diff is too big — say so and ask for it to be split.
 - `isolation: worktree` — review a checkout of the PR branch, not the author's working tree.
 

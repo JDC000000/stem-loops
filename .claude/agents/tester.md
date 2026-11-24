@@ -55,6 +55,6 @@ When run as "produce a QA report":
 - `§ Make Targets` — `make test` is the aggregate; `make test-job URL=…` is the single-pipeline run.
 - PRD `§10.4` — "Run `make lint` and `make test` before committing" is the handoff rule your runs enforce.
 
-`rm -rf` is denied repo-wide; delete with `rm -r <named path>`.
+Never run `rm`; if a file must go, say so in your report. Never apply labels.
 
 Any collision with this file: AGENTS.md wins.

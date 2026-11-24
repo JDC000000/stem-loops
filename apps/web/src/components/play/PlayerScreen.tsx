@@ -19,6 +19,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ChordOverlay, type NowNext } from '@/components/ChordOverlay';
 import { type ChordMode, DEFAULT_CHORD_MODE, readChordMode, writeChordMode } from '@/lib/play/chord-mode';
+import { readTranspose, transposeBadge, writeTranspose } from '@/lib/play/transpose';
+import { TransposeMenuItem } from './TransposeMenuItem';
 import { LIGHT_AUDIO_NOTE } from '@/lib/play/device-support';
 import { songFacts } from '@/lib/play/notation';
 import { type Part, type PresetId, presetOps, readPart, writePart, mixStateLabel } from '@/lib/play/presets';
@@ -47,6 +49,8 @@ import { MixSheet } from './MixSheet';
 import { PartPills } from './PartPills';
 import { Presets } from './Presets';
 import { SectionLoop } from './SectionLoop';
+import { RenameParts } from './RenameParts';
+import { applyPartNames, canRenameParts, collectPartNames, readPartNames, writePartNames, type PartNameMap } from '@/lib/play/part-names';
 import { Sheet } from './Sheet';
 import { Transport } from './Transport';
 import styles from './Player.module.css';
@@ -75,6 +79,8 @@ export const STRIP_HINT_SEEN_KEY = 'sl.play.sectionHintSeen.v1';
 export const DESKTOP_QUERY = '(min-width: 1024px) and (min-height: 500px)';
 /** How long the one-line set-list result ("Added to JAMS.") stays up. */
 export const SET_TOAST_MS = 3000;
+/** Shown when the browser refuses to keep the part names (private mode, full storage). */
+export const PART_NAMES_NOT_SAVED = 'Names not saved: this browser blocked storage.';
 
 /** The `?set=` this page was opened with (a list id or `demo`), or null. Client only. */
 export function readSetParam(search: string | null | undefined): string | null {
@@ -178,7 +184,11 @@ export function PlayerScreen(props: ScreenProps) {
   const sections = useMemo(() => sanitizeRegions(rawSections, snapshot.durationSec || undefined), [rawSections, snapshot.durationSec]);
   // D2: neutral names ("Part 3") + the start time + a cycling colour per section.
   const named = useMemo(() => nameRegions(sections), [sections]);
-  const names = useMemo(() => named.map((n) => n.name), [named]);
+  const defaultNames = useMemo(() => named.map((n) => n.name), [named]);
+  // Phase C C3: custom part names, this device only (lib/play/part-names).
+  const [customNames, setCustomNames] = useState<PartNameMap>({});
+  useEffect(() => setCustomNames(readPartNames(jobId)), [jobId]);
+  const names = useMemo(() => applyPartNames(defaultNames, sections, customNames), [defaultNames, sections, customNames]);
   const times = useMemo(() => named.map((n) => n.time), [named]);
   const tones = useMemo(() => named.map((n) => n.tone), [named]);
   // The run starts from whatever the engine is looping (a gate or a remount may
@@ -294,6 +304,7 @@ export function PlayerScreen(props: ScreenProps) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [chartOpen, setChartOpen] = useState(false);
   const [infoOpen, setInfoOpen] = useState(false);
+  const [renameOpen, setRenameOpen] = useState(false);
   const menuButton = useRef<HTMLButtonElement | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
@@ -327,6 +338,19 @@ export function PlayerScreen(props: ScreenProps) {
     writeChordMode(m);
   };
   const simplify = chordMode === 'simple';
+
+  // ── Capo / transpose (Phase C, C4) ─────────────────────────────────────────
+  // Display only, per job; 0 until the stored choice is read (after mount).
+  // The control shows only when the song has chords (reported by the overlay).
+  const [transpose, setTranspose] = useState(0);
+  useEffect(() => setTranspose(readTranspose(jobId)), [jobId]);
+  const pickTranspose = (n: number) => {
+    setTranspose(n);
+    writeTranspose(jobId, n);
+  };
+  const [hasChords, setHasChords] = useState(false);
+  const onHasChords = useCallback((v: boolean) => setHasChords(v), []);
+  const badge = hasChords ? transposeBadge(transpose) : '';
 
   // ── set lists (#322, Phase B B2) ───────────────────────────────────────────
   // ?set=<id> (read after mount, so the server render and the first client render agree)
@@ -458,8 +482,8 @@ export function PlayerScreen(props: ScreenProps) {
           <h1 className={styles.title} data-testid="player-title">
             {songTitle}
           </h1>
-          {facts || artist ? (
-            <span className={styles.sub}>
+          {facts || artist || badge ? (
+            <span className={badge ? `${styles.sub} ${styles.subWrap}` : styles.sub}>
               {/* Phase A (J3): BPM and key in a 20px chip, readable from a
                   music stand at 70 cm. One source: jobs.bpm / jobs.musical_key. */}
               {facts ? (
@@ -469,6 +493,12 @@ export function PlayerScreen(props: ScreenProps) {
                 </span>
               ) : null}
               {artist ? <span className={styles.artist}>{artist}</span> : null}
+              {/* .subWrap (badge only): when the badge does not fit it takes its own line. */}
+              {badge ? (
+                <span className={styles.capoBadge} data-testid="capo-indicator">
+                  {badge}
+                </span>
+              ) : null}
             </span>
           ) : null}
         </div>
@@ -563,6 +593,7 @@ export function PlayerScreen(props: ScreenProps) {
                   </div>
                 </div>
               ) : null}
+              {hasChords ? <TransposeMenuItem value={transpose} onChange={pickTranspose} /> : null}
               <button
                 type="button"
                 className={styles.menuItem}
@@ -573,6 +604,19 @@ export function PlayerScreen(props: ScreenProps) {
               >
                 Song info
               </button>
+              {canRenameParts(playable, sections.length) ? (
+                <button
+                  type="button"
+                  className={styles.menuItem}
+                  data-testid="menu-rename-parts"
+                  onClick={() => {
+                    setMenuOpen(false);
+                    setRenameOpen(true);
+                  }}
+                >
+                  Rename parts
+                </button>
+              ) : null}
               <SetListMenuItems
                 jobId={jobId}
                 itemClassName={styles.menuItem}
@@ -646,6 +690,9 @@ export function PlayerScreen(props: ScreenProps) {
                 emptyStage={emptyStage}
                 onNowNext={onNowNext}
                 simplify={simplify}
+                transpose={transpose}
+                musicalKey={musicalKey}
+                onHasChords={onHasChords}
                 playing={playing}
               />
             </div>
@@ -763,6 +810,8 @@ export function PlayerScreen(props: ScreenProps) {
             sections={sections}
             loop={snapshot.loop}
             simplify={simplify}
+            transpose={transpose}
+            musicalKey={musicalKey}
             playing={playing}
           />
         </div>
@@ -780,6 +829,23 @@ export function PlayerScreen(props: ScreenProps) {
           {setToast}
         </p>
       ) : null}
+
+      <RenameParts
+        open={renameOpen}
+        onClose={() => setRenameOpen(false)}
+        returnFocus={() => menuButton.current}
+        defaults={defaultNames}
+        current={names}
+        times={times}
+        onSave={(drafts) => {
+          const next = collectPartNames(drafts, sections, defaultNames);
+          const saved = writePartNames(jobId, next);
+          setCustomNames(next);
+          // Quota or private mode: the names show now but will not survive a reload. Say so.
+          if (!saved) setSetToast(PART_NAMES_NOT_SAVED);
+          setRenameOpen(false);
+        }}
+      />
 
       <Sheet open={infoOpen} onClose={() => setInfoOpen(false)} labelledBy="info-title" returnFocus={() => menuButton.current} testId="info-sheet">
         <div className={styles.sheetHead}>

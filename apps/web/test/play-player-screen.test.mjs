@@ -30,9 +30,12 @@ const graph = buildModuleGraph({
         useEffect(() => {
           if (props.onNowNext && globalThis.__nowNext) props.onNowNext(globalThis.__nowNext);
         }, [props.onNowNext]);
+        useEffect(() => {
+          if (props.onHasChords) props.onHasChords(!globalThis.__noChords);
+        }, [props.onHasChords]);
         if (props.view === 'stage' && globalThis.__noChords)
           return typeof props.emptyStage === 'function' ? props.emptyStage(globalThis.__noChordsReason ?? null) : props.emptyStage;
-        return createElement('div', { 'data-testid': 'chord-overlay', 'data-view': String(props.view), 'data-position': String(props.positionSec), 'data-simplify': String(props.simplify), 'data-playing': String(props.playing) });
+        return createElement('div', { 'data-testid': 'chord-overlay', 'data-view': String(props.view), 'data-position': String(props.positionSec), 'data-simplify': String(props.simplify), 'data-transpose': String(props.transpose), 'data-key': String(props.musicalKey), 'data-playing': String(props.playing) });
       };
       export default ChordOverlay;`,
     'lib/play/report-failure.ts': 'export function reportStemFetchFailure() {}',
@@ -176,9 +179,9 @@ test('P1.1: the one-time light-audio note is a dismissible hint, and always live
   });
 });
 
-test('P1.1: viewportFit "cover" is set on /jobs/[id] ONLY', () => {
+test('P1.1: viewportFit "cover" is set on /jobs/[id] and, since #360, the root layout (every page pads by the insets)', () => {
   assert.match(read('src/app/jobs/[id]/page.tsx'), /export const viewport: Viewport = \{ viewportFit: 'cover' \};/);
-  assert.doesNotMatch(read('src/app/layout.tsx'), /viewportFit/);
+  assert.match(read('src/app/layout.tsx'), /viewportFit: 'cover'/);
   assert.doesNotMatch(read('src/app/jobs/layout.tsx'), /viewportFit/);
 });
 
@@ -1040,6 +1043,86 @@ test('stage growth: the ladder and the bars grow only into spare height, never p
 
 
 // ═══ Phase A (2026-11-21) ═════════════════════════════════════════════════════
+
+test('C4: ⋯ → Capo / transpose steps -6..+6, shows a badge, reaches both chord views, is remembered per job', async () => {
+  await withDom(async (dom) => {
+    setMedia(false);
+    const open = async () => {
+      await dom.act(() => dom.find('[data-testid="player-more"]').click());
+    };
+    await dom.mount(React.createElement(Player.PlayerView, viewProps()));
+    assert.equal(dom.find('[data-view="stage"]').dataset.transpose, '0');
+    assert.equal(dom.find('[data-testid="capo-indicator"]'), null, 'no badge at 0');
+    await open();
+    const group = dom.find('[data-testid="transpose-group"]');
+    assert.equal(group.getAttribute('aria-labelledby'), 'player-transpose');
+    assert.equal(dom.find('[data-testid="transpose-value"]').textContent, 'Off');
+    assert.equal(dom.find('[data-testid="transpose-reset"]'), null);
+    // Capo 2 = two steps down
+    await dom.act(() => dom.find('[data-testid="transpose-down"]').click());
+    await dom.act(() => dom.find('[data-testid="transpose-down"]').click());
+    assert.equal(dom.find('[data-view="stage"]').dataset.transpose, '-2');
+    assert.equal(dom.find('[data-view="stage"]').dataset.key, 'A# major', 'the song key is passed for spelling');
+    assert.equal(dom.find('[data-testid="transpose-value"]').textContent, 'Capo 2');
+    assert.equal(dom.find('[data-testid="capo-indicator"]').textContent, 'Capo 2');
+    assert.equal(dom.window.localStorage.getItem('sl.play.transpose.v1.job-1'), '-2');
+    // the "See all chords" sheet gets the same shift
+    await dom.act(() => dom.findAll('button').find((b) => b.textContent === 'See all chords').click());
+    assert.equal(dom.find('[data-view="chart"]').dataset.transpose, '-2');
+    await dom.act(() => dom.find('[data-testid="player-more"]').click());
+    // clamp at both ends
+    for (let i = 0; i < 12; i++) await dom.act(() => dom.find('[data-testid="transpose-down"]').click());
+    assert.equal(dom.find('[data-view="stage"]').dataset.transpose, '-6');
+    assert.equal(dom.find('[data-testid="transpose-down"]').disabled, true);
+    for (let i = 0; i < 12; i++) await dom.act(() => dom.find('[data-testid="transpose-up"]').click());
+    assert.equal(dom.find('[data-view="stage"]').dataset.transpose, '6');
+    assert.equal(dom.find('[data-testid="transpose-up"]').disabled, true);
+    assert.equal(dom.find('[data-testid="capo-indicator"]').textContent, '+6');
+    await dom.act(() => dom.find('[data-testid="transpose-down"]').click());
+    assert.equal(dom.find('[data-testid="transpose-value"]').textContent, '+5 semitones');
+    await dom.unmountAll();
+    // a new visit to this job reads it back; another job is untouched
+    await dom.mount(React.createElement(Player.PlayerView, viewProps()));
+    assert.equal(dom.find('[data-view="stage"]').dataset.transpose, '5');
+    assert.equal(dom.find('[data-testid="capo-indicator"]').textContent, '+5');
+    await dom.unmountAll();
+    await dom.mount(React.createElement(Player.PlayerView, viewProps({ jobId: 'job-2' })));
+    assert.equal(dom.find('[data-view="stage"]').dataset.transpose, '0');
+    await dom.unmountAll();
+    // reset
+    await dom.mount(React.createElement(Player.PlayerView, viewProps()));
+    await open();
+    await dom.act(() => dom.find('[data-testid="transpose-reset"]').click());
+    assert.equal(dom.find('[data-view="stage"]').dataset.transpose, '0');
+    assert.equal(dom.window.localStorage.getItem('sl.play.transpose.v1.job-1'), null);
+    await dom.unmountAll();
+    // a garbage stored value is 0
+    dom.window.localStorage.setItem('sl.play.transpose.v1.job-1', 'junk');
+    await dom.mount(React.createElement(Player.PlayerView, viewProps()));
+    assert.equal(dom.find('[data-view="stage"]').dataset.transpose, '0');
+    await dom.unmountAll();
+  });
+  const css = read('src/components/play/Player.module.css');
+  assert.match(css.match(/\.capoBadge\s*\{([^}]*)\}/)[1], /border-radius:\s*22px;/);
+  assert.doesNotMatch(css.match(/\.capoBadge\s*\{([^}]*)\}/)[1], /accent|chord-now/);
+});
+
+test('C4: a song with no chords has no Capo / transpose control and no badge', async () => {
+  globalThis.__noChords = true;
+  try {
+    await withDom(async (dom) => {
+      setMedia(false);
+      dom.window.localStorage.setItem('sl.play.transpose.v1.job-1', '-2');
+      await dom.mount(React.createElement(Player.PlayerView, viewProps()));
+      await dom.act(() => dom.find('[data-testid="player-more"]').click());
+      assert.equal(dom.find('[data-testid="transpose-group"]'), null);
+      assert.equal(dom.find('[data-testid="capo-indicator"]'), null);
+      await dom.unmountAll();
+    });
+  } finally {
+    delete globalThis.__noChords;
+  }
+});
 
 test('D6: chords are Simple by default; ⋯ → Chords: Simple / Detailed switches both chord views and is remembered', async () => {
   await withDom(async (dom) => {

@@ -17,7 +17,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
 import { SAME_ORIGIN_URL, sameOriginHeaders } from './helpers/same-origin.mjs';
-import { LINK_JOB_URL } from './helpers/create-link-job.mjs';
+import { LINK_JOB_URL, NO_PASTE_HOOKS_URL } from './helpers/create-link-job.mjs';
 
 const WEB = join(dirname(fileURLToPath(import.meta.url)), '..');
 const toJs = (src) =>
@@ -79,6 +79,7 @@ const STUBS = {
   '@/lib/billing/credits': dataUrl(`export const consumeCreditInTx = async () => { throw new Error('credits are never spent on a link'); };`),
   '@/lib/same-origin': SAME_ORIGIN_URL,
   '@/lib/jobs/create-link-job': LINK_JOB_URL,
+  '@/lib/library-server': NO_PASTE_HOOKS_URL, // #372's dedupe hooks: test/jobs-link-dedupe.test.mjs
 };
 
 const ROUTE_JS = toJs(read('app/api/jobs/route.ts')).replace(

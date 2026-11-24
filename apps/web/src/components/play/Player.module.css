@@ -7,7 +7,7 @@
    page, the site nav included (P1.1: the player replaces the site nav with its
    own compact header; signed-in-nav.css hides the bar while it is mounted, so
    the nav is not reachable behind it either). Padded by the safe-area insets
-   (viewportFit 'cover' is set on /jobs/[id] only). */
+   (viewportFit 'cover' is set in the root layout, #360). */
 
 .root {
   position: fixed;
@@ -46,7 +46,8 @@
 
 /* ── compact header (56px) ─────────────────────────────────────────────── */
 .head {
-  height: 56px;
+  min-height: 56px;
+  box-sizing: border-box;
   flex-shrink: 0;
   display: flex;
   align-items: center;
@@ -89,12 +90,22 @@
   margin-top: 2px;
   min-width: 0;
   display: flex;
+  /* No capo/transpose badge: ONE line, the artist is cut with an ellipsis (the
+     pre-PR fixed 56px header). The wrapping variant is .subWrap (badge only). */
+  flex-wrap: nowrap;
   align-items: center;
   gap: 8px;
   font-size: 13px;
   color: var(--text-muted);
   white-space: nowrap;
   overflow: hidden;
+}
+/* Badge present (PR #375 round 4, fixed in C1): items WRAP onto a second line
+   instead of shrinking, so the badge never squeezes the artist; the header
+   grows (min-height). Applied ONLY when the badge is shown. */
+.subWrap {
+  flex-wrap: wrap;
+  row-gap: 2px;
 }
 /* BPM and key at 20px (>= 20px: 25 arcmin cap height at 70 cm), white on the
    page: readable from a music stand. A chip, not a control: no pointer. */
@@ -119,11 +130,14 @@
   text-overflow: ellipsis;
 }
 .artist {
+  /* takes the rest of the line (basis 0); ellipsis when short. No badge: it
+     may shrink to nothing (pre-PR). With the badge: never below 6ch (.subWrap). */
   flex: 1 1 0;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.subWrap .artist { min-width: 6ch; }
 
 .menuWrap { position: relative; flex-shrink: 0; }
 
@@ -219,6 +233,35 @@
 .segment[aria-pressed='true'] {
   background: var(--bg-selected);
   border-color: var(--text-primary);
+}
+
+/* Capo / transpose (Phase C, C4): - value + as 44px pills; the badge in the
+   header is a quiet outline pill (no lime, no amber). */
+.stepper {
+  display: grid;
+  grid-template-columns: var(--touch-min, 44px) 1fr var(--touch-min, 44px);
+  align-items: center;
+  gap: 6px;
+}
+.stepper .segment { padding: 0; }
+.segment:disabled { opacity: 0.4; cursor: default; }
+.stepperValue {
+  text-align: center;
+  font-size: 15px;
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+.capoBadge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 0 10px;
+  border: 1px solid var(--border-control);
+  border-radius: 22px;
+  font-size: 13px;
+  color: var(--text-primary);
+  white-space: nowrap;
+  flex: 0 0 auto;
 }
 
 /* ── the body: the stage takes the remainder ───────────────────────────── */

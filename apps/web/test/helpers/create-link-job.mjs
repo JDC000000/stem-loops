@@ -27,3 +27,14 @@ export const LINK_JOB_URL = 'data:text/javascript;base64,' + Buffer.from(js).toS
 
 /** Matches the route's `from '@/lib/jobs/create-link-job'` import specifier. */
 export const LINK_JOB_IMPORT_RE = /from ['"]@\/lib\/jobs\/create-link-job['"]/g;
+
+// #372: route.ts also imports `pasteHooks` from '@/lib/library-server' (the signed-in paste's
+// dedupe hooks). Contract tests whose subject is NOT the dedupe wire this inert stand-in, so
+// their fake databases see exactly the statements they saw before: no hooks → the lib runs
+// byte-for-byte the B0 path. The dedupe itself is proven against the REAL module by
+// test/jobs-link-dedupe.test.mjs (fakes) and test/jobs-link-dedupe-pg.test.mjs (real Postgres).
+export const NO_PASTE_HOOKS_URL =
+  'data:text/javascript;base64,' + Buffer.from('export const pasteHooks = () => ({});').toString('base64');
+
+/** Matches the route's `from '@/lib/library-server'` import specifier. */
+export const LIBRARY_SERVER_IMPORT_RE = /from ['"]@\/lib\/library-server['"]/g;

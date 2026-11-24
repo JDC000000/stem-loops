@@ -333,6 +333,10 @@ export function ToolForm({ deps = browserDeps }: { deps?: ToolFormDeps } = {}) {
     const base = { isFile, done: null, pct: 0 } as const;
     try {
       let jobId: string;
+      // #372: a signed-in re-paste of a link whose song is already live answers 200
+      // { id, existing: true } (nothing charged). It opens that job like a new one, but it is not
+      // a new song, so `song_added` is not counted for it.
+      let existing = false;
       if (file) {
         const sending = (pct: number) =>
           setPhase({ kind: 'busy', ...base, now: 'sending', pct, label: `Sending file… ${pct}%`, msg: `Sending ${file.name}. Keep this tab open.` });
@@ -357,11 +361,12 @@ export function ToolForm({ deps = browserDeps }: { deps?: ToolFormDeps } = {}) {
         jobId = job.id;
       } else {
         setPhase({ kind: 'busy', ...base, now: null, pct: 100, label: 'Starting…', msg: 'Starting your job…' });
-        const job = await postJson<{ id: string }>('/api/jobs', { url: canonicalUrl, stems: sendStems }, deps.fetch);
+        const job = await postJson<{ id: string; existing?: boolean }>('/api/jobs', { url: canonicalUrl, stems: sendStems }, deps.fetch);
         jobId = job.id;
+        existing = job.existing === true;
       }
       addToHistory(jobId);
-      trackEvent('song_added', { source: isFile ? 'file' : 'link' });
+      if (!existing) trackEvent('song_added', { source: isFile ? 'file' : 'link' });
       setPhase({ kind: 'done', jobId });
       focusNext.current = 'job';
       // Give song_added a bounded moment (≤150 ms) to go out before the page unloads.

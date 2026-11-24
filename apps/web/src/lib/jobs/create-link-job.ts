@@ -711,7 +711,6 @@ async function runMirrorRestore(
         throw new MirrorRefusal(limit());
       }
       const depth = Number(p.retry_depth ?? 0);
-      if (!(depth < RETRY_CAP)) throw new MirrorRefusal(limit());
 
       // 2b. The funding, decided under the debit row's lock (see THE LATE-RESTORE RACE).
       const lockedCharge = mirrorRestoreCharge(lockedRestore ?? null);

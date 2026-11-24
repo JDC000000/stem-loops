@@ -28,7 +28,8 @@
 // drag began (a drag that starts in an edge zone does not scroll at once); the speed is px per
 // second from the rAF timestamps (dt clamped), so 60Hz and 120Hz scroll alike; a scrollBy that
 // throws falls back to the plain scrollBy(x, y) form, so the loop never silently dies; and the
-// bottom zone sits above the iOS home-indicator safe area (env(safe-area-inset-bottom)).
+// bottom zone sits above the iOS home-indicator safe area (env(safe-area-inset-bottom)). The root layout opts in with viewport-fit=cover (#360), so that
+// inset is real on iOS, and the page body pads by it too.
 //
 // A row whose song cannot play says why: "Audio expired" (a link: paste it again and the row
 // plays the new one), "Unavailable" (an upload or a demo song that is gone), "Processing".

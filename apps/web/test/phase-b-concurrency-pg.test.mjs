@@ -13,7 +13,9 @@
 //           and a reorder racing a remove (stale order -> 409, never a gap).
 //   B3 AC4  the cap under concurrency: two retries of a depth-1 parent -> one depth-2 child,
 //           parent.retried_at written once (by the winner's tx); then two retries of that
-//           depth-2 child -> both 429, no depth-3 row.
+//           depth-2 child -> both 429, no depth-3 row. And the lib's under-lock cap alone, with
+//           the route's lock-free cap read raced (#374).
+// Each race also asserts what was spent: jobs, debits, jobs_used, trial songs, burst rows (#374).
 //
 // Every race is real: two requests on two pooled connections, a barrier that holds each one just
 // before the first contended lock until both have arrived, and a third connection that must SEE
@@ -155,6 +157,19 @@ async function sawLockWait(like, ms = 5000) {
 }
 
 /**
+ * `p`, or a rejection with `msg` after `ms`. The timer is always cleared, so a settled race
+ * leaves no 10 s timer keeping the process alive (#374).
+ */
+async function within(p, ms, msg) {
+  let timer;
+  try {
+    return await Promise.race([p, new Promise((_, rej) => { timer = setTimeout(() => rej(new Error(msg)), ms); })]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
  * A two-party barrier on the first contended lock. Each request's statement matching `match` is
  * held until BOTH requests have reached it (so both have passed every lock-free gate), then
  * sent. The first one to get its result back then holds on to its lock while this connection
@@ -170,7 +185,7 @@ function lockBarrier(match, waitLike) {
     if (!match(sql, params)) return run();
     st.arrived += 1;
     if (st.arrived === 2) open();
-    await Promise.race([gate, new Promise((_, rej) => setTimeout(() => rej(new Error('barrier: only one request reached the lock')), 10_000))]);
+    await within(gate, 10_000, 'barrier: only one request reached the lock');
     const r = await run();
     if (first) {
       first = false;
@@ -209,7 +224,8 @@ async function b0Counts(u, url) {
             (SELECT count(*)::int FROM job_allowance_debits WHERE user_id = $1) AS debits,
             (SELECT COALESCE(max(jobs_used), 0)::int FROM entitlements WHERE user_id = $1) AS jobs_used,
             (SELECT COALESCE(max(songs_used), 0)::int FROM trial_grants WHERE user_id = $1) AS songs_used,
-            (SELECT count(*)::int FROM usage_events WHERE user_id = $1) AS usage_rows`,
+            (SELECT count(*)::int FROM usage_events WHERE user_id = $1) AS usage_rows,
+            (SELECT count(*)::int FROM usage_events WHERE user_id = $1 AND kind = 'job_start_attempt') AS burst_rows`,
     [u.user_id, url],
   );
 }
@@ -223,10 +239,16 @@ const ENTRY_WAIT = '%FROM library_entries WHERE id = $1::uuid AND user_id = $2::
 const TRIAL_LOCK = (sql, params) => /pg_advisory_xact_lock/.test(sql) && params?.[0] === 'trial_consume';
 const TRIAL_WAIT = '%pg_advisory_xact_lock%';
 
+// burst_rows (#374): the non-trial branch calls checkBurstLimit BEFORE its tx, so both requests
+// (each proven to reach the entry lock, inside that tx) write one job_start_attempt row: the
+// winner's plus the one extra the D-e concurrent residue allows, never more. The trial branch
+// never calls it (both consumes succeed: TRIAL_SONG_CAP = 3), so it writes none.
+// jobs_used (#374): the trial branch bumps it too (bumpJobsUsed upserts the entitlements row),
+// and the loser's rolled-back tx must not.
 for (const c of [
-  { name: 'Free allowance at exactly 1 song left (4 of 5)', opts: { jobsUsed: 4 }, lock: [ENTRY_LOCK, ENTRY_WAIT], want: { jobs_used: 1, songs_used: 0 } },
-  { name: 'trial', opts: { trial: true }, lock: [TRIAL_LOCK, TRIAL_WAIT], want: { songs_used: 1 } },
-  { name: 'paid (Pro)', opts: { plan: 'pro', jobsUsed: 0 }, lock: [ENTRY_LOCK, ENTRY_WAIT], want: { jobs_used: 1, songs_used: 0 } },
+  { name: 'Free allowance at exactly 1 song left (4 of 5)', opts: { jobsUsed: 4 }, lock: [ENTRY_LOCK, ENTRY_WAIT], want: { jobs_used: 1, songs_used: 0, burst_rows: 2 } },
+  { name: 'trial', opts: { trial: true }, lock: [TRIAL_LOCK, TRIAL_WAIT], want: { jobs_used: 1, songs_used: 1, burst_rows: 0 } },
+  { name: 'paid (Pro)', opts: { plan: 'pro', jobsUsed: 0 }, lock: [ENTRY_LOCK, ENTRY_WAIT], want: { jobs_used: 1, songs_used: 0, burst_rows: 2 } },
 ]) {
   test(`B0 AC3 (${c.name}): two truly concurrent link-job creations, same user + URL -> 1 job, 1 debit, both get its id`, { skip, timeout: 60_000 }, async () => {
     const u = await user(c.opts);
@@ -241,7 +263,7 @@ for (const c of [
     const after = await b0Counts(u, e.url);
     assert.equal(after.jobs - before.jobs, 1, 'exactly one job');
     assert.equal(after.debits - before.debits, 1, 'exactly one job_allowance_debits row');
-    for (const [k, v] of Object.entries(c.want)) assert.equal(after[k] - before[k], v, `${k} charged exactly once`);
+    for (const [k, v] of Object.entries(c.want)) assert.equal(after[k] - before[k], v, `${k}: delta must be exactly ${v}`);
     assert.ok(b.sawWait, 'the loser was SEEN waiting on the lock (pg_stat_activity): the race was real');
   });
 }
@@ -253,7 +275,7 @@ test('B0 AC3: sequential double tap at exactly 1 song left -> 201, then 200 with
   const t1 = await remakeOf(e);
   assert.equal(t1.status, 201, JSON.stringify(t1.body));
   const mid = await b0Counts(u, e.url);
-  assert.deepEqual({ ...mid, usage_rows: 0 }, { jobs: 1, debits: 1, jobs_used: 5, songs_used: 0, usage_rows: 0 });
+  assert.deepEqual({ ...mid, usage_rows: 0 }, { jobs: 1, debits: 1, jobs_used: 5, songs_used: 0, usage_rows: 0, burst_rows: 1 });
   // Count every statement tap 2 sends inside a transaction: there must be none.
   const txStatements = [];
   const t2 = await withHook((sql, p, run) => { txStatements.push(sql); return run(); }, () => remakeOf(e));
@@ -307,8 +329,7 @@ function holdFirst(holdAt) {
     }
     return out;
   };
-  const timeout = (p, what) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error(`never reached: ${what}`)), 10_000))]);
-  return { onQuery, release: () => release(), started: () => timeout(started, holdAt) };
+  return { onQuery, release: () => release(), started: () => within(started, 10_000, `never reached: ${holdAt}`) };
 }
 
 test('B2 AC4: two concurrent 50-item reorders, the second SEEN waiting on the list lock -> final = exactly one order, positions 0..49', { skip, timeout: 120_000 }, async () => {
@@ -384,11 +405,20 @@ const retryPost = (id) => retry.POST(req({}, `/api/jobs/${id}/retry`), { params:
 const PARENT_LOCK = (sql) => /FROM jobs WHERE id = \$1::uuid/.test(sql) && /retry_depth, retried_at/.test(sql);
 const PARENT_WAIT = '%retry_depth, retried_at%FOR UPDATE%';
 const MARK_RETRIED = /UPDATE jobs SET retried_at = now\(\)/;
+// What a retry may have written for this user (#374): allowance debits, the jobs_used counter
+// (no entitlements row = 0) and burst rows (checkBurstLimit's job_start_attempt events).
+const b3Counts = (uid) => one(
+  `SELECT (SELECT count(*)::int FROM job_allowance_debits WHERE user_id = $1) AS debits,
+          (SELECT COALESCE(max(jobs_used), 0)::int FROM entitlements WHERE user_id = $1) AS jobs_used,
+          (SELECT count(*)::int FROM usage_events WHERE user_id = $1 AND kind = 'job_start_attempt') AS burst_rows`,
+  [uid],
+);
 
 test('B3 AC4: two concurrent retries of a depth-1 parent -> 1 child at depth 2, retried_at written once; its retries -> 429, never depth 3', { skip, timeout: 60_000 }, async () => {
   const u = await user();
   as(u);
   const p = await failedJob(u.user_id, 1);
+  const before = await b3Counts(u.user_id);
   const b = lockBarrier(PARENT_LOCK, PARENT_WAIT);
   let marks = 0;
   const onQuery = async (sql, params, run) => {
@@ -409,14 +439,59 @@ test('B3 AC4: two concurrent retries of a depth-1 parent -> 1 child at depth 2, 
   assert.ok(parent.retried_at, 'the parent is marked retried');
   assert.equal(parent.retried_at.getTime(), children[0].created_at.getTime(), "retried_at is the winner's transaction time (set once, by it)");
   assert.ok(b.sawWait, 'the loser was SEEN waiting on the parent row lock');
+  // A free retry (the parent has no job_allowance_debits row: nothing was given back) spends
+  // nothing, for the winner or the loser (#374). Both passed the burst limit (each reached the
+  // parent lock, after it), so each wrote exactly one burst row.
+  const mid = await b3Counts(u.user_id);
+  assert.equal(mid.debits - before.debits, 0, 'a free retry writes no job_allowance_debits row');
+  assert.equal(mid.jobs_used, before.jobs_used, 'a free retry leaves jobs_used unchanged');
+  assert.equal(mid.burst_rows - before.burst_rows, 2, 'one burst row per Try again tap, two taps');
 
   // The depth-2 child fails too: two concurrent retries of it are both refused, no depth 3.
   await pool.query(`UPDATE jobs SET status = 'failed', error_code = 'FETCH_PROXY_FAILED', attempts = 1 WHERE id = $1`, [children[0].id]);
   as(u);
   const capped = await Promise.all([retryPost(children[0].id), retryPost(children[0].id)]);
   for (const r of capped) assert.deepEqual([r.status, r.body.error_code], [429, 'RETRY_LIMIT'], JSON.stringify(r.body));
+  // The ROUTE's cap (decideRetry cap_reached) answered both, before the lib: no burst row, no
+  // write at all (#374). Without it the lib's under-lock cap would still say 429, but only after
+  // checkBurstLimit had written a row per tap, so this is what pins the route's check.
+  assert.deepEqual(await b3Counts(u.user_id), mid, "the route's cap refused before the burst limit: nothing written");
   assert.equal((await one('SELECT count(*)::int AS n FROM jobs WHERE retry_of = $1', [children[0].id])).n, 0);
   assert.equal((await one('SELECT max(retry_depth)::int AS d FROM jobs WHERE user_id = $1', [u.user_id])).d, 2, 'retry_depth never > 2');
   assert.equal((await one('SELECT retried_at FROM jobs WHERE id = $1', [children[0].id])).retried_at, null, 'a refused retry marks nothing');
   assert.equal((await one('SELECT retried_at FROM jobs WHERE id = $1', [p])).retried_at.getTime(), parent.retried_at.getTime(), "the parent's retried_at is unchanged");
+});
+
+// The lib's UNDER-LOCK cap on its own (#374). The route's decideRetry reads the parent lock-free
+// and, at depth 2, answers 429 before the lib runs, so the test above cannot tell whether the
+// lib's own `depth < RETRY_CAP` check (under the parent's FOR UPDATE) exists. Here the route is
+// RACED: it reads the parent at depth 1 (eligible), and the parent reaches depth 2 (a committed
+// write on another connection) after that read and before the lib's parent lock. Only the lib's
+// check stands between this request and a depth-3 child, so dropping it alone turns the 429 into
+// a 500 (jobs_retry_depth_range CHECK) or a depth-3 row; dropping the route's check alone fails
+// the burst-row assertion in the test above.
+test("B3 AC4: the lib's under-lock cap holds when the route's cap read is raced -> 429 RETRY_LIMIT, no child, nothing marked", { skip, timeout: 60_000 }, async () => {
+  const u = await user();
+  as(u);
+  const p = await failedJob(u.user_id, 1);
+  const before = await b3Counts(u.user_id);
+  let raced = 0;
+  const onQuery = async (sql, params, run) => {
+    if (PARENT_LOCK(sql) && raced === 0) {
+      raced += 1;
+      // The parent is not locked yet (a free retry: no debit row, so nothing before this lock).
+      await pool.query('UPDATE jobs SET retry_depth = 2 WHERE id = $1', [p]);
+    }
+    return run();
+  };
+  const r = await withHook(onQuery, () => retryPost(p));
+  assert.equal(raced, 1, "the route's lock-free checks passed at depth 1 and the lib reached the parent lock");
+  assert.deepEqual([r.status, r.body.error_code], [429, 'RETRY_LIMIT'], JSON.stringify(r.body));
+  assert.equal((await one('SELECT count(*)::int AS n FROM jobs WHERE retry_of = $1', [p])).n, 0, 'no child job');
+  assert.equal((await one('SELECT max(retry_depth)::int AS d FROM jobs WHERE user_id = $1', [u.user_id])).d, 2, 'retry_depth never > 2');
+  assert.equal((await one('SELECT retried_at FROM jobs WHERE id = $1', [p])).retried_at, null, 'a refused retry marks nothing');
+  const after = await b3Counts(u.user_id);
+  assert.equal(after.debits - before.debits, 0, 'no debit row');
+  assert.equal(after.jobs_used, before.jobs_used, 'jobs_used unchanged');
+  assert.equal(after.burst_rows - before.burst_rows, 1, 'the request got past the route (its one burst row) and was refused by the lib');
 });

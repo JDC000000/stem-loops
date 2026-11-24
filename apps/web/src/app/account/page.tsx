@@ -58,7 +58,7 @@ export default async function AccountPage() {
   });
 
   return (
-    <main style={{ minHeight: '100dvh', padding: '24px 16px', maxWidth: 720, margin: '0 auto', boxSizing: 'border-box' }}>
+    <main style={{ minHeight: 'var(--page-min-h)', padding: '24px 16px', maxWidth: 720, margin: '0 auto', boxSizing: 'border-box' }}>
       <h1 style={{ fontSize: 'var(--text-2xl)', margin: 0, color: 'var(--text-primary)' }}>Account</h1>
       <p style={{ ...muted, overflowWrap: 'anywhere' }}>{user.display_name ? `${user.display_name} · ` : ''}{user.email}</p>
 

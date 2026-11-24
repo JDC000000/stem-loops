@@ -1,4 +1,4 @@
-# or4-merge.sh — orchestrator merge gate (OR-4 v3.5.1, §11 R6)
+# or4-merge.sh — orchestrator merge gate (OR-4 v3.6, §11 R6)
 
 **One gate for both sessions.** 19A (agentic/ops) and 19B (product) both merge through this script. v3.5 replaces 19A's v3.4
 (#382) and 19B's v3.4-R2 (#385, Jon approved the design 2026-11-23 23:29Z, "structurally solve" merge contention). Do not run a
@@ -11,7 +11,8 @@ loosening changes are HELD for Jon (AGENTS.md M-8). When in doubt whether a chan
 | v3.4 | main, #382 (19A) | 1..20 behind for ANY PR if file-disjoint and no hot file | snapshot pin every run; `OR4_REPO` only in test mode |
 | v3.4-R2 | 19B local copy, #385 | opt-in `ALLOW_BEHIND=1`; non-protected only; ≤ 5; no overlap; no coupled file; no main deletions/renames | `branches/v3/main` re-checked right before the PUT |
 | v3.5 | main | strictest union of both (below) | + #384: git env scrub, `git replace` refs FAIL, `OR4_REPO` guard tested for rc and zero network calls |
-| **v3.5.1** | **main (this)** | unchanged from v3.5 | **tightening only** (#391, #393): strict `DRY_RUN`/`ALLOW_BEHIND`; PUT `sha=<head>` and pre-PUT main-moved tests; gate text names the `JON_ROW` ledger row |
+| v3.5.1 | main | unchanged from v3.5 | **tightening only** (#391, #393): strict `DRY_RUN`/`ALLOW_BEHIND`; PUT `sha=<head>` and pre-PUT main-moved tests; gate text names the `JON_ROW` ledger row |
+| **v3.6** | **this branch** | unchanged | **tightening only** (D-7, #396): money class (marker >= 93 + `SCORES:` line 2); protected needs two review files; merge-tail fails closed |
 
 The orchestrator's merge gate. It squash-merges a PR **only** if every check below
 passes; otherwise it prints each `FAIL:` line and exits 1 without merging. It is
@@ -22,7 +23,7 @@ the scripted counterpart to Jon's `scripts/safe_merge.sh`; never use a bare
 
 ```sh
 DRY_RUN=1 scripts/or4-merge.sh <pr> <review-file> <reviewed-sha>   # ALWAYS run this first: every check, never merges
-scripts/or4-merge.sh <pr> <review-file> <reviewed-sha>             # real merge, only after a clean dry run
+scripts/or4-merge.sh <pr> <review-file> <reviewed-sha> [<review-file-2>]   # real merge, only after a clean dry run
 JON_ROW=95 JON_PR=<pr> scripts/or4-merge.sh ...                    # protected PRs only (D-6 standing approval row), see below
 ALLOW_BEHIND=1 DRY_RUN=1 scripts/or4-merge.sh ...                  # allow a NON-protected PR 1..5 behind (see check 4)
 ```
@@ -30,6 +31,7 @@ ALLOW_BEHIND=1 DRY_RUN=1 scripts/or4-merge.sh ...                  # allow a NON
 - `<pr>` — numeric PR number on `JDC000000/stem-loops`.
 - `<review-file>` — local path to the reviewer's write-up.
 - `<reviewed-sha>` — the full commit SHA the reviewer actually reviewed.
+- `<review-file-2>` — (v3.6) 4th positional arg (no env var): REQUIRED for protected PRs; see below.
 
 Exit 0 = merged (or, under `DRY_RUN=1`, would merge). Exit 1 = refused.
 The script fetches into the main clone at `/home/claude/stem-loops`.
@@ -62,6 +64,21 @@ The script fetches into the main clone at `/home/claude/stem-loops`.
   snapshot and the pre-PUT re-check must print `FAIL: main moved; re-run`, exit 1 and issue no PUT.
 - **Gate text (#393).** The header and the protected-PR FAIL message now say `JON_ROW = ledger row of the approval (D-6 standing row 95 for self-approved merges, per AGENTS.md M-8)`.
   Text only: the check is unchanged (numeric `JON_ROW`, `JON_PR` equal to the PR).
+
+## v3.6 (tightening only; no check removed or loosened)
+
+- **Money class (D-7).** A PR is *money* if a changed path matches `MONEY_RE` (billing, stripe, entitlement, auth/authz/oauth, webhook, `api/jobs`, job
+  creation/admission, admission, upload, retention, spend, replicate, klangio, pricing; case-insensitive), or its title has `[billing]` or a label contains
+  `needs-jon-approval` (both read with `jq`; an unreadable or unparsable PR = money, fail closed). For every review file the gate sees, a money PR needs the
+  marker score **>= 93** and **line 2 exactly** `SCORES: M-9 <n> M-11 <n>` (both integers 93-100, no extra text, no CRLF). Free-text or table scores, or the line
+  anywhere else, do not count. Money alone does not add the `JON_ROW` requirement (that stays tied to the protected class).
+- **Two reviews for protected PRs.** The second review file is the **4th positional argument** (not an env var). Both need a valid PASS marker at the same
+  `<reviewed-sha>` and must name it; they must be different files (not the same path or a hard/symlink) and not byte-identical. Non-protected PRs still need one.
+  A money+protected PR needs `SCORES` in both.
+- **Merge tail (#396).** The pre-PUT main re-check fails closed on any `gh` error (`FAIL: cannot re-read v3/main`, no PUT). A PUT error exits 1 with
+  `FAIL: merge PUT failed, NOT merged: <gh output>`, and a PUT response without `merged=true` exits 1. After the PUT the PR is re-read: a `gh` error or a null/empty
+  `merged_at` exits 1.
+- **Not enforced (process):** that the reviewers are on different models, or that the second file is really a second reviewer's work; byte-difference only stops copies.
 
 ## Behind guard and `ALLOW_BEHIND` (v3.5)
 

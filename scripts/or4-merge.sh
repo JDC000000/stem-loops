@@ -42,7 +42,7 @@ protected_decision() {
 # names), unquoted. rc 0 only if git succeeded AND the list is non-empty (fail closed).
 list_changed() { [ -n "$2" ] && git -C "$1" -c core.quotePath=false diff --no-renames --name-only -z "$2" "$3" >"$4" 2>/dev/null && [ -s "$4" ]; }
 # v3.4: HOT_RE = files where a textual merge can succeed but the result is still semantically stale/unsafe.
-HOT_RE='(^|/)(pnpm-lock\.yaml|package-lock\.json|yarn\.lock|uv\.lock|poetry\.lock|Cargo\.lock|package\.json|AGENTS\.md|CODEOWNERS|pnpm-workspace\.yaml)$|(^|/)migrations/|^\.github/workflows/|(^|/)tsconfig[^/]*\.json$|(^|/)next\.config\.[^/]*$'
+HOT_RE='(^|/)(pnpm-lock\.yaml|package-lock\.json|yarn\.lock|uv\.lock|poetry\.lock|Cargo\.lock|package\.json|AGENTS\.md|CODEOWNERS|pnpm-workspace\.yaml|constraints[^/]*\.txt|requirements[^/]*\.txt|pyproject\.toml|\.npmrc|\.nvmrc|turbo\.json|Dockerfile[^/]*|fly\.toml|docker-compose[^/]*\.ya?ml|Makefile|\.eslintrc[^/]*)$|^packages/types/(schema/contract\.schema\.json|src/generated\.ts)$|(^|/)migrations/|^\.github/workflows/|(^|/)tsconfig[^/]*\.json$|(^|/)next\.config\.[^/]*$'
 # overlap_decision <behind_by> <pr-files> <main-files>: files are NUL-separated lists (main-files = changed on v3/main since the
 # PR's merge-base). rc 0 = pass. behind==0 passes; non-numeric, >20, empty/missing list when behind, overlap or any hot file FAIL.
 overlap_decision() {
@@ -57,11 +57,26 @@ overlap_decision() {
   echo "behind_by=$bb: no file overlap, no hot file -> ok"
   return 0
 }
+# overlap_gate <repo> <merge-base> <behind_by> <api_base_sha> <api_merge_base_sha> <pr-files>: call-site wiring (v3.4 R2), sourced so
+# tests reach it. Pins the API compare to the local snapshot (main moved during gate => FAIL), lists main-side files (fail closed),
+# then overlap_decision. rc 0 = pass.
+overlap_gate() {
+  local repo=$1 mb=$2 bb=$3 abase=$4 amb=$5 pf=$6 ml lm rc
+  [[ "$bb" =~ ^[0-9]+$ ]] || { overlap_decision "$bb" "$pf" /dev/null; return; }
+  [ "$bb" -eq 0 ] && return 0
+  lm=$(git -C "$repo" rev-parse origin/v3/main 2>/dev/null)
+  { [ -n "$lm" ] && [ -n "$mb" ] && [ "$abase" = "$lm" ] && [ "$amb" = "$mb" ]; } \
+    || { echo "FAIL: main moved during gate (api base=$abase local=$lm; api merge-base=$amb local=$mb); re-run"; return 1; }
+  ml=$(mktemp) || return 1
+  list_changed "$repo" "$mb" origin/v3/main "$ml" || : >"$ml"
+  overlap_decision "$bb" "$pf" "$ml"; rc=$?
+  rm -f "$ml"; return $rc
+}
 if [ "${OR4_LIB:-0}" = 1 ]; then
   return 0 2>/dev/null
   echo "OR4_LIB set: library mode, NOT a merge" >&2; exit 2
 fi
-PR=$1; REVIEW=$2; REVIEWED=$3; R=repos/JDC000000/stem-loops; REPO=/home/claude/stem-loops; fail=0
+PR=$1; REVIEW=$2; REVIEWED=$3; R=repos/JDC000000/stem-loops; REPO=${OR4_REPO:-/home/claude/stem-loops}; fail=0
 [[ "$PR" =~ ^[0-9]+$ ]] || { echo "FAIL: PR not numeric"; exit 1; }
 H=$(gh api $R/pulls/$PR --jq .head.sha) || { echo "FAIL: cannot read PR"; exit 1; }
 echo "head=$H reviewed=$REVIEWED"
@@ -79,7 +94,9 @@ pid() { local mb; mb=$(git -C $REPO merge-base origin/v3/main "$1" 2>/dev/null) 
 a=$(pid "$REVIEWED") || a=""; b=$(pid "$H") || b=""
 EMPTY=$(printf '' | sha256sum | cut -c1-16); echo "pr-content reviewed=$a head=$b"
 { [ -n "$a" ] && [ "$a" != "$EMPTY" ] && [ "$a" = "$b" ]; } || { echo "FAIL: PR content at head ≠ reviewed (or not computable)"; fail=1; }
-bb=$(gh api $R/compare/v3/main...$H --jq .behind_by) || bb=""
+# v3.4 R2: one compare call returns behind_by plus the base/merge-base it was computed against (pinned in overlap_gate).
+cmp=$(gh api $R/compare/v3/main...$H --jq '[.behind_by,.base_commit.sha,.merge_base_commit.sha]|@tsv') || cmp=""
+IFS=$'\t' read -r bb abase amb <<<"$cmp"
 d=$(gh api $R/pulls/$PR --jq .draft); [ "$d" = false ] || { echo "FAIL: draft"; fail=1; }
 l=$(gh api $R/pulls/$PR --jq '[.labels[].name]|join(",")') || { echo "FAIL: cannot read PR labels"; fail=1; l=""; }; echo "labels=$l"
 echo "$l" | grep -qE "fast-path|rollback-safe|adversarial-reviewed" && { echo "FAIL: merge-bot label present"; fail=1; }
@@ -93,10 +110,8 @@ else
   echo "FAIL: cannot list PR changed files (merge-base/diff failed or empty)"; fail=1; prot=""
 fi
 protected_decision "$l" "$T" "$prot" "$PR" || fail=1
-# v3.4: overlap guard (replaces behind_by==0). main-side listing only needed when behind; list_changed fails closed.
-ml=$(mktemp); trap 'rm -f "$fl" "$ml"' EXIT
-if [[ "$bb" =~ ^[1-9][0-9]*$ ]]; then list_changed "$REPO" "$mb" origin/v3/main "$ml" || : >"$ml"; fi
-overlap_decision "$bb" "$fl" "$ml" || fail=1
+# v3.4: overlap guard (replaces behind_by==0); see overlap_gate.
+overlap_gate "$REPO" "$mb" "$bb" "$abase" "$amb" "$fl" || fail=1
 n=$(gh api "$R/commits/$H/check-runs?per_page=100" --jq '[.check_runs[]|select(.conclusion!="success" and .conclusion!="skipped")]|length')
 [ "$n" = 0 ] || { echo "FAIL: $n checks not success/skipped"; fail=1; }
 t=$(gh api "$R/commits/$H/check-runs?per_page=100" --jq '.total_count'); [ "${t:-0}" -ge 10 ] || { echo "FAIL: only ${t:-0} check-runs registered (need ≥10)"; fail=1; }

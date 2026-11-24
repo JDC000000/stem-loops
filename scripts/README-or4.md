@@ -42,7 +42,13 @@ Jon turned off "require branches up to date" on ruleset 26478884 (2026-11-23 16:
 the gate no longer forces update-branch + a full CI rerun after every merge. Hot files (`HOT_RE` in `or4-merge.sh`, any depth,
 case-insensitive): lockfiles (`pnpm-lock.yaml`, `package-lock.json`, `yarn.lock`, `uv.lock`, `poetry.lock`, `Cargo.lock`), any
 `package.json`, any `migrations/` path, `AGENTS.md`, `CODEOWNERS`, `.github/workflows/**`, `tsconfig*.json`, `next.config.*`,
-`pnpm-workspace.yaml`. A hot file changed on either side forces update-branch even without overlap.
+`pnpm-workspace.yaml`, Python pins (`constraints*.txt` e.g. `apps/worker/constraints-prod.txt`, `requirements*.txt`, `pyproject.toml`),
+`.npmrc`, `.nvmrc`, `turbo.json`, `Dockerfile*`, `fly.toml`, `docker-compose*.yml`, `Makefile`, `.eslintrc*`, and the generated
+types pair `packages/types/schema/contract.schema.json` + `packages/types/src/generated.ts`.
+
+**Snapshot pin (R2):** one `compare` call returns `behind_by`, `base_commit.sha` and `merge_base_commit.sha`. When behind, the gate FAILS
+(`main moved during gate; re-run`) unless the base equals the local `origin/v3/main` and the merge-base equals the `$mb` used for the file
+listings. The gate-to-PUT window (seconds) remains a residual. A hot file changed on either side forces update-branch even without overlap.
 
 **Residual risk:** a semantic conflict with no file overlap (PR A changes a function's contract, PR B calls it from another
 file) can still land. The backstop is v3/main push CI (M-5: main red means all merges stop). Checks 7, 9, 10, 3 and the
@@ -68,7 +74,7 @@ itself; never set them without Jon's named approval, and unset them after the ru
 
 ## Tests
 
-`python3 -m unittest scripts/test_or4_merge.py` (offline, no `gh`/network). Also covers `overlap_decision` (disjoint pass, overlap, hot file on either side, listing failure, behind 21, renames). It sources `or4-merge.sh` with
+`python3 -m unittest scripts/test_or4_merge.py` (offline, no `gh`/network). Also covers `overlap_decision` (disjoint pass, overlap, hot file on either side, listing failure, behind 21, renames) plus end-to-end `GateWiring` tests that run the script (`DRY_RUN=1`, `OR4_REPO` temp clone, PATH-shimmed `gh`) to cover the call-site wiring and the snapshot pin. It sources `or4-merge.sh` with
 `OR4_LIB=1`, which defines `PROTECTED_RE` and `marker_ok` and returns before any network call, so the
 tests exercise the script's own definitions: the protected-path regex (35 protected paths, 6 ordinary), the protected decision with stubbed inputs
 (JON_ROW/JON_PR/label/title/paths), rename and non-ASCII regressions in a temp git repo, fail-closed listing, and

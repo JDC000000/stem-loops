@@ -128,7 +128,11 @@ class OverlapGuard(unittest.TestCase):
         hot = ["pnpm-lock.yaml", "apps/web/package-lock.json", "yarn.lock", "apps/worker/uv.lock", "poetry.lock", "Cargo.lock",
                "package.json", "apps/web/package.json", "apps/worker/migrations/035_x.sql", "AGENTS.md", ".github/CODEOWNERS",
                "CODEOWNERS", ".github/workflows/ci.yml", "tsconfig.json", "apps/web/tsconfig.build.json", "apps/web/next.config.mjs",
-               "pnpm-workspace.yaml", "APPS/WEB/PACKAGE.JSON"]
+               "pnpm-workspace.yaml", "APPS/WEB/PACKAGE.JSON",
+               "apps/worker/constraints-prod.txt", "apps/worker/requirements.txt", "apps/worker/requirements-dev.txt",
+               "apps/worker/pyproject.toml", "apps/training/pyproject.toml", ".npmrc", ".nvmrc", "turbo.json",
+               "apps/worker/Dockerfile", "apps/web/Dockerfile.prod", "apps/worker/fly.toml", "docker-compose.yml", "Makefile",
+               "apps/web/.eslintrc.json", "packages/types/schema/contract.schema.json", "packages/types/src/generated.ts"]
         for h in hot:
             with self.subTest(h=h, side="pr"):
                 self.assertEqual(overlap(1, [h, "ok.ts"], ["other.ts"]).returncode, 1)
@@ -137,7 +141,7 @@ class OverlapGuard(unittest.TestCase):
 
     def test_non_hot_lookalikes_pass(self):
         for f in ["docs/package.json.md", "apps/web/src/tsconfig-notes.md", "my-pnpm-lock.yaml.txt", ".github/ISSUE_TEMPLATE/a.md",
-                  "apps/web/next-config.ts", "docs/migrations.md"]:
+                  "apps/web/next-config.ts", "docs/migrations.md", "docs/Makefile.md", "docs/requirements.md", "packages/types/src/other.ts"]:
             with self.subTest(f=f):
                 self.assertEqual(overlap(1, [f], ["other.ts"]).returncode, 0, f)
 
@@ -175,6 +179,90 @@ class OverlapGuard(unittest.TestCase):
             self.assertEqual(overlap(1, ["src/old.ts"], ["src/old.ts", "src/new.ts"]).returncode, 1)
             self.assertEqual(overlap(1, ["src/new.ts"], ["src/old.ts", "src/new.ts"]).returncode, 1)
             self.assertEqual(overlap(1, ["keep.ts"], ["src/old.ts", "src/new.ts"]).returncode, 0)
+
+
+def _git_out(cwd, *a):
+    return subprocess.run(["git", "-C", cwd, *a], check=True, capture_output=True, text=True).stdout.strip()
+
+
+class GateWiring(unittest.TestCase):
+    """End-to-end: the real script (DRY_RUN=1) against a temp origin/clone with a PATH-shimmed gh, so the call-site
+    wiring (compare pinning, main-side listing, fail-closed) is exercised, not just overlap_decision."""
+    PR = "7"
+
+    def run_gate(self, main_files, behind=None, abase=None, amb=None):
+        with tempfile.TemporaryDirectory() as t:
+            origin, clone, wd = (os.path.join(t, x) for x in ("origin.git", "clone", "work"))
+            os.makedirs(wd); subprocess.run(["git", "init", "-q", "--bare", "-b", "v3/main", origin], check=True)
+            git(wd, "init", "-q", "-b", "v3/main")
+            put(os.path.join(wd, "base.txt"), "x\n" * 20); git(wd, "add", "-A"); git(wd, "commit", "-qm", "base")
+            base = _git_out(wd, "rev-parse", "HEAD")
+            git(wd, "checkout", "-q", "-b", "pr"); put(os.path.join(wd, "pr.txt"), "p\n"); git(wd, "add", "-A"); git(wd, "commit", "-qm", "pr")
+            head = _git_out(wd, "rev-parse", "HEAD")
+            git(wd, "checkout", "-q", "v3/main")
+            for f in main_files:
+                os.makedirs(os.path.dirname(os.path.join(wd, f)), exist_ok=True)
+                put(os.path.join(wd, f), "m\n"); git(wd, "add", "-A"); git(wd, "commit", "-qm", "main " + f)
+            main = _git_out(wd, "rev-parse", "HEAD")
+            git(wd, "push", "-q", origin, "v3/main:refs/heads/v3/main", f"{head}:refs/pull/{self.PR}/head")
+            subprocess.run(["git", "clone", "-q", "--no-local", "file://" + origin, clone], check=True, capture_output=True)
+            # the clone is made BEFORE the gate fetches the PR ref, like the real clone
+            n = len(main_files) if behind is None else behind
+            cmp_out = f"{n}\t{abase or main}\t{amb or base}"
+            shim = os.path.join(t, "bin"); os.makedirs(shim)
+            put(os.path.join(shim, "gh"), f'''#!/bin/bash
+a="$*"
+case "$a" in
+  *compare/*) printf '%s\\n' "$SHIM_CMP";;
+  *.head.sha*) echo "$SHIM_H";;
+  *.draft*) echo false;;
+  *labels*) echo "";;
+  *.title*) echo "t";;
+  *total_count*) echo 12;;
+  *check_runs*) echo 0;;
+  */status*) echo 0;;
+  *) echo "unexpected gh $a" >&2; exit 1;;
+esac
+''')
+            os.chmod(os.path.join(shim, "gh"), 0o755)
+            rv = os.path.join(t, "review.md"); put(rv, f"VERDICT: PASS 95 HEAD {head[:7]}\n")
+            env = dict(os.environ, PATH=shim + ":" + os.environ["PATH"], OR4_REPO=clone, DRY_RUN="1", SHIM_H=head, SHIM_CMP=cmp_out)
+            for k in ("JON_ROW", "JON_PR", "OR4_LIB"):
+                env.pop(k, None)
+            return subprocess.run(["bash", SCRIPT, self.PR, rv, head], capture_output=True, text=True, env=env), main, base
+
+    def test_disjoint_behind_passes(self):
+        r, _, _ = self.run_gate(["m1.txt"])
+        self.assertIn("DRY_RUN fail=0", r.stdout, r.stdout + r.stderr)
+
+    def test_overlap_and_hot_on_main_fail(self):
+        for f in ("pr.txt", "package.json", "apps/worker/constraints-prod.txt"):
+            with self.subTest(f=f):
+                r, _, _ = self.run_gate([f])
+                self.assertIn("DRY_RUN fail=1", r.stdout, r.stdout)
+                self.assertIn("overlap/hot file: update-branch first", r.stdout)
+
+    def test_main_listing_failure_not_swallowed(self):
+        # api says behind=1 but local origin/v3/main has nothing since merge-base: empty main listing must FAIL (M12)
+        r, main, base = self.run_gate([], behind=1, abase=None, amb=None)
+        self.assertEqual(main, base)
+        self.assertIn("DRY_RUN fail=1", r.stdout, r.stdout)
+
+    def test_main_moved_during_gate_fails(self):
+        r, _, _ = self.run_gate(["m1.txt"], abase="0" * 40)
+        self.assertIn("DRY_RUN fail=1", r.stdout); self.assertIn("main moved during gate", r.stdout)
+        r, _, _ = self.run_gate(["m1.txt"], amb="1" * 40)
+        self.assertIn("DRY_RUN fail=1", r.stdout); self.assertIn("main moved during gate", r.stdout)
+
+    def test_behind_21_and_garbage_fail(self):
+        r, _, _ = self.run_gate(["m1.txt"], behind=21)
+        self.assertIn("DRY_RUN fail=1", r.stdout); self.assertIn("stale", r.stdout)
+        r, _, _ = self.run_gate(["m1.txt"], behind="x")
+        self.assertIn("DRY_RUN fail=1", r.stdout)
+
+    def test_not_behind_passes(self):
+        r, _, _ = self.run_gate([])
+        self.assertIn("DRY_RUN fail=0", r.stdout, r.stdout + r.stderr)
 
 
 class ChangedFiles(unittest.TestCase):

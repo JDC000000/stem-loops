@@ -1,135 +1,71 @@
 ---
 name: parallel-work-rules
-version: v3.4.3
+version: v3.5
 date: 2026-11-24
-author: session 18 orchestrator (Claude Opus 5.5), reconciling PR #356's v3.3 (another session) with S18 evidence and Jon's S18 decisions
-supersedes: claude/parallel-work-rules.md v3.3 (PR #356, unmerged). When #356 merges, a follow-up PR replaces its file with this text.
+author: session 19A orchestrator (Claude Opus 5.5)
+source: repo copy of Project claude/handover-19/PARALLEL-WORK-RULES-v3.5-2026-11-24.md
+supersedes: v3.4.2 (Project) and v3.4.3 (repo claude/parallel-work-rules.md, PR #388)
 precedence: Jon's explicit decisions (ledger `JON` rows) > AGENTS.md > this file. A conflict goes into the decision brief, never resolved by guessing.
-goal: faster product development and a higher agentic level (L3 → L4: d5 ≥ 3 and d7 ≥ 3)
+why: JON D-6, 2026-11-23 19:50 Vancouver (LEDGER-19A row 95), verbatim: "Update your merge rules. Do a review of all the times you've asked me this session to merge and update the rules so you can self-approve. Update all documentation, stop asking me to merge. Update the rules. Learn from this session." Evidence: claude/handover-19/MERGE-ASK-REVIEW-19A-2026-11-24.md.
 ---
 
-## Status as of 2026-11-24
+# Parallel work rules v3.5
 
-- D-1...D-5 decided by Jon, all accepted as recommended.
-- O-6 smoke test: PASS for `developer` and `release-ops`; the other agents are untested.
-- Gate v3.4 merged (#382: overlap guard); Jon turned the ruleset's strict mode off on 11-23.
-- #362 Chord chip fit path gate merged (fast path 6 s verified).
-- §11 R1 stopped after 4 failed reviews; the bot-merge path is closed. Rule 9c's "until §11 R1 lands" therefore means: no label auto-merge at all.
-- Agents never apply `rollback-safe` / `adversarial-reviewed`; the orchestrator merges only through `scripts/or4-merge.sh` (gate v3.4).
-- Version bumped to v3.4.3 (front matter and changelog).
+**Standing rules from Jon**
+- JON 2026-11-23 11:03: always run the most parallel work these rules allow; end every cycle with one line on how Jon could unlock more.
+- **JON D-6 2026-11-23 19:50: the orchestrator self-approves merges. Never ask Jon to approve a merge.**
 
-# Parallel work rules v3.4.3
+## 1 · Merging (rewritten in v3.5)
 
-**Standing rule (JON 2026-11-23 11:03 Vancouver):** always run the most parallel work these rules allow, and end every cycle with one line on how Jon could unlock more.
+**M-SA. Self-approval.** The canonical text is **AGENTS.md M-8, "M-SA"**; this section summarises it and must not diverge. The orchestrator (main session only; subagents never merge) merges a PR without asking Jon when ALL hold:
+1. **Review:** a dispatched reviewer agent on a different model from the author wrote a review file with exactly one `VERDICT: PASS <91-100> HEAD <sha7>` line at the reviewed SHA, and ran the tests and ≥ 3 mutants. The orchestrator never writes, edits or converts a review file; the author's agent never reviews.
+2. **Second reviewer** (third model, PASS > 90, same content) for **every PR in the gate's protected class**: a path matching `PROTECTED_RE` in `scripts/or4-merge.sh`, the label `needs-jon-approval`, or a `[billing]` title. Money / auth / secrets also need M-11 > 90 (report min(M-11, M-9)). The merge path (`scripts/or4-merge.sh`, `scripts/test_or4_merge.py`, workflows, CODEOWNERS, `.claude/settings.json`, rulesets, AGENTS.md M-SA, this §1) is inside that class.
+3. **Gate:** `scripts/or4-merge.sh` ≥ v3.5, `DRY_RUN=1` first (only the literal `1`; issue #391), then the real run with `JON_ROW=95 JON_PR=<pr>` (D-6 standing row; JON_PR ties each run to one PR).
+4. **CI** green on the PR head; protected PRs behind 0; others may use `ALLOW_BEHIND=1` (≤ 5, disjoint, no coupled/hot files). **Rule 9b:** if the PR content changed after review (not just an `update-branch`, which the patch-id check passes), a non-author agent writes a delta review at the new head first.
+5. **Migrations:** a PR that adds a migration, or code depending on an unapplied one, merges only AFTER Jon has applied it to prod and staging and both DBs are verified (one bare SELECT each). A `DROP` migration goes to Jon as a file first. Hold without a merge question until his apply is on the ledger.
 
-## Rules
+**Enforced by the gate (code):** marker in the one review file at the reviewed SHA, patch-id equality, not draft, ≥ 10 green check-runs and statuses, behind rules, protected class → numeric `JON_ROW` + matching `JON_PR`, no merge-bot labels.
+**Process (orchestrator duty, not enforced):** reviewer model ≠ author, the second review exists (the gate takes one file), tests/mutants ran, the review was written by a reviewer agent, `DRY_RUN=1` first, main session only, the row is 95. The gate cannot verify the ledger row or reviewer identity. Before the real run, log both review files, models and scores. Never call a process item "checked by the gate".
 
-1. **Split, then label.** Break the work into tasks and tag each PARALLEL (no shared files, no dependency) or SERIAL. Research segments must not overlap. Any split of more than about 5 tasks gets a written file-ownership table before dispatch.
-2. **Two sessions at once (JON 11-23).** The Chromium (2) and git-network-op (2) caps in rule 10 are **shared across both sessions**: each session gets 1 of each unless its ledger records a hand-off.
-   - Session A (agentic/ops) owns `.github/**`, `scripts/**`, `.claude/**`, `docs/agentic*`.
-   - Session B (product) owns `apps/**` and `packages/**` (including design screenshots under them) and product docs, except shared hot files (rule 5). Migrations are a hot file for either session: announce in both ledgers before writing.
-   - Either session may touch the other's paths only by opening an issue.
-   - Each session keeps its own ledger. Both read the same Project.
-3. **One agent, one task, one worktree, one branch.**
-   - The orchestrator creates the worktree (`isolation:worktree` is denied).
-   - Each brief holds: goal, files it may touch, definition of done, output path, a pointer to `COMMON-RULES.md`, and a turn budget.
-   - Agents return 10 lines or fewer; details go to files.
-4. **Agent types.**
-   - Until #356 merges **and** a Bash smoke test passes for each named agent, shell work goes to `general-purpose` agents only (E-S18-1).
-   - Root cause per #356: `disallowedTools: Bash(...)` removes the whole Bash tool.
-   - After that, use the roster in `.claude/agents/` for its roles.
-5. **Hot files and money.**
-   - One writer at a time for migrations, generated files, lockfiles, shared config and AGENTS.md. Regenerate generated files and lockfiles; never hand-merge them.
-   - No paid APIs (Replicate, Klangio, Batch credits) without a budget Jon has approved.
-   - A migration with any `DROP` goes to Jon as a single file. After any Jon DB step, verify **both** DBs before dependent work.
-6. **Cheapest model that does the job.** Pass `model:` per dispatch:
-   - haiku: search, extraction, mechanical sweeps
-   - sonnet: routine code, tests, docs, copy
-   - opus: money paths, security, cross-stack changes, hard bugs, synthesis
-   - fable: safety-critical second review
-   - If a tier is unavailable, step up one.
-7. **Check the proof yourself.**
-   - Before calling a task done: the PR exists, the diff isn't empty, CI ran on the **head SHA**, and gate evidence is re-read from GitHub, never from an agent's summary.
-   - A phase closes only on green main CI at the merge SHA plus a deploy and a live check. The plan says which checks were signed-out only.
-8. **Independent review on a different model from the author, always.** Never skip or run ahead of a human gate.
-   - Example: an opus author gets a sonnet or fable reviewer; a sonnet author gets an opus reviewer.
-   - Scores the author's agent wrote don't count. The reviewer runs the tests and at least 3 mutants.
-   - Bars: AGENTS.md M-9's two conditions (no false green the reviewer can demonstrate; the reviewer ran the tests itself), **plus** Jon's S18 condition **PASS > 90** (M-9 itself has no score gate). First line: `VERDICT: PASS <91-100> HEAD <sha7>`. Money and security paths also need **M-11 > 90**, and the reported score is min(M-11, M-9).
-   - R-7 (a different model *family*) is not wired in. Name it as residue on each PR; for M-11, only Jon accepts residue.
-   - Stopping rule: residue the PR itself admits becomes an issue, not another round. At most 3 rounds, then report.
-9. **Merging.**
-   - **9a. The orchestrator merges only through `or4-merge.sh` v3.3**, which checks: the marker, patch-id equality, behind 0, not draft, ≥ 10 checks, statuses, `merged_at`, and **protected-class enforcement**.
-     - Protected class: a `needs-jon-approval` label, a `[billing]` title, or a path matching `.github/`, `scripts/`, `**/.claude/`, AGENTS.md, CLAUDE*, `.mcp.json`, `**/SKILL.md`, CODEOWNERS, any `migrations/`, `.env*`, billing, stripe, entitlement, auth (directory or file), service-role, or secret. Self-test on 11-23: 18/18 sample protected paths caught, 0/5 false positives.
-     - A protected PR fails unless `JON_ROW=<ledger row of Jon's named approval for that PR>` is set.
-     - Non-protected reviewed PRs (design, bug-fix, test, copy) merge under Jon's standing approval, quoted in Project `claude/handover-18/SESSION-18-PROMPT.md` (v1.2.2, §2 bullet "Merges (OR-4)"): *"Jon's blanket approval covers design and bug-fix PRs"*. That is a handover quote, not a JON ledger row, so Jon is asked to ratify it in D-1.
-     - Evidence: 11 REST merges on 11-23 (ledger rows 117–146; GitHub shows `merged_by` JDC000000 for all 11, so the ledger is the only record of which gate ran). 5 used v3.1 (#347 #346 #340 #341 #348), 4 used v3.2 (#350 #353 #359 #358) and 2 used v3.3 with `JON_ROW=143` (#354 #349).
-     - AGENTS.md M-8's table says REST merge is classifier-blocked. That is stale for these cases (D-1); a classifier change could re-block it at any time, and then OR-1 applies.
-   - **9b. If a PR was rebased after review**, the gate fails closed. A non-author agent writes a delta review at the new head, then merge.
-   - **9c. No label-based auto-merge** (`rollback-safe` + `adversarial-reviewed`) until §11 R1 lands, and even after that, never on the protected class in 9a (v3.3's hard exclusion list, kept):
-     - a PR author can apply those labels (#346 review residue);
-     - S18 agents apply no labels (only `needs-jon-approval` on billing PRs);
-     - the bot path will be R1's content-only class (JON 11-23).
-   - **9d. Serialize merges; rebase with `PUT …/update-branch`**, never force-push. This makes #356's O-9 (`--force-with-lease`) unnecessary.
-   - **9e. If `v3/main` goes red**, all merges stop until the hotfix lands (M-5).
-10. **Concurrency.**
-    - Run at least 5 agents whenever there is work; cap 10.
-    - At most 2 Chromium agents at once (7 GB, 2-core box).
-    - At most 2 concurrent git network operations (M-10): stagger pushes.
-    - Add 2 agents after a clean cycle; halve after a rate limit or 2 conflicts. A platform governor or load balancer overrides these numbers.
-    - No polling check-ins (Jon 11-22). Use background waits on CI; while one PR's CI runs, other agents keep building or reviewing.
-11. **Jon's attention is the bottleneck.**
-    - One batched decision brief per cycle (decision, pros/cons, recommendation, via the modal).
-    - Never re-ask anything already approved.
-    - Interrupt only for real money, red-line merges or irreversible actions.
-12. **Stop rules.**
-    - The first failure may retry one model tier up. A second failure of the same task stops it and reports (S18: R1 FAIL 58 → 64 → went to Jon).
-    - Near a usage limit: let running agents finish and start no new ones.
-    - When context gets heavy: write the handover.
-13. **Measure every cycle.**
-    - Log agents run, models, tokens (marked estimated if not reported), wall-clock time, merges, review rounds and scores, failed or hung agents, conflicts, Jon questions, and the one-line unlock.
-    - **S18 baselines** (targets in brackets): first-round PASS 7/8 PRs (≥ 7/8); merges per session-day ~9 (≥ 12); Jon DB round-trips 5 (≤ 1); median merge wait after PASS ~20 min CI (≤ 10).
-    - Logs go in the session ledger in the Project. Session notes are **not** pushed to the repo: an S17 classifier refusal (OR-1).
+**HELD for Jon, a control change not a merge ask:** a PR that removes or loosens a gate check, changes M-SA / this approval rule, CODEOWNERS, `.claude/settings.json`, rulesets, or the merge logic of workflows (`auto-merge.yml`, autonomy-class, the labellers). Do not self-merge; put one line in the cycle brief and wait for a JON row naming it. Tightening-only changes may be self-approved with two reviewers.
 
-## Throughput: what actually limited S18 (measured, 11-23)
+**Hard-rule items (never merge approvals; still Jon's):** applying a migration to prod/staging, any `DROP` migration, Stripe live mode, secrets/tokens/env, paid-API budgets, ruleset or repo-settings changes, deleting R2 data, irreversible prod data changes.
 
-| Limiter | Evidence | Unlock | Owner |
-|---|---|---|---|
-| Each `update-branch` re-runs CI for ~20 min. "Chord chip fit" takes ~19 min and is **not required** by ruleset 26478884, but the gate waits on every check; the required "Browser journeys" takes ~10 min | Every merge left the other PRs `behind` (rows 137–142) | (a) path-filter Chord chip fit to chord/player files; (b) a later gate version waits only on the 10 required checks plus Chord chip fit when its paths change; (c) Jon: merge queue, or non-strict up-to-date for non-protected PRs | Claude (a, b), Jon (c) |
-| Jon's DB steps | B1/B3 waited ~2 h on 043 (rows 108–127) | Jon-dispatched, sha-pinned migration workflow | Claude builds, Jon approves |
-| Review rounds | R1 needed 2 FAIL rounds | Author pre-runs the reviewer's mutant harness (R4) | Claude |
-| Same-model reviewers | A-2 card d4 deduction | Rule 8 model split (free today) | Claude |
-| One session's box | 2 Chromium max | Rule 2: two sessions | Jon starts B |
+**After every self-approved merge:** log the ledger row (PR, reviewers + models + scores, gate version, merge SHA); watch `v3/main` CI at the merge SHA. If main goes red because of the merge: all merges stop (M-5), and a revert PR is opened, reviewed and self-merged under M-SA. Report merges to Jon in the cycle summary (no question).
 
-## Decisions for Jon (from reconciling #356)
+**Stop and tell Jon (not a merge ask) when:** a reviewer FAILs the same PR 3 times; reviewers disagree across models by > 15 points; a classifier/permission/proxy refusal (OR-1). A gate-loosening PR is HELD (above), not merged.
 
-| # | Decision | Recommendation |
+**Removed in v3.5:** v3.4.3's "never skip or run ahead of a human gate" now means the HELD and hard-rule items; "protected PRs need Jon's named per-PR approval"; batching merge questions into decision briefs; the D-1(i) non-protected-only scope.
+
+## 2 · Work rules (carried from v3.4.2, updated)
+
+1. **Split, then label** PARALLEL / SERIAL; > 5 tasks → file-ownership table before dispatch.
+2. **Two sessions.** 19A owns `.github/**`, `scripts/**`, `.claude/**`, `docs/agentic*`; 19B owns `apps/**`, `packages/**`, product docs. Cross-paths only via an issue. Chromium (2) and git-network (2) caps are shared: 1 each per session unless a hand-off is logged. **One merge gate** for both sessions (v3.5, #390); never fork a private gate copy — propose changes as a PR (lesson: #382 vs #385 diverged).
+3. **One agent, one task, one worktree, one branch.** The orchestrator creates the worktree (an agent file may set `isolation: worktree`, but the platform denies it, so the orchestrator creates it). Brief = goal, files, done-definition, output path, COMMON-RULES pointer, turn budget. Agents reply ≤ 10 lines.
+4. **Agent types:** the roster lives in `.claude/agents/` and `docs/agent-registry.md`. `developer` and `release-ops` passed the O-6 Bash smoke test; others use `general-purpose` until smoke-tested (issue #389).
+5. **Hot files and money:** one writer at a time for migrations, generated files, lockfiles, shared config, AGENTS.md. No paid APIs without Jon's budget. After any Jon DB step verify **both** DBs.
+6. **Model per task:** haiku (sweeps), sonnet (routine code/docs), opus (money, security, cross-stack, synthesis), fable (safety-critical second review).
+7. **Check the proof yourself:** PR exists, diff non-empty, CI on the head SHA, gate evidence re-read from GitHub. Review markers are checked verbatim; never convert a malformed score (lesson: `PASS 9/10`).
+8. **Review:** author ≠ reviewer model; PASS > 90; max 3 rounds per PR, then stop and report. Residue the PR admits → an issue. Reviewers get the previous round's harness; authors pre-run it.
+9. **No label-based auto-merge, ever** (D-2; §11 R1 stopped after 4 failed reviews). Rebase only with `PUT …/update-branch` (D-3).
+10. **Concurrency:** ≥ 5 agents when there is work, cap 10; background CI waits, no polling check-ins. Don't loop update-branch while another session merges: use `ALLOW_BEHIND=1` where eligible, else update once right before merge.
+11. **Jon's attention:** one batched brief per cycle, only for decisions that are really his (hard-rule items in M-SA 5, product calls, refusals). Never re-ask what is approved. **Never ask for a merge.**
+12. **Stop rules:** second failure of the same task → stop and report; near usage limit → no new agents; heavy context → write the handover.
+13. **Measure every cycle** in the Project ledger: agents, models, merges, review rounds/scores, refusals, Jon asks (target: 0 merge asks), unlock line. Session notes never go into the repo.
+
+## 3 · Lessons from session 19A (2026-11-23)
+
+| # | Lesson | Rule |
 |---|---|---|
-| D-1 | (i) Ratify the standing approval: the orchestrator merges reviewed non-protected PRs (design, bug-fix, test, copy) through gate v3.3. (ii) Update the AGENTS.md M-8 table to what S18 observed (gated REST merges passed), noting that a classifier change can re-block them | Yes to both; Claude opens the M-8 docs PR, you merge it |
-| D-2 | #356 rule 9's label route to `auto-merge.yml` | Don't enable it; R1 content-only is the bot path (9c) |
-| D-3 | #356 O-9: allow `--force-with-lease` on `v3-phase-*` | Decline; `update-branch` already avoids the stall (9d) |
-| D-4 | #356 itself (8 agent files, `settings.json`): CODEOWNERS paths | Merge after the O-6 Bash smoke test for `developer` and `release-ops` passes. Run it from a CLI session; this cloud session can't run `claude --agent` |
-| D-5 | #356 O-7 / O-8 (remove `Agent` from developer.md; widen CODEOWNERS to all migrations, so that GitHub enforces 9a's migration rule as well) | Yes to both, as part of #356 or a follow-up |
+| L1 | 4 merge asks, 8/8 PRs approved unchanged; each ask added ~6–90 min of wait | M-SA |
+| L2 | Every real defect was caught by independent reviewers (9 FAIL rounds: or4 rename bypass, OR4_REPO forge, chord-gate false greens, R1 bypasses) | §2.8, second reviewer for gate changes |
+| L3 | Most wall-clock went to update-branch loops while 19B merged | strict off (Jon) + v3.5 ALLOW_BEHIND + §2.10 |
+| L4 | Two sessions built two different gates | §2.2 one gate |
+| L5 | Real Jon touchpoints were refusals: add_repo (classifier), workflow edit (permission system), ruleset write (proxy) | OR-1 + ask Jon only for those |
+| L6 | Scheduled tasks attach every account connector | Jon trims connectors on any new scheduled task |
+| L7 | A test override (OR4_REPO) nearly became a bypass | test hooks must fail closed outside test mode |
 
 ## Changelog
-
-- **v3.4.3 (2026-11-24):** status block added; 9c clarified (no label auto-merge, R1 stopped); gate v3.4; agent library fixes from the #356 review.
-- **v3.4.2 (2026-11-23):** review R2 (sonnet) FAIL 88. Changes: the protected regex is widened to the CODEOWNERS set (gate v3.3, 18/18 self-test); the standing-approval quote is cited by Project path; the per-session cap shares are added to both prompts; the stray "gate v3.4" reference is fixed.
-- **v3.4.1 (2026-11-23):** review R1 (sonnet) FAIL 78. Changes:
-  - gate v3.3 enforces the protected class (`JON_ROW`), and migrations/secrets are back on the named list;
-  - merge counts are split by gate version;
-  - the standing-approval source is cited, with ratification as D-1;
-  - M-9 described correctly;
-  - the CI limiter is corrected (Chord chip fit is not required);
-  - kept from v3.3: never skip a human gate, the hard exclusion list, the governor override, the tier-up retry, token estimates;
-  - the Chromium and git caps are shared across sessions;
-  - baselines and targets added.
-- **v3.4 (2026-11-23):** reconciled v3.3 (#356) with S18 evidence and Jon's 11-23 decisions:
-  - two-session rule;
-  - orchestrator merges via or4 v3.2 under Jon's approvals (M-8 table flagged stale);
-  - no label auto-merge until R1;
-  - `update-branch` instead of force-with-lease;
-  - PASS > 90 per Jon (stricter than M-9);
-  - general-purpose agents until the #356 smoke test;
-  - no session notes in the repo;
-  - a measured-limiter table.
-- **v3.3 and earlier:** see PR #356 (`claude/parallel-work-rules.md`). Independent reviews there: 71 → 88 → 92 → 71/55 → 86/83 → 91/88.
+- **v3.5 (2026-11-24):** JON D-6 self-approval (M-SA); second reviewer for high-risk classes and merge-path changes; standing JON_ROW=95; one shared gate v3.5; never ask Jon to merge; lessons table. Supersedes v3.4.2/v3.4.3.
+- v3.4.3 (2026-11-24, PR #388): status block (D-1…D-5 decided; label route removed).
+- v3.4.2 and earlier: see Project `claude/handover-19/PARALLEL-WORK-RULES-v3.4.2-2026-11-23.md`.

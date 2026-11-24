@@ -2,7 +2,7 @@
 
 **One gate for both sessions.** 19A (agentic/ops) and 19B (product) both merge through this script. v3.5 replaces 19A's v3.4
 (#382) and 19B's v3.4-R2 (#385, Jon approved the design 2026-11-23 23:29Z, "structurally solve" merge contention). Do not run a
-local fork of it; change it here, by PR (protected path: Jon merges).
+local fork of it; change it here, by PR (protected path: self-approved under M-SA with two reviewers, a merge-path change).
 
 | Version | Where | Behind rule | Notable |
 |---|---|---|---|
@@ -21,7 +21,7 @@ the scripted counterpart to Jon's `scripts/safe_merge.sh`; never use a bare
 ```sh
 DRY_RUN=1 scripts/or4-merge.sh <pr> <review-file> <reviewed-sha>   # ALWAYS run this first: every check, never merges
 scripts/or4-merge.sh <pr> <review-file> <reviewed-sha>             # real merge, only after a clean dry run
-JON_ROW=<n> JON_PR=<pr> scripts/or4-merge.sh ...                    # protected PRs only, see below
+JON_ROW=95 JON_PR=<pr> scripts/or4-merge.sh ...                    # protected PRs only (D-6 standing approval row), see below
 ALLOW_BEHIND=1 DRY_RUN=1 scripts/or4-merge.sh ...                  # allow a NON-protected PR 1..5 behind (see check 4)
 ```
 
@@ -58,7 +58,7 @@ the gate need not force update-branch + a full CI rerun after every merge. v3.5 
 
 - `ALLOW_BEHIND` unset or anything but `1` → any `behind_by > 0` FAILS (update-branch first). This is the default.
 - `ALLOW_BEHIND=1` → a **non-protected** PR may be 1..5 behind when the file conditions hold. A **protected** PR always needs
-  `behind_by == 0`, even with `ALLOW_BEHIND=1` and a valid `JON_ROW`/`JON_PR` (Jon's approval covers the content, not a stale base).
+  `behind_by == 0`, even with `ALLOW_BEHIND=1` and a valid `JON_ROW`/`JON_PR` (the standing approval covers the content, not a stale base).
 
 Hot/coupled files (any depth, case-insensitive; exact regexes in `or4-merge.sh`):
 - **PR side:** `HOT_RE ∪ COUPLED_RE`.
@@ -84,7 +84,7 @@ listings. v3.5 re-reads main right before the PUT (check 10c), so the remaining 
 file) can still land. The backstop is v3/main push CI (M-5: main red means all merges stop). Checks 7, 9, 10, 3 and the
 `sha=<head>` pin on the merge PUT are unchanged.
 
-## Protected class and `JON_ROW` (v3.3)
+## Protected class and `JON_ROW` (v3.3; D-6 standing row from v3.5)
 
 Protected paths (always case-insensitive): `.github/`, `scripts/`, `**/.claude/`, and at ANY depth `AGENTS.md`,
 `CLAUDE*`, `.mcp.json`, `SKILL.md`; plus `CODEOWNERS`, any `migrations/`, `.env*`, and any path containing
@@ -94,10 +94,9 @@ The path list is `git diff --no-renames --name-only -z` with `core.quotePath=fal
 old and the new name and non-ASCII names are not quoted. The gate FAILS CLOSED if the merge-base or the diff
 fails or lists nothing, or if the PR labels/title cannot be read.
 
-Such a PR is refused unless **both** are set: `JON_ROW=<ledger row>` (numeric row of the entry where Jon named
-his approval of this PR) and `JON_PR=<pr>` equal to the PR number being merged (ties the approval to this PR;
+Such a PR is refused unless **both** are set: `JON_ROW=<ledger row>` (**95**: the JON D-6 standing approval, 2026-11-23 19:50 Vancouver, "stop asking me to merge") and `JON_PR=<pr>` equal to the PR number being merged (ties the approval to this PR;
 a stale exported JON_ROW cannot approve another PR). The gate prints both. It cannot verify the ledger row
-itself; never set them without Jon's named approval, and unset them after the run.
+itself. The gate only checks that both are numeric and `JON_PR` equals the PR (any numeric row passes). Set them only for a PR that meets M-SA (canonical: AGENTS.md M-8): a reviewer-agent PASS review, and a second reviewer on a third model for every protected-class PR. A HELD change (gate loosening, M-SA, CODEOWNERS, settings, rulesets, workflow merge logic) is not self-merged. The gate does not check reviewer model, a second review, or dry-run order; those are process duties. Always run `DRY_RUN=1` first (only the literal `1`; #391), and unset both after the run.
 
 `OR4_LIB=1` is for tests only: sourcing defines the functions; executing the script with it prints
 `OR4_LIB set: library mode, NOT a merge` to stderr and exits 2.

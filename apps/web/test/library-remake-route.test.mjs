@@ -121,6 +121,13 @@ test('happy path: the entry\'s link goes through B0\'s gates and ONE song is spe
   const iIns = S().queries.indexOf(ins);
   assert.ok(iLock >= 0 && iLock < iIns && S().queries[iLock].inTx, 'entry row locked FOR UPDATE in the tx before the INSERT');
   assert.deepEqual(S().queries[iLock].params, [ENTRY, ME]);
+  // #372 R2 MF-2: then the per-(user, URL) link-dedupe lock a paste also takes, then the lookup.
+  const iKey = S().queries.findIndex((q) => /pg_advisory_xact_lock\(hashtextextended\('link-dedupe:'/.test(q.text));
+  const iLook = S().queries.findIndex((q, i) => i > iLock && q.inTx && /SELECT jobs\.id::text AS id FROM jobs/.test(q.text));
+  assert.ok(iLock < iKey && iKey < iLook && iLook < iIns && S().queries[iKey].inTx, 'entry row → link-dedupe lock → lookup → INSERT');
+  assert.deepEqual(S().queries[iKey].params, [ME, URL_]);
+  // Re-make's lookup is still user + URL only (no stem choice: any live copy is reused).
+  assert.deepEqual(S().queries[iLook].params.length, 3);
   assert.ok(!S().queries.some((q) => /(INSERT INTO|UPDATE) library_entries/.test(q.text)), 'neither hook writes the entry');
   assert.ok(!S().queries.some((q) => /expires_at/.test(q.text) && !/^SELECT/.test(q.text.trim())), 'nothing writes expires_at');
 });

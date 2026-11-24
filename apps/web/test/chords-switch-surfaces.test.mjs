@@ -322,11 +322,13 @@ test('numeric claims: every hour and day figure on /help, /terms, /privacy, llms
 // count and say why in the reason.
 const ALLOW = {
   // the player and its chord track: render THE JOB'S OWN chord data, or "No chords for this song."
-  'src/components/ChordOverlay.tsx': [26, 'player chord track: testids, aria-labels and pickers for the job\'s own chords'],
-  'src/components/ChordOverlay.helpers.ts': [24, 'player chord track helpers: labels for the job\'s own chord runs ("No chord", "Unknown chord", kind === \'chord\')'],
+  'src/components/ChordOverlay.tsx': [27, 'player chord track: testids, aria-labels and pickers for the job\'s own chords'],
+  'src/components/ChordOverlay.helpers.ts': [25, 'player chord track helpers: labels for the job\'s own chord runs ("No chord", "Unknown chord", kind === \'chord\')'],
   'src/components/ChordPhone.helpers.ts': [3, 'player chord track helpers (phone)'],
   'src/components/tapTarget.ts': [0, 'comments only (the shared tap floor, QA-73)'],
   'src/components/play/PlayerScreen.tsx': [12, 'player: NO_CHORDS_LINE ("No chords for this song.") and no-chords testids; the ⋯ "Chords: Simple / Detailed" view toggle (Phase A, D6) over the job\'s own chords'],
+  'src/components/play/TransposeMenuItem.tsx': [1, 'the ⋯ "Capo / transpose" stepper (Phase C, C4): a display shift of the job\'s own chords, no promise about new songs'],
+  'src/lib/play/transpose.ts': [0, 'comments only (the Capo / transpose display layer, Phase C C4)'],
   'src/lib/play/simplify-chords.ts': [0, 'comments only (the Simple chord display layer, Phase A D6)'],
   'src/lib/library.ts': [1, 'a DELETION disclosure, not a promise: the library note says the chord file goes at 24 hours with the audio (Phase B, PB-1)'],
   'src/lib/play/chord-mode.ts': [1, 'the stored Simple / Detailed chord-view choice (Phase A, D6): a storage key, no promise'],

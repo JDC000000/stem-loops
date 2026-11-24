@@ -285,15 +285,19 @@ test('every trackEvent call site passes literal, non-personal props, at the righ
   const demo = files.find(([f]) => f.endsWith('HomeDemo.tsx'))[1];
   assert.match(demo, /if \(id\) trackEvent\('demo_play'/);
   const tool = files.find(([f]) => f.endsWith('ToolForm.tsx'))[1];
-  // Unconditional (review S-5): the very next statement after addToHistory, same indentation,
-  // so `if (isFile) trackEvent(...)` or a wrapping block fails here.
-  assert.match(tool, /\n( +)addToHistory\(jobId\);\n\1trackEvent\('song_added', \{ source: isFile \? 'file' : 'link' \}\);\n/);
+  // The very next statement after addToHistory, same indentation (review S-5), guarded ONLY by
+  // `!existing` (#372: a dedupe hit re-opens a live song and is not a new one), so
+  // `if (isFile) trackEvent(...)` or a wrapping block fails here.
+  assert.match(tool, /\n( +)addToHistory\(jobId\);\n\1if \(!existing\) trackEvent\('song_added', \{ source: isFile \? 'file' : 'link' \}\);\n/);
+  // `existing` is set only from the link POST's own `existing === true` (never for uploads).
+  assert.deepEqual([...tool.matchAll(/existing = ([^;]+);/g)].map((m) => m[1]), ['false', 'job.existing === true']);
   // ...and the navigation waits the bounded grace first (S-2).
   // A4 round 2: the navigation goes through the form's injectable `deps.assign` (the browser's
   // window.location.assign by default; ToolForm.tsx browserDeps), still straight after the grace.
   assert.match(tool, /\n( +)await navigationGrace\(\);\n(?:[ \t]*\n)*\1deps\.assign\(`\/jobs\/\$\{jobId\}`\);/);
   assert.match(tool, /assign: \(url\) => window\.location\.assign\(url\),/);
-  assert.ok(tool.indexOf("postJson<{ id: string }>('/api/jobs', { url") < tool.indexOf("trackEvent('song_added'"));
+  assert.ok(tool.indexOf("postJson<{ id: string; existing?: boolean }>('/api/jobs', { url") > 0);
+  assert.ok(tool.indexOf("postJson<{ id: string; existing?: boolean }>('/api/jobs', { url") < tool.indexOf("trackEvent('song_added'"));
   const login = files.find(([f]) => f.endsWith('LoginForm.tsx'))[1];
   assert.ok(login.indexOf('if (!res.ok || !json.ok)') < login.indexOf("trackEvent('signup'"));
 });

@@ -245,7 +245,7 @@ class WiringTests(unittest.TestCase):
         for b in blocks:
             self.assertRegex(b, r"exit 1;\s*\}$", b)
         self.assertRegex(step, r"unittest discover[^\n]*2>&1 \| tee \"\$RUNNER_TEMP/ut\.log\"\n")
-        self.assertRegex(step, r"-ge (10[5-9]|1[1-9]\d|[2-9]\d\d|\d{4,}) \]")
+        self.assertRegex(step, r"-ge (119|1[2-9]\d|[2-9]\d\d|\d{4,}) \]")
         self.assertIn("expected failures|unexpected successes", step)
         self.assertIn('= "OK" ]', step)
         self.assertIn("= 1 ]", step)

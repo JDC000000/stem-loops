@@ -102,14 +102,15 @@ The script fetches into the main clone at `/home/claude/stem-loops`.
   `account/layout.tsx`, `packages/web-browser-gate/journeys/j13-retry.mjs`, test files for the same areas. Over-matching costs a second review, never a merge.
 - **Non-ASCII = money.** `LC_ALL=C` has no Unicode case folding (U+017F would hide `stripe`), so any changed path with a byte >= 0x80 is money (and therefore protected).
 - **Strict counting.** `VERDICT:` and `SCORES:` lines are counted case-insensitively **and** with leading whitespace (`^[[:space:]]*`). A later reworded-case or indented
-  `VERDICT: FAIL` / second `SCORES:` line now fails the one-line rule. The line-1 / line-2 requirements are unchanged. Still not caught: other rewordings (`**VERDICT**`, `> VERDICT:`,
-  `Final verdict:`), edited copies as a second review, marker score vs `min(M-9, M-11)`.
+  `VERDICT: FAIL` / second `SCORES:` line now fails the one-line rule. The line-1 / line-2 requirements are unchanged.
 
 ## v3.6.2 (tightening only; #413, from the R1 reviews of #411 / #410)
 
 - `MONEY_RE` also covers `apps/web/src/lib/library-server.ts`, `apps/web/src/app/jobs/[id]/page.tsx`, `apps/web/src/lib/emails/dispatch.ts`.
-- Case-insensitive `VERDICT:`/`SCORES:` counting predates v3.6.1; v3.6.1 added only indentation. v3.6.2 counts any line that, after leading non-alphanumerics (tab, NBSP, `>`, `**`, `#`, backtick), starts with the word and a colon.
-- **Reviewers: never start any line, indented or not, in any case, with `VERDICT:` or `SCORES:` except the two marker lines (line 1 and, for money, line 2).** Prose such as `Final verdict:` is still not counted.
+- `MONEY_RE` also covers `jobs/[id]/JobView.tsx` and `emails/resend.ts`.
+- Case-insensitive counting predates v3.6.1; v3.6.1 added only indentation. v3.6.2 counts any line that, after a prefix of non-letters (tab, NBSP, `>`, `**`, `#`, `1.`, `- `, backtick), `[x]` boxes or a short label like `R1 `, has the word `VERDICT`/`SCORES` followed by a non-alphanumeric or end of line. **No colon is needed** (`VERDICT - FAIL`, `VERDICT (final): FAIL`, fullwidth colon). Lone CR, form feed, VT, NEL, U+2028 and U+2029 count as line breaks.
+- **Reviewers: never start any line, indented or not, in any case, with `VERDICT` or `SCORES` except the two marker lines (line 1 and, for money, line 2).** Prose that merely contains the word mid-line (`The verdict was good`, `Final verdict: FAIL`) is not counted.
+- **Residual (still hidden):** zero-width characters or homoglyphs inside the word, the word not at line start (`Final verdict: FAIL`), the word split across two lines, edited copies as a second review, marker score vs `min(M-9, M-11)`.
 
 ## Behind guard and `ALLOW_BEHIND` (v3.5)
 

@@ -1,6 +1,6 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-settings.json",
-  "comment": "T1 subagent guardrails. Session-7 (2026-11-05). See claude/merge-autonomy-recommendations.md Decision box for the allow/deny rationale. These rules apply to subagents and to the main session alike; the main session merging via scripts/safe_merge.sh satisfies M-1 even though --admin itself is denied below. || DEFERRED TO LEVEL 3 (2026-11-05, audit finding F9): this file denies Bash(gh pr merge --admin*) while allowing Bash(scripts/safe_merge.sh *), and that script's final line is `exec gh pr merge \"$PR\" --admin ...`. So an allowed wrapper executes a denied command. THE OPEN QUESTION, for the Level-3 reviewer at the 72h retro: does the permission layer inspect subprocesses spawned by an allowed script, or only the Bash invocation it was given? If only the invocation, then EVERY deny rule in this file is circumventable by a wrapper script, which matters far beyond merging. Not tested as of 2026-11-05 because testing it means attempting a blocked merge. Do not treat the deny list as a security boundary until this is answered. Retro task: trig_017AKZq6MEVFDioEbEwpHM1g. 2026-11-24 (#389): tightening-only, added deny patterns for argument-order and spelling variants (git push --force/-f/--force-with-lease/--mirror/--delete/+refspec/:ref deletion incl. git -c prefix, git reset --hard with args between, rm -fr/-r -f/-Rf/long-flag variants); no allow entries changed, and the deny list is still not a security boundary (the F9 wrapper caveat stands).",
+  "comment": "T1 subagent guardrails. Session-7 (2026-11-05). See claude/merge-autonomy-recommendations.md Decision box for the allow/deny rationale. These rules apply to subagents and to the main session alike; the main session merging via scripts/safe_merge.sh satisfies M-1 even though --admin itself is denied below. || DEFERRED TO LEVEL 3 (2026-11-05, audit finding F9): this file denies Bash(gh pr merge --admin*) while allowing Bash(scripts/safe_merge.sh *), and that script's final line is `exec gh pr merge \"$PR\" --admin ...`. So an allowed wrapper executes a denied command. THE OPEN QUESTION, for the Level-3 reviewer at the 72h retro: does the permission layer inspect subprocesses spawned by an allowed script, or only the Bash invocation it was given? If only the invocation, then EVERY deny rule in this file is circumventable by a wrapper script, which matters far beyond merging. Not tested as of 2026-11-05 because testing it means attempting a blocked merge. Do not treat the deny list as a security boundary until this is answered. Retro task: trig_017AKZq6MEVFDioEbEwpHM1g. 2026-11-24 (#389): tightening-only, appended deny patterns for argument-order and spelling variants of git push (--force, -f, --force-with-lease, --mirror, --delete/-d, +refspec, :ref deletion via `* :**`), git reset --hard, and rm -rf, including the `git -c <k=v> push|reset` prefix form with the flag first or later. Residuals, NOT covered: wrappers that are not stripped (flock, bash -c, env, scripts) and `git -C`, absolute paths such as /bin/rm, and rm flag spellings not enumerated (e.g. `rm -r x -f`); and because `*` spans spaces, `git -c ...` rules can also match commit-message text. The deny list is still not a security boundary (the F9 wrapper caveat stands).",
   "permissions": {
     "allow": [
       "Bash(scripts/safe_merge.sh *)",
@@ -31,7 +31,7 @@
       "Bash(git push --delete *)",
       "Bash(git push * --delete *)",
       "Bash(git push * -d *)",
-      "Bash(git push * :*)",
+      "Bash(git push * :**)",
       "Bash(git -c * push * --force*)",
       "Bash(git -c * push * -f)",
       "Bash(git -c * push * -f *)",
@@ -51,7 +51,28 @@
       "Bash(rm -r --force *)",
       "Bash(rm --force -r *)",
       "Bash(rm --recursive --force *)",
-      "Bash(rm --force --recursive *)"
+      "Bash(rm --force --recursive *)",
+      "Bash(git push -d *)",
+      "Bash(git -c * push * :**)",
+      "Bash(git -c * push --force*)",
+      "Bash(git -c * push -f*)",
+      "Bash(git -c * push --force-with-lease*)",
+      "Bash(git -c * push --mirror*)",
+      "Bash(git -c * push --delete *)",
+      "Bash(git -c * push * --delete *)",
+      "Bash(git -c * push -d *)",
+      "Bash(git -c * push * -d *)",
+      "Bash(git -c * reset --hard*)",
+      "Bash(rm -rf*)",
+      "Bash(rm -fr*)",
+      "Bash(rm -Rf*)",
+      "Bash(rm -fR*)",
+      "Bash(rm -rF*)",
+      "Bash(rm -Fr*)",
+      "Bash(rm -vrf *)",
+      "Bash(rm -vfr *)",
+      "Bash(rm -vRf *)",
+      "Bash(rm -vfR *)"
     ]
   }
 }

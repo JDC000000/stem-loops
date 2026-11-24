@@ -718,7 +718,7 @@ test('beatGridFromLoops: local beat spans only when loop lengths show drift; ste
   assert.deepEqual(beatGridFromLoops(steady), { beatSec: 0.625, anchorSec: 0.4, measured: true });
   assert.equal(localBeatSec(beatGridFromLoops(steady), 10), 0.625);
   // bar_count missing: bars are inferred from the length.
-  const inferred = beatGridFromLoops(DRIFT_ROWS.map(({ bar_count, ...r }) => r));
+  const inferred = beatGridFromLoops(DRIFT_ROWS.map((r) => ({ ...r, bar_count: undefined })));
   assert.ok(Math.abs(localBeatSec(inferred, 85) - 60 / 124) < 1e-9);
   // A loop that is not whole bars of anything near the tempo is ignored.
   assert.equal(beatGridFromLoops([{ bpm: 120, start_sec: 0, end_sec: 9.0, bar_count: 4 }]).spans, undefined);

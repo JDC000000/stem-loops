@@ -181,50 +181,91 @@ def test_grid_bar_index_round_trips_on_a_drifting_grid():
 
 
 # ---------------------------------------------------------------------------
-# Steady tempo, no lead-in: output unchanged by the fix (captured on v3/main c9f69d0, 2026-11-23).
+# Steady tempo, no lead-in: output unchanged by the fix.
+#
+# The oracle is the pre-fix (v3/main c9f69d0) steady placement, copied verbatim below and
+# run in the same process on the same audio, boundaries and onset envelope. Hard-coded
+# floats are not a usable oracle here: the walk compares ``t <= b`` where ``t`` and ``b``
+# are the same bar reached by two float paths (anchor + 5*bar + 4*bar vs anchor + 9*bar),
+# so whether a phrase boundary on that bar counts is a last-ulp coin flip that depends on
+# the anchor's low bits — which differ between machines (CI took bar 9 where the capture
+# machine took bar 10 on the 102 BPM track). Same process => same bits => exact compare.
 # ---------------------------------------------------------------------------
 
-STEADY_BASELINE = {
-    # (bpm, first, dur, bars): [(start_sec, start_bar), ...]
-    (102.0, 0.12, 80.0, 4): [
-        (0.118649, 0),
-        (11.883538, 5),
-        (23.648039, 10),
-        (33.059879, 14),
-        (44.824396, 19),
-        (56.588947, 24),
-        (66.002448, 28),
-    ],
-    (128.0, 0.05, 60.0, 4): [
-        (0.050658, 0),
-        (7.550594, 4),
-        (16.92551, 9),
-        (24.425442, 13),
-        (33.800354, 18),
-        (41.300282, 22),
-        (50.675188, 27),
-    ],
-    (97.0, 0.4, 60.0, 4): [
-        (0.399866, 0),
-        (12.770989, 5),
-        (25.142107, 10),
-        (37.513219, 15),
-        (49.884545, 20),
-    ],
-}
+STEADY_CASES = [
+    # (bpm, first, dur, bars, loops captured on v3/main c9f69d0)
+    (102.0, 0.12, 80.0, 4, 7),
+    (128.0, 0.05, 60.0, 4, 7),
+    (97.0, 0.4, 60.0, 4, 5),
+]
 
 
-@pytest.mark.parametrize("key", list(STEADY_BASELINE))
-def test_steady_tempo_output_is_unchanged(tmp_path, key):
-    bpm, first, dur, bars = key
+def _pre_fix_anchor(grid) -> float:
+    """v3/main estimate_beat_grid anchor: folded phase of the whole envelope, wrapped."""
+    from worker.extractor.beat_grid import ANCHOR_WRAP_S, HOP, _fold_peak_phase
+
+    period = grid.period
+    phase = _fold_peak_phase(grid.envelope, 0.0, period, HOP / grid.sr)
+    anchor = 0.0 if phase is None else phase % period
+    if anchor > period - ANCHOR_WRAP_S:
+        anchor -= period
+    return anchor
+
+
+def _pre_fix_placement(path: str, grid, bars: int) -> list[tuple[float, int]]:
+    """v3/main extract_loops placement (constant grid), verbatim apart from the anchor."""
+    import librosa
+
+    from worker.extractor.beat_grid import BeatGrid
+    from worker.extractor.loop_extractor import MAX_LOOPS_PER_STEM
+    from worker.extractor.phrase_boundary import detect_boundaries
+
+    sr = SR
+    old = BeatGrid(
+        grid.bpm, _pre_fix_anchor(grid), grid.tracked_beats, grid.tracker_bpm, grid.envelope, sr
+    )
+    y_ref, _ = librosa.load(path, sr=sr, mono=True)
+    bar = old.bar
+    loop_dur = bars * bar
+    song_len = len(y_ref) / sr
+    boundaries = detect_boundaries(y_ref, sr)
+    bnd = sorted({old.snap_to_bar(b) for b in boundaries if old.snap_to_bar(b) >= 0})
+    starts: list[float] = []
+    t = old.anchor
+    while t + loop_dur <= song_len + 0.01:
+        window = [b for b in bnd if t <= b < t + loop_dur and b + loop_dur <= song_len + 0.01]
+        s = window[0] if window else t
+        starts.append(s)
+        t = s + loop_dur
+    if len(starts) > MAX_LOOPS_PER_STEM:
+        idx = {
+            round(i * (len(starts) - 1) / (MAX_LOOPS_PER_STEM - 1))
+            for i in range(MAX_LOOPS_PER_STEM)
+        }
+        starts = [starts[i] for i in sorted(idx)]
+    placed = []
+    for nominal in starts:
+        s = old.local_beat(nominal, loop_dur)
+        if s + loop_dur > song_len + 0.01:
+            s = nominal
+        placed.append((max(0.0, s), int(round((nominal - old.anchor) / bar))))
+    return placed
+
+
+@pytest.mark.parametrize("case", STEADY_CASES, ids=lambda c: f"{c[0]:g}bpm")
+def test_steady_tempo_output_is_unchanged(tmp_path, case):
+    bpm, first, dur, bars, n_loops = case
     path = os.path.join(tmp_path, "drums.wav")
     sf.write(path, _render(_steady(bpm, first, dur), dur), SR)
     y, _ = sf.read(path)
     grid = estimate_beat_grid(y.astype(np.float32), SR)
     assert grid.bpm == bpm and not grid.follows_beats
+    assert grid.anchor == _pre_fix_anchor(grid)  # bit-identical bar 0
     loops = list(extract_loops({"drums": path}, grid.bpm, loop_length_bars=bars, grid=grid))
-    got = [(round(lp["start_sec"], 6), lp["start_bar"]) for lp in loops]
-    assert got == STEADY_BASELINE[key]
+    got = [(lp["start_sec"], lp["start_bar"]) for lp in loops]
+    want = _pre_fix_placement(path, grid, bars)
+    assert len(want) == n_loops  # the oracle itself still sees the captured track
+    assert got == want  # exact floats, not rounded
     true_len = bars * 4 * 60.0 / bpm
     for lp in loops:
         assert lp["end_sec"] - lp["start_sec"] == pytest.approx(true_len)

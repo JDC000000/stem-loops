@@ -46,7 +46,8 @@
 
 /* ── compact header (56px) ─────────────────────────────────────────────── */
 .head {
-  height: 56px;
+  min-height: 56px;
+  box-sizing: border-box;
   flex-shrink: 0;
   display: flex;
   align-items: center;
@@ -89,12 +90,22 @@
   margin-top: 2px;
   min-width: 0;
   display: flex;
+  /* No capo/transpose badge: ONE line, the artist is cut with an ellipsis (the
+     pre-PR fixed 56px header). The wrapping variant is .subWrap (badge only). */
+  flex-wrap: nowrap;
   align-items: center;
   gap: 8px;
   font-size: 13px;
   color: var(--text-muted);
   white-space: nowrap;
   overflow: hidden;
+}
+/* Badge present (PR #375 round 4, fixed in C1): items WRAP onto a second line
+   instead of shrinking, so the badge never squeezes the artist; the header
+   grows (min-height). Applied ONLY when the badge is shown. */
+.subWrap {
+  flex-wrap: wrap;
+  row-gap: 2px;
 }
 /* BPM and key at 20px (>= 20px: 25 arcmin cap height at 70 cm), white on the
    page: readable from a music stand. A chip, not a control: no pointer. */
@@ -119,11 +130,14 @@
   text-overflow: ellipsis;
 }
 .artist {
+  /* takes the rest of the line (basis 0); ellipsis when short. No badge: it
+     may shrink to nothing (pre-PR). With the badge: never below 6ch (.subWrap). */
   flex: 1 1 0;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.subWrap .artist { min-width: 6ch; }
 
 .menuWrap { position: relative; flex-shrink: 0; }
 
@@ -204,9 +218,50 @@
   font-size: 15px;
   cursor: pointer;
 }
+.segmented3 {
+  grid-template-columns: 1fr 1fr 1fr;
+}
+/* Speed (Phase C C1): a quiet text tag, not a fill. */
+.beta {
+  margin-left: 6px;
+  padding: 0 6px;
+  border: 1px solid var(--border-control);
+  border-radius: 8px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
 .segment[aria-pressed='true'] {
   background: var(--bg-selected);
   border-color: var(--text-primary);
+}
+
+/* Capo / transpose (Phase C, C4): - value + as 44px pills; the badge in the
+   header is a quiet outline pill (no lime, no amber). */
+.stepper {
+  display: grid;
+  grid-template-columns: var(--touch-min, 44px) 1fr var(--touch-min, 44px);
+  align-items: center;
+  gap: 6px;
+}
+.stepper .segment { padding: 0; }
+.segment:disabled { opacity: 0.4; cursor: default; }
+.stepperValue {
+  text-align: center;
+  font-size: 15px;
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+.capoBadge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 0 10px;
+  border: 1px solid var(--border-control);
+  border-radius: 22px;
+  font-size: 13px;
+  color: var(--text-primary);
+  white-space: nowrap;
+  flex: 0 0 auto;
 }
 
 /* ── the body: the stage takes the remainder ───────────────────────────── */
@@ -234,6 +289,7 @@
   flex-direction: column;
   gap: var(--space-3);
   padding: 14px 20px 10px;
+  position: relative; /* the count-in numbers sit over the stage */
 }
 
 .chords {
@@ -246,6 +302,16 @@
   display: flex;
   flex-direction: column;
   overflow: hidden;
+}
+
+/* #386: the player's toast (set-list adds, "Names not saved") sits just under the 56px header, over the
+   top of the chord stage, never over the my-part pills or the transport at the bottom. The shared
+   set-list toast is bottom-anchored at 140px, which on 360x800 / 390x844 lands on the pills row.
+   The pills start below the stage's 14px padding and 200px chord floor (>= 270px from the top);
+   the toast ends at 64px + its height (14px text, 10px padding: about 43px for one line, 64px for two). */
+.root .toast {
+  top: calc(56px + env(safe-area-inset-top, 0px) + 8px);
+  bottom: auto;
 }
 
 /* The one notice bar at the top of the stage (P1.1). */
@@ -494,4 +560,48 @@
   .error { grid-column: 2; grid-row: 1; margin: 6px 16px 0; }
   .main > fieldset { grid-column: 2; grid-row: 2; align-self: end; }
   .main > [data-testid='transport'] { grid-column: 2; grid-row: 3 / span 2; }
+}
+
+/* ── count-in (Phase C C2) ─────────────────────────────────────────────────
+   Neutral: white on #222. Amber is only the current chord, lime only Play.
+   No animation and no transition, so prefers-reduced-motion needs no case. */
+.countInItem {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-bottom: 4px;
+}
+.countInItem .menuItem {
+  justify-content: space-between;
+  gap: 12px;
+}
+.countInItem .menuItem:disabled {
+  color: var(--text-muted);
+  cursor: default;
+}
+.countInItem .menuItem[aria-pressed='true'] {
+  background: var(--bg-selected);
+  box-shadow: inset 0 0 0 2px var(--text-primary);
+}
+.countInState { font-size: 14px; color: var(--text-secondary); }
+.countIn {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+}
+.countInNum {
+  min-width: 112px;
+  min-height: 112px;
+  display: grid;
+  place-items: center;
+  border: 2px solid var(--text-primary);
+  border-radius: 56px;
+  background: var(--bg-selected);
+  color: var(--text-primary);
+  font-size: 64px;
+  font-weight: 700;
+  line-height: 1;
 }

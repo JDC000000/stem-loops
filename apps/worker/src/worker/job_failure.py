@@ -40,6 +40,9 @@ from .logger import log_structured
 # trial path, a trial song -- is given back by restore_allowance_if_owed (QA-64), keyed on this
 # same tuple. DOWNLOAD_BLOCKED / DOWNLOAD_TIMEOUT / DOWNLOAD_PRIVATE / ... are NOT here: the
 # repo classes them as the video's or the user's, so neither a credit nor a song comes back.
+# Q-B (Jon 2026-11-21): a final DOWNLOAD_BLOCKED raised while the fetch canary reports our
+# path failing (fresh result) is reclassified AT THE SOURCE to FETCH_PROXY_FAILED
+# (downloader._attribute_block_to_outage), so the stored code is ours and this tuple is unchanged.
 OUR_FAULT_CODES = ("SEPARATION_FAILED", "UPLOAD_FAILED", "INTERNAL_ERROR", "FETCH_PROXY_FAILED")
 REFUND_PROVIDER = "worker_job_failed"
 # Never refunded, even though no paid call was made (Jon 2026-11-18 09:23 PT: "No refund for

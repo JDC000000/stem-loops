@@ -197,6 +197,15 @@ export interface EngineSnapshot {
   /** Story 5.1 — present when some stem could not be made ready. */
   readonly degraded: { readonly missing: readonly StemName[] } | null;
   readonly error: { readonly code: string; readonly message: string } | null;
+  /**
+   * Phase C C1 (Beta): the speed actually playing (1 = 100%, 0.9, 0.75). Pitch
+   * is kept. `positionSec` is always SONG time, already corrected for the
+   * stretch latency, so nothing that reads it needs to know the speed.
+   * Absent on engines without slow-down: read as 1.
+   */
+  readonly playbackRate?: number;
+  /** True while a requested speed waits for the stretch nodes to start. */
+  readonly speedPending?: boolean;
 }
 
 /**
@@ -229,6 +238,10 @@ export interface PlayEngine {
 
   /** `null` clears the loop. Story 4.5. */
   setLoop(region: LoopRegion | null): void;
+  /** Phase C C1 (Beta): 1, 0.9 or 0.75; anything else is a no-op. Optional: engines without slow-down omit it. */
+  setPlaybackRate?(rate: number): void;
+  /** False when this engine cannot slow down (no stretch support, or it failed to start). */
+  readonly canChangeSpeed?: boolean;
 
   getSnapshot(): EngineSnapshot;
   /** Returns an unsubscribe fn. Fires at least on every status change. */

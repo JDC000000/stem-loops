@@ -249,6 +249,8 @@ export interface PlayerTransportProps extends TransportProps {
     readonly onOpen: () => void;
     readonly buttonRef?: (el: HTMLButtonElement | null) => void;
   } | null;
+  /** Phase C C1: "90%" / "75%" when slowed down; null or absent at 100% (no pill). */
+  readonly speedLabel?: string | null;
 }
 
 /** Seek-commit delay for a key burst on the range input, ms. */
@@ -284,6 +286,7 @@ export function Transport({
   loopState = 'disabled',
   onToggleLoop,
   mix = null,
+  speedLabel = null,
 }: PlayerTransportProps) {
   const dur = sanitizeSec(durationSec);
   const aff = affordanceFor(status, dur);
@@ -428,10 +431,22 @@ export function Transport({
           />
           <div className={s.thumb} aria-hidden="true" style={{ left: `${pct}%` }} />
         </div>
-        <div className={s.times} data-testid="transport-time" aria-hidden="true">
-          <span>{formatTime(shown)}</span>
-          <span>{remainingText(shown, dur)}</span>
-        </div>
+        {speedLabel ? (
+          <div className={s.times} data-testid="transport-time">
+            <span aria-hidden="true">{formatTime(shown)}</span>
+            {/* Phase C C1: shown whenever the speed is not 100%. Neutral, never lime or amber. */}
+            <span className={s.speed} data-testid="transport-speed">
+              <span className={s.sr}>Speed </span>
+              {speedLabel}
+            </span>
+            <span aria-hidden="true">{remainingText(shown, dur)}</span>
+          </div>
+        ) : (
+          <div className={s.times} data-testid="transport-time" aria-hidden="true">
+            <span>{formatTime(shown)}</span>
+            <span>{remainingText(shown, dur)}</span>
+          </div>
+        )}
       </div>
 
       <div className={s.buttons}>

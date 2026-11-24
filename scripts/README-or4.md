@@ -1,4 +1,4 @@
-# or4-merge.sh — orchestrator merge gate (OR-4 v3.6.1, §11 R6)
+# or4-merge.sh — orchestrator merge gate (OR-4 v3.6.2, §11 R6)
 
 **One gate for both sessions.** 19A (agentic/ops) and 19B (product) both merge through this script. v3.5 replaces 19A's v3.4
 (#382) and 19B's v3.4-R2 (#385, Jon approved the design 2026-11-23 23:29Z, "structurally solve" merge contention). Do not run a
@@ -13,7 +13,8 @@ loosening changes are HELD for Jon (AGENTS.md M-8). When in doubt whether a chan
 | v3.5 | main | strictest union of both (below) | + #384: git env scrub, `git replace` refs FAIL, `OR4_REPO` guard tested for rc and zero network calls |
 | v3.5.1 | main | unchanged from v3.5 | **tightening only** (#391, #393): strict `DRY_RUN`/`ALLOW_BEHIND`; PUT `sha=<head>` and pre-PUT main-moved tests; gate text names the `JON_ROW` ledger row |
 | v3.6 | main | unchanged | **tightening only** (D-7, #396): money class (marker >= 93 + `SCORES:` line 2); protected needs two review files; one `VERDICT:` line per review; `LC_ALL=C`; merge-tail fails closed |
-| **v3.6.1** | **this branch** | unchanged | **tightening only** (#406): wider `MONEY_RE` (250 -> 337 of 1352 tracked files); any non-ASCII path = money; `VERDICT:`/`SCORES:` counted case-insensitively and when indented |
+| v3.6.1 | main | unchanged | **tightening only** (#406): wider `MONEY_RE` (250 -> 337 of 1352 tracked files); any non-ASCII path = money; `VERDICT:`/`SCORES:` counted case-insensitively and when indented |
+| **v3.6.2** | **this branch** | unchanged | **tightening only** (#413): `MONEY_RE` += `library-server`, `emails/dispatch`, `jobs/[id]/page.tsx`; reworded markers (`**VERDICT: FAIL**`, `> VERDICT:`, NBSP) count as VERDICT/SCORES lines; mutant-killing tests |
 
 The orchestrator's merge gate. It squash-merges a PR **only** if every check below
 passes; otherwise it prints each `FAIL:` line and exits 1 without merging. It is
@@ -103,6 +104,12 @@ The script fetches into the main clone at `/home/claude/stem-loops`.
 - **Strict counting.** `VERDICT:` and `SCORES:` lines are counted case-insensitively **and** with leading whitespace (`^[[:space:]]*`). A later reworded-case or indented
   `VERDICT: FAIL` / second `SCORES:` line now fails the one-line rule. The line-1 / line-2 requirements are unchanged. Still not caught: other rewordings (`**VERDICT**`, `> VERDICT:`,
   `Final verdict:`), edited copies as a second review, marker score vs `min(M-9, M-11)`.
+
+## v3.6.2 (tightening only; #413, from the R1 reviews of #411 / #410)
+
+- `MONEY_RE` also covers `apps/web/src/lib/library-server.ts`, `apps/web/src/app/jobs/[id]/page.tsx`, `apps/web/src/lib/emails/dispatch.ts`.
+- Case-insensitive `VERDICT:`/`SCORES:` counting predates v3.6.1; v3.6.1 added only indentation. v3.6.2 counts any line that, after leading non-alphanumerics (tab, NBSP, `>`, `**`, `#`, backtick), starts with the word and a colon.
+- **Reviewers: never start any line, indented or not, in any case, with `VERDICT:` or `SCORES:` except the two marker lines (line 1 and, for money, line 2).** Prose such as `Final verdict:` is still not counted.
 
 ## Behind guard and `ALLOW_BEHIND` (v3.5)
 

@@ -31,8 +31,8 @@ export default function FlashBanner() {
     <div
       role="status"
       style={{
-        position: 'fixed', top: 12, left: '50%', transform: 'translateX(-50%)',
-        maxWidth: 'calc(100vw - 32px)', padding: '10px 16px', borderRadius: 'var(--radius-md)', zIndex: 1000,
+        position: 'fixed', top: 'calc(12px + env(safe-area-inset-top, 0px))', left: '50%', transform: 'translateX(-50%)',
+        maxWidth: 'calc(100vw - 32px - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px))', padding: '10px 16px', borderRadius: 'var(--radius-md)', zIndex: 1000,
         background: 'var(--bg-card, #151515)', color: 'var(--text-primary)',
         border: '1px solid var(--border-default, #444)', fontSize: 14,
         display: 'flex', gap: 12, alignItems: 'center',

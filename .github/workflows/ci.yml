@@ -363,6 +363,8 @@ jobs:
     # needed on this job.
     name: "Python syntax (compileall) + repo-wide merge markers"
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
@@ -393,6 +395,17 @@ jobs:
       - name: compileall scripts
         # scripts/ holds standalone tools; syntax must at least parse.
         run: python -m compileall scripts
+      - name: Script unit tests (scripts/test_*.py, stdlib unittest)
+        # #366 / #368: scripts/test_*.py never ran in CI (compileall only parses).
+        # Every file there is stdlib-unittest (no pytest, no pip install), so this
+        # needs no dependency. Runs on every build of this job: no path filter.
+        # The ls guard fails the job if the glob ever matches nothing, so the step
+        # cannot go green by running zero tests; unittest's own exit code fails it
+        # on any failure or error.
+        run: |
+          set -eu
+          ls scripts/test_*.py
+          python -W error::ResourceWarning -m unittest discover -v -s scripts -p 'test_*.py'
       - name: compileall packages/types
         # packages/types has python codegen; compileall its py files.
         run: |

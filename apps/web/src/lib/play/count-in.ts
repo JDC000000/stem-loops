@@ -39,6 +39,8 @@ export const CLICK_LEAD_SEC = 0.03;
 export const ENGINE_LEAD_SEC = 0.05;
 /** Latencies above this are not believed (the project's route estimate is capped the same way). */
 export const MAX_LATENCY_SEC = 0.5;
+/** After this the output latencies are read again (the contexts have resumed by then). */
+export const SETTLE_MS = 150;
 
 export interface CountTiming {
   /** Click context: outputLatency (else baseLatency), seconds. */
@@ -47,6 +49,23 @@ export interface CountTiming {
   readonly engineLatencySec: number;
 }
 const lat = (n: unknown): number => (typeof n === 'number' && Number.isFinite(n) && n > 0 ? Math.min(n, MAX_LATENCY_SEC) : 0);
+
+/**
+ * The engine side's latency for the count. On the phone route (audio goes through
+ * the `<audio>` element) it is the route's estimate. On every other route
+ * (desktop, iPad) the engine's context reaches the speakers directly, with the
+ * SAME device latency the click context has, so it is that context's
+ * outputLatency (else baseLatency); reading 0 there would make the music late by
+ * the device latency (150-250 ms on Bluetooth).
+ */
+export function engineCountLatencySec(
+  src: { outputLatency?: number; baseLatency?: number } | null | undefined,
+  routed: boolean,
+  routeSec: number,
+): number {
+  if (routed) return lat(routeSec);
+  return lat(src?.outputLatency) || lat(src?.baseLatency);
+}
 
 /**
  * Two contexts, two clocks. Click i is HEARD at t0 + CLICK_LEAD + i*beat + clickLat.
@@ -183,26 +202,43 @@ export function createCountIn(options: CountInOptions): CountIn {
       cancelledAt = -Infinity;
       active = true;
       const offsets = clickOffsets(bpm);
-      const { ui, downbeat } = timingOffsets(options.timing?.());
-      offsets.forEach((off, i) => {
-        options.clicks?.schedule(off, i === 0);
-        if (i === 0) return; // beat 4 is shown by the onBeat() below
+      const t0 = timers.now();
+      offsets.forEach((off, i) => options.clicks?.schedule(off, i === 0));
+      options.onBeat(COUNT_IN_BEATS);
+      // The numbers (beats 3..1) and the downbeat are (re)armed from the latencies
+      // as they read NOW. On the first count of a session both contexts are still
+      // suspended and read 0 when this runs, so they are read AGAIN once the
+      // in-gesture resume has had a moment (SETTLE_MS) and what is left is re-armed.
+      const arm = () => {
+        clear();
+        const { ui, downbeat } = timingOffsets(options.timing?.());
+        const elapsed = timers.now() - t0;
+        offsets.forEach((off, i) => {
+          if (i === 0) return; // beat 4 is shown by the onBeat() above
+          ids.push(
+            timers.setTimeout(() => {
+              if (active) options.onBeat(COUNT_IN_BEATS - i);
+            }, Math.max(0, (off + ui) * 1000 - elapsed)),
+          );
+        });
         ids.push(
           timers.setTimeout(() => {
-            if (active) options.onBeat(COUNT_IN_BEATS - i);
-          }, (off + ui) * 1000),
+            if (!active) return;
+            active = false;
+            clear();
+            options.onBeat(null);
+            then();
+          }, Math.max(0, (countInSec(bpm) + downbeat) * 1000 - elapsed)),
         );
-      });
-      options.onBeat(COUNT_IN_BEATS);
-      ids.push(
-        timers.setTimeout(() => {
-          if (!active) return;
-          active = false;
-          clear();
-          options.onBeat(null);
-          then();
-        }, Math.max(0, countInSec(bpm) + downbeat) * 1000),
-      );
+      };
+      arm();
+      if (countInSec(bpm) * 1000 > 2 * SETTLE_MS) {
+        ids.push(
+          timers.setTimeout(() => {
+            if (active) arm();
+          }, SETTLE_MS),
+        );
+      }
       return true;
     },
   };

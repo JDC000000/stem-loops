@@ -13,7 +13,7 @@ import { fileURLToPath } from 'node:url';
 
 import {
   COUNT_IN_BEATS, COUNT_IN_KEY, COUNT_IN_NEEDS_BPM, CANCEL_SWALLOW_MS, beatSec, clickOffsets, countInBpm, countInSec,
-  createCountIn, cancelOnOtherInput, readCountIn, writeCountIn, createClickSink, timingOffsets, CLICK_LEAD_SEC, ENGINE_LEAD_SEC,
+  createCountIn, cancelOnOtherInput, readCountIn, writeCountIn, createClickSink, timingOffsets, engineCountLatencySec, SETTLE_MS, CLICK_LEAD_SEC, ENGINE_LEAD_SEC,
 } from '../src/lib/play/count-in.ts';
 import { buildModuleGraph } from './helpers/module-graph.mjs';
 import { withDom } from './helpers/dom.mjs';
@@ -700,4 +700,61 @@ test('F2 (screen): two counts reuse ONE click AudioContext, and unmounting the p
   } finally {
     if (real) globalThis.AudioContext = real; else delete globalThis.AudioContext;
   }
+});
+
+// ═══ review R2, round 3 ══════════════════════════════════════════════════════
+
+test('R2-1: engine latency by route — the element route uses the route estimate, every other route the engine context\'s own device latency (never 0)', () => {
+  const L = 0.2;
+  // desktop / iPad: not routed, route estimate is 0 -> the context's outputLatency, else baseLatency
+  assert.equal(engineCountLatencySec({ outputLatency: L, baseLatency: 0.01 }, false, 0), L);
+  assert.equal(engineCountLatencySec({ outputLatency: 0, baseLatency: 0.01 }, false, 0), 0.01);
+  assert.equal(engineCountLatencySec(null, false, 0), 0);
+  // phone route: the route's estimate wins
+  assert.equal(engineCountLatencySec({ outputLatency: L }, true, 0.25), 0.25);
+  // click and engine on the same device (both L): the downbeat is exactly the lead difference
+  const t = timingOffsets({ clickLatencySec: L, engineLatencySec: engineCountLatencySec({ outputLatency: L }, false, 0) });
+  assert.ok(Math.abs(t.downbeat - (CLICK_LEAD_SEC - ENGINE_LEAD_SEC)) < 1e-9, 'L cancels: not +L late');
+  // the broken version (engine 0 on this route) would be L late
+  assert.ok(Math.abs(timingOffsets({ clickLatencySec: L, engineLatencySec: 0 }).downbeat - t.downbeat - L) < 1e-9);
+});
+
+test('R2-1 (source): Player feeds the count the engine context latency on the non-element route', () => {
+  const src = read('src/components/play/Player.tsx');
+  const body = src.slice(src.indexOf('const getEngineLatencySec'), src.indexOf('const getEngineLatencySec') + 400);
+  assert.match(body, /engineCountLatencySec\(src, routed, routeLatencySec\(src, routed\)\)/);
+});
+
+test('R2-2: the first count reads latencies AFTER the in-gesture resume: both read 0 at start, real at SETTLE_MS, and the downbeat follows the later reading', () => {
+  const clock = fakeClock();
+  let ready = false;
+  let thens = 0;
+  const c = createCountIn({
+    bpm: 120, timers: clock, onBeat() {},
+    timing: () => (ready ? { clickLatencySec: 0.2, engineLatencySec: 0.05 } : { clickLatencySec: 0, engineLatencySec: 0 }),
+  });
+  c.start(() => { thens += 1; });
+  ready = true; // the contexts resumed and now report their latency
+  clock.tick(SETTLE_MS);
+  const want = 2000 + timingOffsets({ clickLatencySec: 0.2, engineLatencySec: 0.05 }).downbeat * 1000; // the LATER reading
+  clock.tick(want - SETTLE_MS - 1); assert.equal(thens, 0);
+  clock.tick(1); assert.equal(thens, 1, 'called at the re-read downbeat');
+  // never re-armed into the past, never twice
+  clock.tick(5000); assert.equal(thens, 1);
+});
+
+test('R2-2: with a count too short to settle, it is armed once; a cancel during the settle wait leaves nothing pending', () => {
+  const clock = fakeClock();
+  const c = createCountIn({ bpm: 300, timers: clock, onBeat() {} });
+  c.start(() => {});
+  c.cancel(true);
+  assert.equal(clock.pending(), 0);
+});
+
+test('R2-3: the un-prime guard — a cancelled count never pauses the element while the engine is playing (source)', () => {
+  const src = read('src/components/play/Player.tsx');
+  const a = src.indexOf('const onUnprime');
+  const body = src.slice(a, src.indexOf('const getEngineLatencySec'));
+  assert.match(body, /getSnapshot\(\)\.status !== 'playing'\) outputRef\.current\?\.pause\(\)/, 'guarded by "engine not playing"');
+  assert.equal([...body.matchAll(/outputRef\.current\?\.pause\(\)/g)].length, 1);
 });

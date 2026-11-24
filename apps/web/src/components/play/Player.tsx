@@ -87,6 +87,7 @@ import {
 import { playbackProfile, readDeviceSignals } from '@/lib/play/device-support';
 import { createWakeLock } from '@/lib/play/wake-lock';
 import { createPlayEngine } from '@/lib/play/engine';
+import { engineCountLatencySec } from '@/lib/play/count-in';
 import {
   StemLoadError,
   loadStems,
@@ -655,7 +656,11 @@ export default function Player({
     if (engineRef.current?.getSnapshot().status !== 'playing') outputRef.current?.pause();
   }, []);
   const getEngineLatencySec = useCallback(
-    () => routeLatencySec(engineRef.current?.audioLatency?.(), !!outputRef.current?.routed),
+    () => {
+      const src = engineRef.current?.audioLatency?.();
+      const routed = !!outputRef.current?.routed;
+      return engineCountLatencySec(src, routed, routeLatencySec(src, routed));
+    },
     [],
   );
   const onSeek = useCallback((positionSec: number) => engineRef.current?.seek(positionSec), []);

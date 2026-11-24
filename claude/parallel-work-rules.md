@@ -17,20 +17,25 @@ why: JON D-6, 2026-11-23 19:50 Vancouver (LEDGER-19A row 95), verbatim: "Update 
 
 ## 1 · Merging (rewritten in v3.5)
 
-**M-SA. Self-approval.** The orchestrator (main session only; subagents never merge) merges a PR without asking Jon when ALL hold:
-1. **Independent review:** a reviewer on a different model from the author wrote a review file whose first line is `VERDICT: PASS <91-100> HEAD <sha7>` at the reviewed SHA; the reviewer ran the tests and ≥ 3 mutants.
-2. **Second review for high-risk classes** (a second reviewer on a third model, also PASS > 90, both at the same content):
-   - money / billing / entitlement / Stripe / auth / service-role / secrets paths, or `[billing]` title (also M-11 > 90; report min(M-11, M-9));
-   - changes to the merge path itself: `scripts/or4-merge.sh`, `.github/workflows/**`, CODEOWNERS, rulesets-as-code, `.claude/settings.json`, AGENTS.md merge sections, this file's §1.
-3. **Gate:** `scripts/or4-merge.sh` ≥ v3.5, `DRY_RUN=1` first (only the literal `1`; issue #391), then the real run with `JON_ROW=95 JON_PR=<pr>` (D-6 is the standing approval row; JON_PR ties each run to one PR).
-4. **CI** green on the PR head; protected PRs behind 0; others may use `ALLOW_BEHIND=1` (≤ 5, disjoint, no coupled/hot files).
-5. **Not a hard-rule item** (these were never merge approvals and still go to Jon): applying a migration to prod/staging, any migration with `DROP` (sent to Jon as a file), Stripe live mode, secrets/tokens/env, paid-API budgets, ruleset or repo-settings changes, deleting R2 data, irreversible prod data changes.
+**M-SA. Self-approval.** The canonical text is **AGENTS.md M-8, "M-SA"**; this section summarises it and must not diverge. The orchestrator (main session only; subagents never merge) merges a PR without asking Jon when ALL hold:
+1. **Review:** a dispatched reviewer agent on a different model from the author wrote a review file with exactly one `VERDICT: PASS <91-100> HEAD <sha7>` line at the reviewed SHA, and ran the tests and ≥ 3 mutants. The orchestrator never writes, edits or converts a review file; the author's agent never reviews.
+2. **Second reviewer** (third model, PASS > 90, same content) for **every PR in the gate's protected class**: a path matching `PROTECTED_RE` in `scripts/or4-merge.sh`, the label `needs-jon-approval`, or a `[billing]` title. Money / auth / secrets also need M-11 > 90 (report min(M-11, M-9)). The merge path (`scripts/or4-merge.sh`, `scripts/test_or4_merge.py`, workflows, CODEOWNERS, `.claude/settings.json`, rulesets, AGENTS.md M-SA, this §1) is inside that class.
+3. **Gate:** `scripts/or4-merge.sh` ≥ v3.5, `DRY_RUN=1` first (only the literal `1`; issue #391), then the real run with `JON_ROW=95 JON_PR=<pr>` (D-6 standing row; JON_PR ties each run to one PR).
+4. **CI** green on the PR head; protected PRs behind 0; others may use `ALLOW_BEHIND=1` (≤ 5, disjoint, no coupled/hot files). **Rule 9b:** if the PR content changed after review (not just an `update-branch`, which the patch-id check passes), a non-author agent writes a delta review at the new head first.
+5. **Migrations:** a PR that adds a migration, or code depending on an unapplied one, merges only AFTER Jon has applied it to prod and staging and both DBs are verified (one bare SELECT each). A `DROP` migration goes to Jon as a file first. Hold without a merge question until his apply is on the ledger.
+
+**Enforced by the gate (code):** marker in the one review file at the reviewed SHA, patch-id equality, not draft, ≥ 10 green check-runs and statuses, behind rules, protected class → numeric `JON_ROW` + matching `JON_PR`, no merge-bot labels.
+**Process (orchestrator duty, not enforced):** reviewer model ≠ author, the second review exists (the gate takes one file), tests/mutants ran, the review was written by a reviewer agent, `DRY_RUN=1` first, main session only, the row is 95. The gate cannot verify the ledger row or reviewer identity. Before the real run, log both review files, models and scores. Never call a process item "checked by the gate".
+
+**HELD for Jon, a control change not a merge ask:** a PR that removes or loosens a gate check, changes M-SA / this approval rule, CODEOWNERS, `.claude/settings.json`, rulesets, or the merge logic of workflows (`auto-merge.yml`, autonomy-class, the labellers). Do not self-merge; put one line in the cycle brief and wait for a JON row naming it. Tightening-only changes may be self-approved with two reviewers.
+
+**Hard-rule items (never merge approvals; still Jon's):** applying a migration to prod/staging, any `DROP` migration, Stripe live mode, secrets/tokens/env, paid-API budgets, ruleset or repo-settings changes, deleting R2 data, irreversible prod data changes.
 
 **After every self-approved merge:** log the ledger row (PR, reviewers + models + scores, gate version, merge SHA); watch `v3/main` CI at the merge SHA. If main goes red because of the merge: all merges stop (M-5), and a revert PR is opened, reviewed and self-merged under M-SA. Report merges to Jon in the cycle summary (no question).
 
-**Stop and tell Jon (not ask to merge) when:** a reviewer FAILs the same PR 3 times; reviewers disagree across models by > 15 points; a merge would loosen a gate check (removing a check is listed in the summary's first line); a classifier/permission/proxy refusal (OR-1).
+**Stop and tell Jon (not a merge ask) when:** a reviewer FAILs the same PR 3 times; reviewers disagree across models by > 15 points; a classifier/permission/proxy refusal (OR-1). A gate-loosening PR is HELD (above), not merged.
 
-**Removed in v3.5:** "protected PRs need Jon's named per-PR approval"; batching merge questions into decision briefs; the D-1(i) non-protected-only scope.
+**Removed in v3.5:** v3.4.3's "never skip or run ahead of a human gate" now means the HELD and hard-rule items; "protected PRs need Jon's named per-PR approval"; batching merge questions into decision briefs; the D-1(i) non-protected-only scope.
 
 ## 2 · Work rules (carried from v3.4.2, updated)
 

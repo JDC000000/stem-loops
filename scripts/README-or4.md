@@ -96,7 +96,7 @@ fails or lists nothing, or if the PR labels/title cannot be read.
 
 Such a PR is refused unless **both** are set: `JON_ROW=<ledger row>` (**95**: the JON D-6 standing approval, 2026-11-23 19:50 Vancouver, "stop asking me to merge") and `JON_PR=<pr>` equal to the PR number being merged (ties the approval to this PR;
 a stale exported JON_ROW cannot approve another PR). The gate prints both. It cannot verify the ledger row
-itself. Set them only for a PR that meets M-SA (AGENTS.md M-8; `claude/parallel-work-rules.md` v3.5 §1): independent PASS review, plus a second reviewer on a third model for money/auth/secrets and merge-path changes. Always run `DRY_RUN=1` first (only the literal `1`; #391), and unset both after the run.
+itself. The gate only checks that both are numeric and `JON_PR` equals the PR (any numeric row passes). Set them only for a PR that meets M-SA (canonical: AGENTS.md M-8): a reviewer-agent PASS review, and a second reviewer on a third model for every protected-class PR. A HELD change (gate loosening, M-SA, CODEOWNERS, settings, rulesets, workflow merge logic) is not self-merged. The gate does not check reviewer model, a second review, or dry-run order; those are process duties. Always run `DRY_RUN=1` first (only the literal `1`; #391), and unset both after the run.
 
 `OR4_LIB=1` is for tests only: sourcing defines the functions; executing the script with it prints
 `OR4_LIB set: library mode, NOT a merge` to stderr and exits 2.

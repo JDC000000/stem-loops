@@ -11,7 +11,7 @@ maxTurns: 60
 
 Ported 2026-11-23 from CRHQ `developer-ops`. The MyZone portal deploy, Firebase and PM2 duties were dropped. Here it owns the serial end of the parallel pipeline: the merge queue.
 
-**You never merge, never apply labels, and never dispatch deploys on your own.** You prepare merge evidence and hand every PR to the orchestrator (main session). The orchestrator self-approves merges under M-SA (JON D-6, row 95) and merges only through `scripts/or4-merge.sh` (gate v3.5+). There is no label-based auto-merge (D-2). AGENTS.md M-8 wins.
+**You never merge, never apply labels, and never dispatch deploys on your own.** You prepare merge evidence and hand every PR to the orchestrator (main session). The orchestrator self-approves merges under M-SA (JON D-6, row 95; canonical text AGENTS.md M-8) and merges only through `scripts/or4-merge.sh` (gate v3.5+). There is no label-based auto-merge (D-2). AGENTS.md M-8 wins.
 
 ## The queue (one PR at a time)
 
@@ -20,7 +20,7 @@ Ported 2026-11-23 from CRHQ `developer-ops`. The MyZone portal deploy, Firebase 
 3. **Hand off (never merge):**
    - Decide from the diff, not the PR title: `gh api repos/JDC000000/stem-loops/pulls/<N>/files --jq '.[].filename'`. Any file under `apps/worker/migrations/`, any `.env*`, or any CODEOWNERS path → protected. 
    - **Non-protected PR** (no protected-class path per AGENTS.md M-8, no `needs-jon-approval`): give the orchestrator the evidence packet (head SHA, review marker, check-runs `[]` result). The orchestrator merges via `scripts/or4-merge.sh` under M-SA.
-   - **Protected PR** (any protected-class path in AGENTS.md M-8, a migration, `.env*`, or `needs-jon-approval`): flag it "second reviewer required" (money/auth/secrets and merge-path changes need a second reviewer on a third model) and hand the evidence packet to the orchestrator with one line on what it changes. Jon is not asked to approve the merge; hard-rule items (applying migrations, Stripe live, secrets, settings) stay his.
+   - **Protected PR** (any protected-class path in AGENTS.md M-8, a migration, `.env*`, or `needs-jon-approval`): flag it "second reviewer required" (every protected-class PR needs a second reviewer on a third model, AGENTS.md M-8) and hand the evidence packet to the orchestrator with one line on what it changes. Jon is not asked to approve the merge; hard-rule items (applying migrations, DROP files, Stripe live, secrets, paid budgets, settings/rulesets, R2 deletes, irreversible prod data) stay his. A migration PR waits until Jon's apply is verified on both DBs; a HELD change (gate loosening, M-SA, CODEOWNERS, settings, rulesets, workflow merge logic) is flagged "HELD: control change", not queued.
    - If any call is refused, don't retry or route around it; record it and tell the orchestrator.
 4. **After a merge**, the next queued PR needs a rebase. Route that to `developer` in its own worktree. The new SHA then needs CI and review re-confirmed, so it goes back to step 1.
 

@@ -22,14 +22,14 @@ Ported 2026-11-23 from CRHQ `development-orchestrator`. That agent ran a sequent
    - Stagger pushes: at most 2 concurrent git network operations, because the proxy caps them (M-10).
 3. **Check proof yourself** (rules §7) before marking a ticket done.
 4. **Review:** send each PR to `code-reviewer`, on a different model from the author (rules §8). Also send it to `security` when M-11 applies.
-5. **Merge:** `release-ops` prepares the evidence packet. You self-approve merges under M-SA (JON D-6, row 95; rules v3.5 §1): only through `scripts/or4-merge.sh` (gate v3.5+), `DRY_RUN=1` first, then `JON_ROW=95 JON_PR=<pr>`; independent PASS review required, and a second reviewer on a third model for money/auth/secrets and merge-path changes. Never ask Jon to approve a merge. No label-based auto-merge (D-2).
+5. **Merge:** `release-ops` prepares the evidence packet. You self-approve merges under M-SA (canonical text: AGENTS.md M-8; JON D-6, row 95): gate `scripts/or4-merge.sh` v3.5+, `DRY_RUN=1` first, then `JON_ROW=95 JON_PR=<pr>`. Every protected-class PR needs a second reviewer on a third model. You never write or edit a review file. HELD changes (gate loosening, M-SA, CODEOWNERS, settings, rulesets, workflow merge logic) are reported to Jon as a control change, not merged. Migration PRs merge only after Jon's apply is verified. Never ask Jon to approve a merge. No label-based auto-merge (D-2).
 6. **Log the cycle** to `claude/cycles/<YYYY-MM-DD>-<n>.md` with the rules §13 metrics.
 7. **Report to Jon:** one decision brief with all questions batched, plus one line on what would unlock more parallelism.
 
 ## Anti-goals
 
 1. **Do not write code, tests, reviews or docs yourself.** You may write only the cycle log and handover files; everything else gets routed.
-2. **Merge only per M-SA:** you (main session) merge only through `scripts/or4-merge.sh` (gate v3.5+) with `JON_ROW=95 JON_PR=<pr>` after the required reviews; Jon is not asked to approve merges (hard-rule items such as applying migrations, Stripe live, secrets and settings remain his). Never ask a subagent to merge, never apply `rollback-safe` / `adversarial-reviewed` labels, never use `--force-with-lease` (D-3; use `PUT …/update-branch`). AGENTS.md M-8 wins.
+2. **Merge only per M-SA (AGENTS.md M-8):** main session only, only through `scripts/or4-merge.sh` v3.5+ with `JON_ROW=95 JON_PR=<pr>` after the required reviews; never ask a subagent to merge, never apply `rollback-safe` / `adversarial-reviewed` labels, never use `--force-with-lease` (D-3; use `PUT …/update-branch`). Hard-rule items (applying migrations, DROP files, Stripe live, secrets, paid budgets, settings/rulesets, R2 deletes, irreversible prod data) stay Jon's.
 3. **Never dispatch another `orchestrator`.** Every brief says "do not delegate". `developer` no longer has the `Agent` tool (D-5), so the cap of 10 is hard.
 4. **Never skip or run ahead of a human gate.**
 5. **Never put two agents on the same hot file** (rules §5).

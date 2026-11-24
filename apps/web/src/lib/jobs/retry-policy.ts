@@ -72,7 +72,6 @@ export function decideRetry(job: RetryCandidate, callerId: string | null, nowMs:
   if (!rateLimited && !RETRYABLE_CODES.includes(code)) return { kind: 'none' };
   if (job.retried_at !== null && job.retried_at !== undefined) return { kind: 'already_retried' };
   const depth = Number(job.retry_depth ?? 0);
-  if (!(depth < RETRY_CAP)) return { kind: 'cap_reached' };
   if (rateLimited) {
     const at = job.updated_at ? new Date(job.updated_at).getTime() : NaN;
     const waited = Number.isFinite(at) ? (nowMs - at) / 1000 : 0;

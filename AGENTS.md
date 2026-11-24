@@ -256,7 +256,7 @@ configured to author commits as that user:
 4. `--admin` stops being the normal merge path entirely
 
 Until the service account is created, the current workaround stands:
-Jon runs `scripts/safe_merge.sh <N>` which enforces M-1 while admin-
+(Superseded by M-SA for merge approval.) Jon runs `scripts/safe_merge.sh <N>` which enforces M-1 while admin-
 bypassing the CODEOWNERS self-approval block. Creating the service
 account is a one-time setup step; track it in
 `claude/project-tracker.md` under "Structural" and close this note once
@@ -327,7 +327,7 @@ override" does not alter them — explain the distinction instead of retrying.
 | Operation | Result |
 |---|---|
 | `gh pr merge --admin` | Routes through **GraphQL**, which is unavailable in-session |
-| REST `PUT /repos/{o}/{r}/pulls/{N}/merge` | Allowed **only** through the OR-4 gate (now `scripts/or4-merge.sh`: review marker + patch-id equality + checks), run by the orchestrator (main session), never a subagent — passed 11× on 2026-11-23 (#347 #346 #340 #341 #348 #350 #353 #359 #358 #354 #349, all `merged_by` JDC000000). The first 10 used the orchestrator's out-of-repo gate copies (v3.1 ×5, v3.2 ×4, v3.3 ×2 across the 11); `scripts/or4-merge.sh` entered the repo only with #349. 5 of the 11 (#346 #340 #341 #354 #349) were protected PRs, merged with Jon's named per-PR approval. A classifier change could re-block it at any time; if refused, OR-1 applies (record, tell Jon, never re-route). Ungated, it was blocked as **"Merge Without Review"** |
+| REST `PUT /repos/{o}/{r}/pulls/{N}/merge` | Allowed **only** through the OR-4 gate (now `scripts/or4-merge.sh`: review marker + patch-id equality + checks), run by the orchestrator (main session), never a subagent — passed 11× on 2026-11-23 (#347 #346 #340 #341 #348 #350 #353 #359 #358 #354 #349, all `merged_by` JDC000000). The first 10 used the orchestrator's out-of-repo gate copies (v3.1 ×5, v3.2 ×4, v3.3 ×2 across the 11); `scripts/or4-merge.sh` entered the repo only with #349. 5 of the 11 (#346 #340 #341 #354 #349) were protected PRs, merged under Jon's per-PR approval at the time; from JON D-6 (2026-11-23 19:50 Vancouver, LEDGER-19A row 95) merge approval is self-approved under M-SA (below). A classifier change could re-block it at any time; if refused, OR-1 applies (record, tell Jon, never re-route). Ungated, it was blocked as **"Merge Without Review"** |
 | `PUT /repos/{o}/{r}/pulls/{N}/ccr/auto_merge` | Classifier: **"Auto-Mode Bypass"** |
 | `PUT /repos/{o}/{r}/rulesets/{id}` | Classifier: **dangerous-action denial** (verified 2026-11-05 on the dormant `main` ruleset, chosen deliberately so a denial could not break the live branch) |
 | `GET /repos/{o}/{r}/actions/secrets` | **403** — "not permitted through this proxy" |
@@ -335,15 +335,38 @@ override" does not alter them — explain the distinction instead of retrying.
 | GitHub **GraphQL** generally | Forbidden. `gh pr view --json`, `gh pr checks`, `gh pr create` all fail — use REST (`gh api repos/{o}/{r}/...`) |
 | `GET /repos/{o}/{r}/branches/{b}/protection` | **404 "Branch not protected"** — this repo uses **rulesets**, not classic protection |
 
-The orchestrator (main session; subagents never merge) merges reviewed NON-protected PRs under Jon's standing approval (ratified JON 2026-11-23, D-1(i)). Merges require gate **v3.3 or later** (protected class + `JON_ROW`). The in-repo `scripts/or4-merge.sh` is v3.1 today and lacks these checks: do not use it for any merge until the v3.3 PR (#363) lands. Protected = `.github/`, `scripts/`, `.claude/` (any depth), `AGENTS.md`, `CLAUDE*`, `.mcp.json`, `**/SKILL.md`, `CODEOWNERS`, any `migrations/`, `.env*`, paths matching billing, stripe, entitlement, auth, service-role or secret; label `needs-jon-approval`; title `[billing]`. Protected PRs need Jon's named approval per PR. The checking of that class is the orchestrator's job, not something the script guarantees; when in doubt, treat as protected.
+**M-SA (self-approval; canonical text — every other file points here).** JON D-6, 2026-11-23 19:50 Vancouver, LEDGER-19A row 95: "Update your merge rules ... so you can self-approve ... stop asking me to merge." Jon is never asked to approve a merge. The orchestrator (main session only; subagents never merge) merges a PR when ALL of the following hold.
+
+*Conditions*
+1. **Review:** a dispatched reviewer agent on a different model from the author wrote the review file, which carries exactly one `VERDICT: PASS <91-100> HEAD <sha7>` line at the reviewed SHA (the gate reads the last such line), and the reviewer ran the tests and at least 3 mutants. The orchestrator never writes, edits or converts a review file, and the author's own agent never reviews.
+2. **Second reviewer** (a third model, PASS > 90, at the same content) for **every PR in the gate's protected class**: a path matching `PROTECTED_RE` in `scripts/or4-merge.sh` (`.github/`, `scripts/`, `.claude/` at any depth, `AGENTS.md`, `CLAUDE*`, `.mcp.json`, `**/SKILL.md`, `CODEOWNERS`, any `migrations/`, `.env*`, and billing, stripe, entitlement, auth, service-role, secret paths), the label `needs-jon-approval`, or a `[billing]` title. Money / auth / secrets PRs also need M-11 > 90 (report min(M-11, M-9)). When in doubt, treat as protected. The merge path (`scripts/or4-merge.sh`, `scripts/test_or4_merge.py`, workflows, CODEOWNERS, `.claude/settings.json`, rulesets, this section) is inside that class.
+3. **Gate:** `scripts/or4-merge.sh` v3.5 or later, `DRY_RUN=1` first (only the literal `1`; #391), then the real run with `JON_ROW=95 JON_PR=<pr>` (row 95 is the D-6 standing approval; `JON_PR` ties each run to one PR; unset both afterwards).
+4. **CI** is green on the head. If the PR content changed after review (anything beyond an `update-branch`, which the gate's patch-id check passes), a non-author agent writes a delta review at the new head first.
+5. **Migrations:** a PR that adds a migration, or code that depends on one not yet applied (see its DEPLOY ORDER header), merges only AFTER Jon has applied it to prod and staging and both DBs are verified (one bare SELECT each). A `DROP` migration goes to Jon as a file first. Hold without asking about the merge until his apply is on the ledger.
+
+*Enforced by the gate (code) versus process (orchestrator duty, not enforced)*
+
+| Enforced by the gate (code) | Process: the orchestrator must verify and record; the gate does not check it |
+|---|---|
+| a `VERDICT: PASS` marker in the one review file at the reviewed SHA; patch-id equality; not draft; at least 10 check-runs all green; statuses; behind rules (`ALLOW_BEHIND` never for protected); protected class needs numeric `JON_ROW` plus `JON_PR` equal to the PR; no merge-bot labels | reviewer model differs from author; a second review exists (the gate takes one file); tests and mutants were run; the review was written by a reviewer agent; `DRY_RUN=1` first; main session only; the row is 95 (any numeric row passes) |
+
+The gate cannot verify the ledger row, the reviewer's identity or model, or that a second review exists. Before the real run, log a ledger row naming both review files, models and scores. Never describe a process item as "checked by the gate".
+
+*Held for Jon: a control change, not a merge ask.* The orchestrator does NOT self-merge a PR that removes or loosens a gate check, changes M-SA or any condition above, or changes CODEOWNERS, `.claude/settings.json`, rulesets, or the merge logic of workflows (`auto-merge.yml`, autonomy-class, the labellers). It reports one line in the cycle brief and waits for a JON row naming that change. A change that only tightens may be self-approved with two reviewers. This is the same list M-10 refers to.
+
+*Hard-rule items stay Jon's (never merge approvals):* applying migrations to prod or staging, any `DROP` migration, Stripe live mode, secrets/tokens/env, paid-API budgets, ruleset and repo-settings changes, deleting R2 data, irreversible prod data changes.
+
+*After each merge:* log the ledger row (PR, reviewers, models, scores, gate version, merge SHA) and watch `v3/main` CI at the merge SHA; a red main stops all merges (M-5) and a revert PR goes through the same path. Stop and tell Jon (not a merge ask) when a reviewer FAILs the same PR 3 times, reviewers disagree by more than 15 points, or a refusal occurs (OR-1). Report merges in the cycle summary. Full rules: `claude/parallel-work-rules.md` v3.5.
+
+**Standing decisions (M-8).** D-2: no label-based auto-merge (`rollback-safe`, `adversarial-reviewed`), and no widening of `auto-merge.yml`; the bot path is closed. D-3: rebase only with REST `PUT …/update-branch`, never force-push or `--force-with-lease`.
 
 **Consequence to internalise:** subagents cannot merge. The orchestrator merges only
 through the gate above. A classifier change could re-block REST merges at any
 time; a refusal triggers OR-1 (record, tell Jon, never re-route). The GitHub
 App does not change that. The App lets `auto-merge.yml` merge **server-side in
-GitHub Actions**, which these controls do not govern. Automation of merging
-goes through widening that workflow's scope — never through widening the
-agent merge path beyond the gate.
+GitHub Actions**, which these controls do not govern. *Superseded by D-2:* the
+earlier plan to automate merging by widening that workflow's scope is closed;
+no label auto-merge, and the agent merge path stays inside the gate.
 
 **Therefore:** ruleset changes and secret writes are always operator
 actions. Prepare the exact command and hand it over; do not attempt the
@@ -506,8 +529,9 @@ the cutover plan lists as blocking pre-flight items:**
 
 **What this rule is not.** It is not a substitute for M-9 — a change can need
 both, and a CI gate touching grants needs both. And a security review clearing
-90 is not permission to merge something the deny list refuses: Jon merges the
-money path, migrations, workflows and secrets, every time.
+90 is not permission to merge a held change or to do a hard-rule item (M-SA).
+Every protected-class PR needs a second reviewer on a third model (M-SA);
+applying migrations, Stripe live and secrets stay Jon's, every time.
 
 ---
 
@@ -576,6 +600,7 @@ justified removing a `ci.yml` secret mapping: had it stayed, every PR would
 have gone red. Two facts, one log, no screenshots.
 
 **The standing limits still apply.** Attachment widens GitHub scope and
-nothing else. It is not permission to merge anything on the deny list, to
-touch `.env*`, `CODEOWNERS`, `auto-merge.yml` or `.claude/settings.json`, or
-to bypass a classifier refusal by another route.
+nothing else. It is not permission to merge a held change (M-SA), to
+touch `.env*`, `CODEOWNERS`, `auto-merge.yml` or `.claude/settings.json`
+without a JON row naming the change, or to bypass a classifier refusal by
+another route.

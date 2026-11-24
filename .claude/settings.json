@@ -12,7 +12,11 @@
       "Bash(git push * v3/main)",
       "Bash(git push --force* main)",
       "Bash(git push --force* v3/main)",
-      "Bash(gh pr merge --admin*)"
+      "Bash(gh pr merge --admin*)",
+      "Bash(git push --force *)",
+      "Bash(git push -f *)",
+      "Bash(git reset --hard*)",
+      "Bash(rm -rf *)"
     ]
   }
 }

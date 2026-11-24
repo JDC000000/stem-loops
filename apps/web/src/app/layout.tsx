@@ -38,8 +38,13 @@ const jetbrainsMono = localFont({
   fallback: ['ui-monospace', 'SF Mono', 'Consolas', 'monospace'],
 });
 
+// viewportFit 'cover' (#360): the page draws edge to edge on iOS, so env(safe-area-inset-*) is
+// non-zero there. Every surface that touches an edge pads itself: body (globals.css), the
+// fixed player root and sheets, the flash banner, the sticky submit bar. On a device with no
+// cutout every inset is 0 and nothing moves. Real-device check: Jon's checklist item 9.
 export const viewport: Viewport = {
   themeColor: '#0d0d0d',
+  viewportFit: 'cover',
 };
 
 export default function RootLayout({

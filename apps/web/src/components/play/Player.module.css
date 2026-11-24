@@ -7,7 +7,7 @@
    page, the site nav included (P1.1: the player replaces the site nav with its
    own compact header; signed-in-nav.css hides the bar while it is mounted, so
    the nav is not reachable behind it either). Padded by the safe-area insets
-   (viewportFit 'cover' is set on /jobs/[id] only). */
+   (viewportFit 'cover' is set in the root layout, #360). */
 
 .root {
   position: fixed;

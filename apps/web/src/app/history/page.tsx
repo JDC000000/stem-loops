@@ -54,7 +54,7 @@ export default function HistoryPage() {
   );
 
   return (
-    <main style={{ minHeight: '100dvh', padding: 24, maxWidth: 640, margin: '0 auto', boxSizing: 'border-box' }}>
+    <main style={{ minHeight: 'var(--page-min-h)', padding: 24, maxWidth: 640, margin: '0 auto', boxSizing: 'border-box' }}>
       <h1 style={{ color: 'var(--text-primary)', fontSize: 'var(--text-2xl)' }}>
         {signedIn ? 'Your song library' : 'Song library'}
       </h1>

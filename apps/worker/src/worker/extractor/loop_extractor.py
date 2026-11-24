@@ -3,8 +3,10 @@
 Builds on the S3 heuristic from scratch (V1 is reference-only). Guards against
 beatless/too-short audio with EXTRACTION_FAILED so a bad source never yields junk.
 
-Loops sit on a fitted beat grid (beat_grid.py): bars are counted from the first detected
-beat (not t=0), and each loop start is snapped to the beat detected in its own window.
+Loops sit on a fitted beat grid (beat_grid.py): bars are counted from the first musical
+downbeat (not t=0, not a beat inside a silent lead-in), and each loop start is snapped to
+the beat detected in its own window. On a drifting-tempo track the grid follows the
+tracked beats, so a loop spans exactly its bars at the local tempo (its length varies).
 """
 
 import librosa
@@ -82,50 +84,79 @@ def extract_loops(
     # This guarantees coverage across the song's structure and ~floor(len/loop_dur)
     # loops per stem (>=5 on any normal-length track) rather than only the loops
     # that happen to fit inside one short phrase segment.
-    starts: list[float] = []
-    t = grid.anchor  # first beat; the grid before it is silence/pickup
-    while t + loop_dur <= song_len + 0.01:
-        window = [b for b in bnd if t <= b < t + loop_dur and b + loop_dur <= song_len + 0.01]
-        s = window[0] if window else t
-        starts.append(s)
-        t = s + loop_dur
+    if grid.follows_beats:
+        placed = _place_following(grid, bnd, loop_length_bars, song_len)
+    else:
+        starts: list[float] = []
+        t = grid.anchor  # first musical downbeat; before it is silence/lead-in
+        while t + loop_dur <= song_len + 0.01:
+            window = [b for b in bnd if t <= b < t + loop_dur and b + loop_dur <= song_len + 0.01]
+            s = window[0] if window else t
+            starts.append(s)
+            t = s + loop_dur
+        starts = _cap(starts)
+        # Snap each (grid) start to the beat detected inside its own window, so a slightly
+        # drifting performance still gets on-beat starts. Bounded to ±0.1 beat by the grid.
+        placed = []
+        for nominal in starts:
+            s = grid.local_beat(nominal, loop_dur)
+            if s + loop_dur > song_len + 0.01:
+                s = nominal
+            placed.append((max(0.0, s), grid.bar_index(nominal), loop_dur))
 
-    if not starts:
+    if not placed:
         raise ExtractionFailedError(
             f"No loops fit: {song_len:.1f}s < one {loop_length_bars}-bar loop"
         )
 
-    # Cap to a sensible, evenly-distributed set (PRD: 5+ per stem distributed across
-    # the structure — not every 4-bar window). Keeps the job inside the <60s budget.
+    for stem_name, stem_path in stem_paths.items():
+        y, _ = librosa.load(stem_path, sr=sr, mono=False)
+        if y.ndim == 1:
+            y = y[np.newaxis, :]
+        for start, start_bar, dur in placed:
+            s = int(round(start * sr))
+            chunk = y[:, s : s + int(round(dur * sr))]
+            if chunk.shape[1] >= int(dur * sr * 0.9):
+                yield {
+                    "stem": stem_name,
+                    "start_sec": start,
+                    "end_sec": start + dur,
+                    "start_bar": start_bar,
+                    "audio": chunk,
+                    "sr": sr,
+                }
+
+
+def _cap(starts: list[float]) -> list[float]:
+    """Cap to a sensible, evenly-distributed set (PRD: 5+ per stem distributed across
+    the structure — not every 4-bar window). Keeps the job inside the <60s budget."""
     if len(starts) > MAX_LOOPS_PER_STEM:
         idx = {
             round(i * (len(starts) - 1) / (MAX_LOOPS_PER_STEM - 1))
             for i in range(MAX_LOOPS_PER_STEM)
         }
         starts = [starts[i] for i in sorted(idx)]
+    return starts
 
-    # Snap each (grid) start to the beat detected inside its own window, so a slightly
-    # drifting performance still gets on-beat starts. Bounded to ±0.1 beat by the grid.
-    placed = []
-    for nominal in starts:
-        s = grid.local_beat(nominal, loop_dur)
-        if s + loop_dur > song_len + 0.01:
-            s = nominal
-        placed.append((max(0.0, s), grid.bar_index(nominal)))
 
-    for stem_name, stem_path in stem_paths.items():
-        y, _ = librosa.load(stem_path, sr=sr, mono=False)
-        if y.ndim == 1:
-            y = y[np.newaxis, :]
-        for start, start_bar in placed:
-            s = int(round(start * sr))
-            chunk = y[:, s : s + int(round(loop_dur * sr))]
-            if chunk.shape[1] >= int(loop_dur * sr * 0.9):
-                yield {
-                    "stem": stem_name,
-                    "start_sec": start,
-                    "end_sec": start + loop_dur,
-                    "start_bar": start_bar,
-                    "audio": chunk,
-                    "sr": sr,
-                }
+def _place_following(grid: BeatGrid, bnd: list[float], bars: int, song_len: float):
+    """Loop placement on a beat-following (drifting tempo) grid, in bar indices.
+
+    Same walk as the constant grid — prefer a phrase boundary inside the upcoming window,
+    else the next bar — but each loop ends on the tracked bar ``start_bar + bars``, so it
+    spans exactly its bars at the local tempo. No local fold-snap: the grid's beats are
+    already the locally detected ones.
+    """
+    bnd_bars = sorted({grid.bar_index(b) for b in bnd})
+    out: list[tuple[float, int, float]] = []
+    n = 0
+    while grid.bar_start(n + bars) <= song_len + 0.01:
+        window = [
+            m for m in bnd_bars if n <= m < n + bars and grid.bar_start(m + bars) <= song_len + 0.01
+        ]
+        m = window[0] if window else n
+        start = grid.bar_start(m)
+        out.append((max(0.0, start), m, grid.bar_start(m + bars) - start))
+        n = m + bars
+    keep = set(_cap(list(range(len(out)))))
+    return [p for i, p in enumerate(out) if i in keep]

@@ -40,6 +40,7 @@ import { consumeTrialInTx } from '@/lib/trial';
 import { consumeCreditInTx } from '@/lib/billing/credits';
 import { BAD_ORIGIN, crossOriginRefusal } from '@/lib/same-origin';
 import { createAuthedLinkJob, type LinkJobDeps } from '@/lib/jobs/create-link-job';
+import { pasteHooks } from '@/lib/library-server';
 
 // QA-64: recordAllowanceDebit() returns false only when migration 042 is not applied yet (the
 // job is created as before, with nothing recorded to give back). Say so once per process
@@ -421,6 +422,13 @@ export async function POST(request: NextRequest) {
     // dependencies. Credits are never spent on a link (the credit_consumption trigger accepts
     // upload jobs only, migration 013); that file meters a link with bumpJobsUsed /
     // bumpJobsUsedWithinQuota instead.
+    // NO DOUBLE CHARGE (#372): pasteHooks() reuses this user's live job for the same canonical
+    // URL AND the same loops (stem set + loop length; in flight, or done and retained; never a
+    // failed one) — 200 { id, existing: true } with nothing spent — and repeats that lookup
+    // under a per-(user, URL) advisory lock in the insert tx, so two concurrent pastes (or a
+    // paste and a Re-make) make one job and one debit (lib/library-server.ts). The lib answers
+    // 200 ONLY for such a hit; a new job stays 201 { id, status: 'queued' }. ToolForm opens the
+    // job either way and counts `song_added` only for a new one.
     if (user) {
       const r = await createAuthedLinkJob(
         {
@@ -429,9 +437,11 @@ export async function POST(request: NextRequest) {
           stems: bodyObj.stems,
           loopLengthBars: bodyObj.loop_length_bars,
           clientIpHash: () => clientIpHashOf(request),
+          ...pasteHooks(),
         },
         linkJobDeps(),
       );
+      if (r.status === 200) return NextResponse.json({ ...r.body, existing: true }, { status: 200 });
       if (r.raw) {
         return new NextResponse(JSON.stringify(r.body), { status: r.status, headers: r.headers });
       }

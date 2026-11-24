@@ -56,6 +56,19 @@ const CASES = [
   ...Object.entries(DEMOS).map(([slug, s]) => ({ name: `demo ${slug}`, rows: s.rows, duration: s.duration_sec })),
 ];
 
+// Phase C C3 (rename parts): custom names are stored per job (key and shape as in
+// apps/web/src/lib/play/part-names.ts: `sl.play.partNames.v1:<jobId>` = { "<start ms>": name }).
+// Long names may NOT all fit, by design (a 24-character name is ~180px wide); what must
+// hold is that the strip still tells the truth: the "+N more" cue counts exactly the
+// chips out of view, none is under 44px, and the page does not scroll.
+const RENAME_KEY = 'sl.play.partNames.v1:strip-gate';
+const namesFor = (sections, make) => Object.fromEntries(sections.map((r, i) => [String(Math.round(r.startSec * 1000)), make(i)]));
+const RENAMED = [
+  { name: '7 sections, all 24 W', sections: even(7), duration: DURATION, make: () => 'W'.repeat(24) },
+  { name: '12 sections, 24 chars', sections: even(12), duration: DURATION, make: (i) => `Verse number ${String(i + 1).padStart(2, '0')} of twelve`.slice(0, 24) },
+  { name: '5 sections, one long among defaults', sections: even(5), duration: DURATION, make: (i) => (i === 2 ? 'Big descending bridge ggg' : '') },
+].map((c) => ({ ...c, stored: namesFor(c.sections, c.make) }));
+
 async function bundle() {
   const res = await esbuild.build({
     stdin: {
@@ -110,6 +123,11 @@ async function measure(browser, built, [width, height], c, { pills = true } = {}
   await ctx.addInitScript(() => {
     try { localStorage.setItem('sl.play.lightNoteSeen.v1', '1'); } catch { /* none */ }
   });
+  if (c.stored) {
+    await ctx.addInitScript(([k, v]) => {
+      try { localStorage.setItem(k, v); } catch { /* none */ }
+    }, [RENAME_KEY, JSON.stringify(c.stored)]);
+  }
   const page = await ctx.newPage();
   const errors = [];
   page.on('pageerror', (e) => errors.push(String(e)));
@@ -261,6 +279,35 @@ for (const vp of [...FULL, ...SHORT]) {
     if (LOG) for (const l of log) console.log(`# ${l}`);
     if (f.length) assert.fail(`GATE-FAIL ${f.length}:\n  ${f.join('\n  ')}\n${log.map((l) => '  # ' + l).join('\n')}`);
   });
+}
+
+// Renamed parts: the cue must be exactly right whether or not every chip fits.
+for (const vp of [...FULL, ...SHORT]) {
+  for (const pills of [true, false]) {
+    test(`section strip @ ${vp[0]}x${vp[1]} ${pills ? 'with' : 'without'} the pills, LONG custom names: the "+N more" cue counts the hidden chips exactly; chips >= 44px; no page scroll`, async () => {
+      assert.ok(browser && built, 'setup test did not run or failed');
+      const f = [];
+      const log = [];
+      for (const c of RENAMED) {
+        const m = await measure(browser, built, vp, c, { pills });
+        const ctx = `${c.name} @ ${vp[0]}x${vp[1]} (${pills ? 'pills' : 'no pills'})`;
+        const hidden = m.chips.filter((x) => !x.visible);
+        log.push(`${ctx}: ${m.chips.length} chips, ${hidden.length} hidden, cue ${JSON.stringify(m.cue)}`);
+        if (m.errors.length) f.push(`${ctx}: page errors ${m.errors.join(' | ')}`);
+        if (m.chips.length !== m.count) f.push(`${ctx}: measured ${m.chips.length} chips for ${m.count} sections`);
+        if (!m.chips.some((x) => /W{10}|Verse number|Big descending/.test(x.text))) f.push(`${ctx}: the stored names were not applied`);
+        if (m.pageScroll > 0 || m.playerScroll > 0) f.push(`${ctx}: the screen scrolls (page ${m.pageScroll}px, player ${m.playerScroll}px)`);
+        for (const x of m.chips) if (x.h + 0.02 < MIN_CHIP_PX) f.push(`${ctx}: chip "${x.text}" is ${x.h.toFixed(1)}px tall`);
+        if (hidden.length) {
+          const want = new RegExp(`^\\+${hidden.length} more [\\u2193\\u2191]$`);
+          if (!m.cue || !want.test(m.cue) || !m.cueVisible) f.push(`${ctx}: ${hidden.length} chip(s) hidden but the cue is ${JSON.stringify(m.cue)}${m.cueVisible ? '' : ' (not visible)'}`);
+        } else if (m.cue) f.push(`${ctx}: the cue "${m.cue}" shows although every chip fits`);
+        if (pills && m.cueCoversPills) f.push(`${ctx}: the cue covers the pills row`);
+      }
+      if (LOG) for (const l of log) console.log(`# ${l}`);
+      if (f.length) assert.fail(`GATE-FAIL ${f.length}:\n  ${f.join('\n  ')}\n${log.map((l) => '  # ' + l).join('\n')}`);
+    });
+  }
 }
 
 test('teardown', async () => {

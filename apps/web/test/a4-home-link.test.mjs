@@ -234,7 +234,8 @@ const GRAPH = buildModuleGraph({
     // The rollout gate on, as in production.
     'lib/public-config.ts': 'export const YOUTUBE_INPUT_ENABLED = true;',
     // No analytics network; the grace is instant.
-    'lib/analytics.ts': 'export function trackEvent() {} export const navigationGrace = async () => {};',
+    // #372: trackEvent records into globalThis.__a4Events so a dedupe hit can be checked.
+    'lib/analytics.ts': 'export function trackEvent(n, p) { (globalThis.__a4Events ??= []).push([n, p]); } export const navigationGrace = async () => {};',
   },
   packages: { 'next/navigation': 'export const usePathname = () => null;' },
 });
@@ -246,7 +247,9 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
  * Mount the real form at `url` and return what it did. `me` is the /api/auth/me status (or
  * 'throw'); `cookie` sets a Supabase session cookie; `entry` pre-saves a pending link.
  */
-async function mountForm({ url = 'http://localhost:3000/', me = 200, cookie = false, entry = null, storage = 'real', clip = null, after } = {}) {
+async function mountForm({ url = 'http://localhost:3000/', me = 200, cookie = false, entry = null, storage = 'real', clip = null, after,
+  job = { status: 201, body: { id: '11111111-1111-4111-8111-111111111111', status: 'queued' } } } = {}) {
+  globalThis.__a4Events = [];
   return withDom(async (dom) => {
     const w = dom.window;
     const calls = { posts: [], assigns: [], me: 0, readText: 0 };
@@ -264,7 +267,7 @@ async function mountForm({ url = 'http://localhost:3000/', me = 200, cookie = fa
         }
         if (u === '/api/jobs' && init.method === 'POST') {
           calls.posts.push(JSON.parse(init.body));
-          return new w.Response(JSON.stringify({ id: '11111111-1111-4111-8111-111111111111' }), { status: 201 });
+          return new w.Response(JSON.stringify(job.body), { status: job.status });
         }
         throw new Error(`unexpected fetch ${u}`);
       },
@@ -279,6 +282,7 @@ async function mountForm({ url = 'http://localhost:3000/', me = 200, cookie = fa
     calls.search = w.location.search;
     calls.entry = w.localStorage.getItem(PENDING_LINK_KEY);
     calls.value = dom.find('#source')?.value;
+    calls.events = globalThis.__a4Events;
     calls.error = `${dom.find('#job-msg')?.textContent ?? ''} ${dom.find('#source-error')?.textContent ?? ''}`;
     return calls;
   }, { url });
@@ -326,6 +330,19 @@ test('mounted: signed in (cookie + 200), the link starts here: 1 POST, no sign-i
   assert.equal(r.posts.length, 1);
   assert.equal(r.posts[0].url, CANON);
   assert.deepEqual(r.assigns, ['/jobs/11111111-1111-4111-8111-111111111111']);
+  assert.deepEqual(r.events, [['song_added', { source: 'link' }]], 'a NEW job (201) counts as a song added');
+});
+
+test('mounted (#372): a dedupe hit (200 { id, existing: true }) opens that job and does NOT count song_added', async () => {
+  const id = '55555555-5555-4555-8555-555555555555';
+  const r = await mountForm({
+    cookie: true,
+    job: { status: 200, body: { id, existing: true } },
+    after: (dom) => submit(dom, 'https://youtu.be/dQw4w9WgXcQ'),
+  });
+  assert.equal(r.posts.length, 1);
+  assert.deepEqual(r.assigns, [`/jobs/${id}`], 'opens the existing job exactly like a new one');
+  assert.deepEqual(r.events, [], 'no song_added for a re-opened song');
 });
 
 test('mounted: a stale session cookie (the server says 401) is signed out: sign-in first, not an error', async () => {

@@ -218,6 +218,18 @@
   font-size: 15px;
   cursor: pointer;
 }
+.segmented3 {
+  grid-template-columns: 1fr 1fr 1fr;
+}
+/* Speed (Phase C C1): a quiet text tag, not a fill. */
+.beta {
+  margin-left: 6px;
+  padding: 0 6px;
+  border: 1px solid var(--border-control);
+  border-radius: 8px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
 .segment[aria-pressed='true'] {
   background: var(--bg-selected);
   border-color: var(--text-primary);

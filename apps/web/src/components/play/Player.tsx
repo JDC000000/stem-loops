@@ -87,6 +87,7 @@ import {
 import { playbackProfile, readDeviceSignals } from '@/lib/play/device-support';
 import { createWakeLock } from '@/lib/play/wake-lock';
 import { createPlayEngine } from '@/lib/play/engine';
+import { readSpeed, soundTouchStretch, writeSpeed } from '@/lib/play/stretch';
 import {
   StemLoadError,
   loadStems,
@@ -355,7 +356,14 @@ export function chordPositionFor(phase: Phase, snapshot: EngineSnapshot, latency
   // PLAYING: a paused or ended position is where the audio stopped, not ahead
   // of it. Desktop passes 0, so its behaviour is exactly the old one.
   if (snapshot.status === 'playing' && Number.isFinite(latencySec) && latencySec > 0) {
-    const heard = snapshot.positionSec - latencySec;
+    // `latencySec` is wall-clock seconds; positionSec is SONG seconds. At a
+    // reduced speed r (Phase C C1) one wall second covers only r song seconds,
+    // so the song-time lead is latencySec × r — subtracting the raw figure
+    // would put the chords (1 − r) × latency early.
+    const r = snapshot.playbackRate;
+    const rate = typeof r === 'number' && Number.isFinite(r) && r > 0 ? r : 1;
+    const lead = latencySec * rate;
+    const heard = snapshot.positionSec - lead;
     // QA C-11 — the engine position is already folded into the loop, so just
     // after a wrap `heard` lands BEFORE the loop head, on the previous
     // section's chord. What is heard then is the END of the loop: fold the
@@ -364,7 +372,7 @@ export function chordPositionFor(phase: Phase, snapshot: EngineSnapshot, latency
     const loop = snapshot.loop;
     if (loop && heard < loop.startSec && snapshot.positionSec >= loop.startSec && snapshot.positionSec < loop.endSec) {
       const span = loop.endSec - loop.startSec;
-      if (span > latencySec) return loop.endSec - (loop.startSec - heard);
+      if (span > lead) return loop.endSec - (loop.startSec - heard);
     }
     return Math.max(0, heard);
   }
@@ -439,6 +447,8 @@ export default function Player({
   const outputRef = useRef<BackgroundOutput | null>(null);
   const titleRef = useRef(title);
   titleRef.current = title;
+  // Phase C C1: false where this browser has no AudioWorklet (or it failed).
+  const [speedAvailable, setSpeedAvailable] = useState(false);
   // Bumped by "Try again"; re-runs the load effect below.
   const [attempt, setAttempt] = useState(0);
 
@@ -468,8 +478,17 @@ export default function Player({
     const engine = createPlayEngine({
       decodeSampleRate: profile.decodeSampleRate,
       ...(output ? { createOutput: output.createOutput } : {}),
+      // Phase C C1 (Beta): slow-down with pitch kept. Only browsers with
+      // AudioWorklet get it; the module is fetched on the first slow speed.
+      ...(typeof (globalThis as { AudioWorkletNode?: unknown }).AudioWorkletNode === 'function'
+        ? { stretch: soundTouchStretch() }
+        : {}),
     });
     engineRef.current = engine;
+    setSpeedAvailable(!!engine.canChangeSpeed);
+    // This song's remembered speed (localStorage, per job). Applied once loaded.
+    const savedSpeed = readSpeed(jobId);
+    if (savedSpeed !== 1) engine.setPlaybackRate?.(savedSpeed);
 
     // Lock-screen / notification controls go through the SAME callbacks as the
     // on-screen transport, so the two cannot disagree.
@@ -518,6 +537,7 @@ export default function Player({
     let wasPlaying = false;
     const unsubscribe = engine.subscribe((s) => {
       setSnapshot(s);
+      setSpeedAvailable(!!engine.canChangeSpeed); // false once the worklet fails
       media?.update(s);
       const playing = s.status === 'playing';
       if (wasPlaying && !playing) output?.pause(); // ended, failed or paused
@@ -637,6 +657,16 @@ export default function Player({
   const onSolo = useCallback((stem: StemName, soloed: boolean) => engineRef.current?.setSolo(stem, soloed), []);
   const onLoop = useCallback((region: LoopRegion | null) => engineRef.current?.setLoop(region), []);
   const onRetry = useCallback(() => setAttempt((n) => n + 1), []);
+  const onSpeed = useCallback(
+    (rate: number) => {
+      const engine = engineRef.current;
+      if (!engine?.setPlaybackRate) return;
+      engine.setPlaybackRate(rate);
+      writeSpeed(jobId, rate);
+      if (engine.canChangeSpeed === false) setSpeedAvailable(false);
+    },
+    [jobId],
+  );
 
   // P1.2 — Screen Wake Lock for as long as the player page is visible, playing
   // or paused (Phase A: a guitarist pauses to work out a shape and the screen
@@ -673,6 +703,7 @@ export default function Player({
       onSolo={onSolo}
       onLoop={onLoop}
       onRetry={onRetry}
+      {...(speedAvailable ? { onSpeed } : {})}
       title={title}
       bpm={bpm}
       musicalKey={musicalKey}
@@ -703,6 +734,11 @@ export interface PlayerViewProps {
   readonly onMute: (stem: StemName, muted: boolean) => void;
   readonly onSolo: (stem: StemName, soloed: boolean) => void;
   readonly onLoop: (region: LoopRegion | null) => void;
+  /**
+   * Phase C C1 (Beta): set the speed (1, 0.9 or 0.75; pitch kept). Absent where
+   * the browser cannot slow down: the ⋯ menu then shows no Speed control.
+   */
+  readonly onSpeed?: (rate: number) => void;
   /** Offered only on a `load-error` the loader marked retryable. */
   readonly onRetry?: () => void;
   /** The song's name for the header's h1 (P1.1). */

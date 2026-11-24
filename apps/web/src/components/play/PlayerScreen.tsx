@@ -55,6 +55,8 @@ import { Sheet } from './Sheet';
 import { Transport } from './Transport';
 import styles from './Player.module.css';
 import { SetListMenuItems, SetListPicker } from '@/components/setlists/AddToSetList';
+import { PLAYBACK_RATES } from '@/lib/play/engine';
+import { speedLabel } from '@/lib/play/stretch';
 import { SetListNext } from '@/components/setlists/SetListNext';
 import setStyles from '@/components/setlists/SetLists.module.css';
 import { isSetId, setHref } from '@/lib/set-lists';
@@ -163,6 +165,7 @@ export function PlayerScreen(props: ScreenProps) {
     onSolo,
     onLoop,
     onRetry,
+    onSpeed,
     title,
     bpm,
     musicalKey,
@@ -567,6 +570,29 @@ export function PlayerScreen(props: ScreenProps) {
                   ))}
                 </div>
               </div>
+              {onSpeed ? (
+                <div className={styles.menuGroup} role="group" aria-labelledby="player-speed" data-testid="speed-group">
+                  {/* Phase C C1 (Beta): pitch-kept slow-down. 50% is not offered. */}
+                  <span id="player-speed" className={styles.menuLabel}>
+                    Speed <span className={styles.beta}>Beta</span>
+                  </span>
+                  <div className={`${styles.segmented} ${styles.segmented3}`}>
+                    {PLAYBACK_RATES.map((r) => (
+                      <button
+                        key={r}
+                        type="button"
+                        className={styles.segment}
+                        aria-pressed={(snapshot.playbackRate ?? 1) === r}
+                        aria-busy={snapshot.speedPending && (snapshot.playbackRate ?? 1) !== r ? true : undefined}
+                        onClick={() => onSpeed(r)}
+                        data-testid={`speed-${Math.round(r * 100)}`}
+                      >
+                        {`${Math.round(r * 100)}%`}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
               {hasChords ? <TransposeMenuItem value={transpose} onChange={pickTranspose} /> : null}
               <button
                 type="button"
@@ -700,6 +726,7 @@ export function PlayerScreen(props: ScreenProps) {
                 tickTones={tones.slice(1)}
                 onRestart={onRestart}
                 loopBand={band}
+                speedLabel={speedLabel(snapshot.playbackRate)}
                 loopText={runReadout(names, sections, shown)}
                 loopState={sections.length === 0 ? 'disabled' : shown.on ? 'on' : 'off'}
                 onToggleLoop={onToggleLoop}

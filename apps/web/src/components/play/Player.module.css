@@ -248,6 +248,16 @@
   overflow: hidden;
 }
 
+/* #386: the player's toast (set-list adds, "Names not saved") sits just under the 56px header, over the
+   top of the chord stage, never over the my-part pills or the transport at the bottom. The shared
+   set-list toast is bottom-anchored at 140px, which on 360x800 / 390x844 lands on the pills row.
+   The pills start below the stage's 14px padding and 200px chord floor (>= 270px from the top);
+   the toast ends at 64px + its height (14px text, 10px padding: about 43px for one line, 64px for two). */
+.root .toast {
+  top: calc(56px + env(safe-area-inset-top, 0px) + 8px);
+  bottom: auto;
+}
+
 /* The one notice bar at the top of the stage (P1.1). */
 .notice,
 .error {

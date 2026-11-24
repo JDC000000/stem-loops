@@ -196,6 +196,45 @@ test('a failed save is surfaced, not swallowed', () => {
   assert.match(src, /const saved = writePartNames\(jobId, next\);[\s\S]{0,200}if \(!saved\) setSetToast\(PART_NAMES_NOT_SAVED\)/);
 });
 
+// ── #386: the storage-failure toast does not cover the my-part pills ──────
+test('#386: the player toast is top-anchored under the header, clear of the pills, and keeps role="status"', () => {
+  const src = readFileSync(join(WEB, 'src/components/play/PlayerScreen.tsx'), 'utf8');
+  // The player adds its own class to the shared set-list toast; the live region is unchanged.
+  assert.match(src, /<p className=\{`\$\{setStyles\.toast\} \$\{styles\.toast\}`\} role="status" data-testid="set-toast">/);
+  // `.root .toast` only matches if the toast renders inside the player root <section>.
+  const rootOpen = src.indexOf('className={styles.root}');
+  const toastAt = src.indexOf('data-testid="set-toast"');
+  const rootClose = src.lastIndexOf('</section>');
+  assert.ok(rootOpen > 0 && rootOpen < toastAt && toastAt < rootClose, 'the toast is a descendant of .root');
+
+  const css = readFileSync(join(WEB, 'src/components/play/Player.module.css'), 'utf8');
+  const rule = css.match(/\.root \.toast \{([^}]*)\}/);
+  assert.ok(rule, 'a .root .toast rule (specificity 0,2,0 beats the shared .toast whatever the load order)');
+  const top = rule[1].match(/top: calc\((\d+)px \+ env\(safe-area-inset-top, 0px\) \+ (\d+)px\)/);
+  assert.ok(top, 'top-anchored below the header and the top safe area');
+  assert.match(rule[1], /bottom: auto;/, 'the shared bottom: 140px anchor is cleared');
+  assert.doesNotMatch(rule[1], /background|--accent/, 'no fill change (lime stays Play\'s alone)');
+
+  // Geometry at 360x800 (no insets): header 56px, then the stage (14px top padding + 200px chord floor),
+  // and only then the section strip, the pills and the transport.
+  const header = Number(css.match(/\.head \{[^}]*height: (\d+)px/)[1]);
+  const stagePad = Number(css.match(/\.stage \{[^}]*padding: (\d+)px/)[1]);
+  const chordFloor = Number(css.match(/\.chords \{[^}]*min-height: (\d+)px/)[1]);
+  assert.equal(Number(top[1]), header, 'the offset tracks the header height');
+  const toastTop = header + Number(top[2]);
+  const pillsTopMin = header + stagePad + chordFloor;
+  // The toast: 14px text, 10px padding top and bottom, 1px border. Even three wrapped lines at
+  // line-height 1.5 (21px) end well above the pills.
+  const setCss = readFileSync(join(WEB, 'src/components/setlists/SetLists.module.css'), 'utf8');
+  const toast = setCss.match(/\.toast \{([^}]*)\}/)[1];
+  assert.match(toast, /padding: 10px 14px;/);
+  assert.match(toast, /font-size: var\(--text-md\);/);
+  const toastBottomMax = toastTop + 10 * 2 + 2 + 3 * 21;
+  assert.ok(toastBottomMax < pillsTopMin, `toast ends by ${toastBottomMax}px, pills start at >= ${pillsTopMin}px`);
+  // The old anchor: 140px up from an 800px screen's bottom is y=660, inside the pills/transport band.
+  assert.match(toast, /bottom: calc\(140px/, 'the shared toast (set-list pages) is unchanged');
+});
+
 // ── F1: the "+N more" cue is re-measured when a name changes ────────────────
 test('strip (DOM): renaming a part re-measures overflow, so the "+N more" cue appears without any scroll or resize', async () => {
   const { mod, React } = await loadStrip();

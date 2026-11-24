@@ -46,7 +46,10 @@
 
 /* ── compact header (56px) ─────────────────────────────────────────────── */
 .head {
-  height: 56px;
+  min-height: 56px;
+  padding-top: 3px;
+  padding-bottom: 3px;
+  box-sizing: border-box;
   flex-shrink: 0;
   display: flex;
   align-items: center;
@@ -89,6 +92,10 @@
   margin-top: 2px;
   min-width: 0;
   display: flex;
+  /* Items WRAP onto a second line instead of shrinking: the capo badge never
+     squeezes the artist (PR #375 round 4); the header grows (min-height). */
+  flex-wrap: wrap;
+  row-gap: 2px;
   align-items: center;
   gap: 8px;
   font-size: 13px;
@@ -119,8 +126,10 @@
   text-overflow: ellipsis;
 }
 .artist {
-  flex: 1 1 0;
-  min-width: 0;
+  /* shrinks to an ellipsis, but never below 8ch: below that it wraps */
+  flex: 0 1 auto;
+  min-width: 8ch;
+  max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
 }
@@ -223,6 +232,7 @@
   text-align: center;
   font-size: 15px;
   color: var(--text-primary);
+  white-space: nowrap;
 }
 .capoBadge {
   display: inline-flex;
@@ -234,6 +244,7 @@
   font-size: 13px;
   color: var(--text-primary);
   white-space: nowrap;
+  flex: 0 0 auto;
 }
 
 /* ── the body: the stage takes the remainder ───────────────────────────── */

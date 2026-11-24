@@ -481,6 +481,7 @@ export function PlayerScreen(props: ScreenProps) {
                 </span>
               ) : null}
               {artist ? <span className={styles.artist}>{artist}</span> : null}
+              {/* .sub wraps: when the badge does not fit it takes its own line. */}
               {badge ? (
                 <span className={styles.capoBadge} data-testid="capo-indicator">
                   {badge}

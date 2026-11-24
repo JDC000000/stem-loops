@@ -23,7 +23,14 @@ export function TransposeMenuItem({ value, onChange }: { value: number; onChange
           {'−'}
         </button>
         <span className={styles.stepperValue} role="status" data-testid="transpose-value">
-          {transposeSummary(value)}
+          {value > 0 ? (
+            <>
+              {`+${value}`}
+              <span className={styles.sr}>{value === 1 ? ' semitone' : ' semitones'}</span>
+            </>
+          ) : (
+            transposeSummary(value)
+          )}
         </span>
         <button
           type="button"

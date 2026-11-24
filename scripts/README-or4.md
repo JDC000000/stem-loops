@@ -46,7 +46,7 @@ case-insensitive): lockfiles (`pnpm-lock.yaml`, `package-lock.json`, `yarn.lock`
 `.npmrc`, `.nvmrc`, `turbo.json`, `Dockerfile*`, `fly.toml`, `docker-compose*.yml`, `Makefile`, `.eslintrc*`, and the generated
 types pair `packages/types/schema/contract.schema.json` + `packages/types/src/generated.ts`.
 
-**Snapshot pin (R2):** one `compare` call returns `behind_by`, `base_commit.sha` and `merge_base_commit.sha`. When behind, the gate FAILS
+**Snapshot pin (R2, unconditional in R3):** right after the fetch, one `compare` call returns `behind_by`, `base_commit.sha` and `merge_base_commit.sha`. Behind or not, the gate FAILS
 (`main moved during gate; re-run`) unless the base equals the local `origin/v3/main` and the merge-base equals the `$mb` used for the file
 listings. The gate-to-PUT window (seconds) remains a residual. A hot file changed on either side forces update-branch even without overlap.
 
@@ -93,3 +93,5 @@ so the original review still applies. If the rebase **changes the PR content**
 
 Never pass the new head as `<reviewed-sha>` with the old review file; check 1/2
 will refuse it and that is the point.
+
+`OR4_REPO` (test clone override) is honoured only with `DRY_RUN=1` AND `OR4_TEST=1`; set in any other run the gate exits 1 (`FAIL: OR4_REPO set outside test mode`).

@@ -109,6 +109,41 @@ def overlap(behind, pr, main, listing=True):
 
 
 class OverlapGuard(unittest.TestCase):
+    def test_forged_origin_main_refused(self):
+        """forge.sh (review R2 B1): clone whose origin serves a forged v3/main (= PR's first commit) must not hide scripts/x.sh."""
+        with tempfile.TemporaryDirectory() as t:
+            wd = os.path.join(t, "w"); os.makedirs(wd); git(wd, "init", "-q", "-b", "v3/main")
+            put(os.path.join(wd, "base.txt"), "x\n" * 20); git(wd, "add", "-A"); git(wd, "commit", "-qm", "base")
+            base = _git_out(wd, "rev-parse", "HEAD")
+            git(wd, "checkout", "-q", "-b", "pr"); os.makedirs(os.path.join(wd, "scripts"))
+            put(os.path.join(wd, "scripts/x.sh"), "evil\n"); git(wd, "add", "-A"); git(wd, "commit", "-qm", "c1")
+            c1 = _git_out(wd, "rev-parse", "HEAD")
+            put(os.path.join(wd, "pr.txt"), "p\n"); git(wd, "add", "-A"); git(wd, "commit", "-qm", "c2")
+            head = _git_out(wd, "rev-parse", "HEAD")
+            origin, clone = os.path.join(t, "o.git"), os.path.join(t, "c")
+            subprocess.run(["git", "init", "-q", "--bare", origin], check=True)
+            git(wd, "push", "-q", origin, f"{c1}:refs/heads/v3/main", f"{head}:refs/pull/7/head")
+            subprocess.run(["git", "clone", "-q", "--no-local", "file://" + origin, clone], check=True, capture_output=True)
+            shim = os.path.join(t, "bin"); os.makedirs(shim)
+            put(os.path.join(shim, "gh"), f'''#!/bin/bash
+case "$*" in *compare/*) printf '0\\t{base}\\t{base}\\n';; *.head.sha*) echo {head};; *.draft*) echo false;; *labels*) echo;;
+ *.title*) echo t;; *total_count*) echo 12;; *check_runs*) echo 0;; */status*) echo 0;; *) exit 1;; esac
+''')
+            os.chmod(os.path.join(shim, "gh"), 0o755)
+            rv = os.path.join(t, "rv.md"); put(rv, f"VERDICT: PASS 95 HEAD {head[:7]}\n")
+            env = dict(os.environ, PATH=shim + ":" + os.environ["PATH"], OR4_REPO=clone)
+            for k in ("JON_ROW", "JON_PR", "OR4_LIB", "DRY_RUN", "OR4_TEST"):
+                env.pop(k, None)
+            # test mode: pin catches the forged main even though behind=0
+            r = subprocess.run(["bash", SCRIPT, "7", rv, head], capture_output=True, text=True, env=dict(env, DRY_RUN="1", OR4_TEST="1"))
+            self.assertIn("DRY_RUN fail=1", r.stdout, r.stdout); self.assertIn("main moved during gate", r.stdout)
+            # real-run path (no DRY_RUN / no OR4_TEST, or only one of them): OR4_REPO refused outright
+            for extra in ({}, {"DRY_RUN": "1"}, {"OR4_TEST": "1"}):
+                with self.subTest(extra=extra):
+                    r = subprocess.run(["bash", SCRIPT, "7", rv, head], capture_output=True, text=True, env=dict(env, **extra))
+                    self.assertEqual(r.returncode, 1); self.assertIn("OR4_REPO set outside test mode", r.stdout)
+                    self.assertNotIn("merged=", r.stdout)
+
     def test_not_behind_passes(self):
         self.assertEqual(overlap(0, ["a.ts"], []).returncode, 0)
         self.assertEqual(overlap(0, ["a.ts"], ["a.ts"]).returncode, 0)  # behind 0 => lists irrelevant
@@ -226,7 +261,7 @@ esac
 ''')
             os.chmod(os.path.join(shim, "gh"), 0o755)
             rv = os.path.join(t, "review.md"); put(rv, f"VERDICT: PASS 95 HEAD {head[:7]}\n")
-            env = dict(os.environ, PATH=shim + ":" + os.environ["PATH"], OR4_REPO=clone, DRY_RUN="1", SHIM_H=head, SHIM_CMP=cmp_out)
+            env = dict(os.environ, PATH=shim + ":" + os.environ["PATH"], OR4_REPO=clone, OR4_TEST="1", DRY_RUN="1", SHIM_H=head, SHIM_CMP=cmp_out)
             for k in ("JON_ROW", "JON_PR", "OR4_LIB"):
                 env.pop(k, None)
             return subprocess.run(["bash", SCRIPT, self.PR, rv, head], capture_output=True, text=True, env=env), main, base
@@ -259,6 +294,12 @@ esac
         self.assertIn("DRY_RUN fail=1", r.stdout); self.assertIn("stale", r.stdout)
         r, _, _ = self.run_gate(["m1.txt"], behind="x")
         self.assertIn("DRY_RUN fail=1", r.stdout)
+
+    def test_pin_applies_when_not_behind(self):
+        r, _, _ = self.run_gate([], abase="0" * 40)          # behind=0 but local main != api base
+        self.assertIn("DRY_RUN fail=1", r.stdout); self.assertIn("main moved during gate", r.stdout)
+        r, _, _ = self.run_gate([], amb="1" * 40)
+        self.assertIn("DRY_RUN fail=1", r.stdout); self.assertIn("main moved during gate", r.stdout)
 
     def test_not_behind_passes(self):
         r, _, _ = self.run_gate([])

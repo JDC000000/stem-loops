@@ -512,21 +512,47 @@ export function nameRegions(regions: readonly LoopRegion[]): NamedRegion[] {
 export const MIN_GRID_BPM = 40;
 export const MAX_GRID_BPM = 260;
 
+/** A stretch of the track with its own measured beat length (one loop's bars). */
+export interface BeatSpan {
+  readonly startSec: number;
+  readonly endSec: number;
+  /** Seconds per beat inside this span. */
+  readonly beatSec: number;
+}
+
 export interface BeatGrid {
-  /** Seconds per beat. */
+  /** Seconds per beat (the job's one BPM). */
   readonly beatSec: number;
   /** Time of any one beat, seconds (the grid's phase). */
   readonly anchorSec: number;
   /** True when the grid came from the job's measured tempo; false for the pseudo-bar fallback. */
   readonly measured: boolean;
+  /**
+   * Local beat lengths, sorted by start, present ONLY when the tempo drifts
+   * (#379): since #376 the worker cuts loops on a beat-following grid, so a
+   * loop's real length / its bars is the local bar length. Absent on a steady
+   * track (and on jobs made before #376), where every loop is exactly
+   * bar_count bars of the one BPM. Read it through localBeatSec.
+   */
+  readonly spans?: readonly BeatSpan[];
 }
 
+/** A loop whose local beat is within this fraction of the job tempo is the job tempo (steady tracks keep the one BPM). */
+export const LOCAL_BEAT_SAME_FRAC = 0.005;
+/** ... and one further off than this is not believed (not whole bars). The worker's drift tracking covers a few %. */
+export const LOCAL_BEAT_MAX_FRAC = 0.08;
+
 /**
- * The job's beat grid from its `loops` rows (`bpm`, `start_sec`; both may be
- * node-pg numeric strings). Null when there is no believable tempo.
+ * The job's beat grid from its `loops` rows (`bpm`, `start_sec`, `end_sec`,
+ * `bar_count`; numbers may be node-pg numeric strings). Null when there is no
+ * believable tempo. `spans` is set only when some loop's length shows the
+ * tempo drifting off the one BPM (see BeatGrid.spans).
  */
 export function beatGridFromLoops(
-  rows: readonly { readonly bpm?: unknown; readonly start_sec?: unknown }[] | null | undefined,
+  rows:
+    | readonly { readonly bpm?: unknown; readonly start_sec?: unknown; readonly end_sec?: unknown; readonly bar_count?: unknown }[]
+    | null
+    | undefined,
 ): BeatGrid | null {
   if (!Array.isArray(rows) || rows.length === 0) return null;
   let bpm = NaN;
@@ -539,7 +565,57 @@ export function beatGridFromLoops(
     if (Number.isFinite(s) && s >= 0 && s < anchor) anchor = s;
   }
   if (!Number.isFinite(bpm)) return null;
-  return { beatSec: 60 / bpm, anchorSec: Number.isFinite(anchor) ? anchor : 0, measured: true };
+  const beatSec = 60 / bpm;
+  const grid: BeatGrid = { beatSec, anchorSec: Number.isFinite(anchor) ? anchor : 0, measured: true };
+  const spans = localBeatSpans(rows, beatSec);
+  return spans ? { ...grid, spans } : grid;
+}
+
+/** Each loop's own beat length (4/4 bars), deduplicated across stems; null when none differs from `beatSec`. */
+function localBeatSpans(
+  rows: readonly { readonly start_sec?: unknown; readonly end_sec?: unknown; readonly bar_count?: unknown }[],
+  beatSec: number,
+): BeatSpan[] | null {
+  const out: BeatSpan[] = [];
+  let drifts = false;
+  for (const r of rows) {
+    if (!r || typeof r !== 'object') continue;
+    const s = toSec(r.start_sec);
+    const e = toSec(r.end_sec);
+    if (!(Number.isFinite(s) && Number.isFinite(e) && s >= 0 && e > s)) continue;
+    const given = toSec(r.bar_count);
+    const bars = Number.isInteger(given) && given >= 1 ? given : Math.round((e - s) / (4 * beatSec));
+    if (bars < 1) continue;
+    const b = (e - s) / (4 * bars);
+    const off = Math.abs(b / beatSec - 1);
+    if (off > LOCAL_BEAT_MAX_FRAC) continue;
+    if (off >= LOCAL_BEAT_SAME_FRAC) drifts = true;
+    out.push({ startSec: s, endSec: e, beatSec: b });
+  }
+  if (!drifts) return null;
+  out.sort((x, y) => x.startSec - y.startSec || x.endSec - y.endSec);
+  // Loops exist per stem: the same loop up to six times. Keep one of each.
+  return out.filter((sp, i) => i === 0 || Math.abs(sp.startSec - out[i - 1].startSec) > 1e-3 || Math.abs(sp.endSec - out[i - 1].endSec) > 1e-3);
+}
+
+/**
+ * Seconds per beat at `t`: the beat of the loop span under `t` (or the nearest
+ * one) on a drifting track; the job's one BPM otherwise.
+ */
+export function localBeatSec(grid: Pick<BeatGrid, 'beatSec' | 'spans'>, t: number): number {
+  const spans = grid.spans;
+  if (!spans || spans.length === 0 || !Number.isFinite(t)) return grid.beatSec;
+  let best = spans[0];
+  let bestGap = Infinity;
+  for (const sp of spans) {
+    const gap = t < sp.startSec ? sp.startSec - t : t >= sp.endSec ? t - sp.endSec : 0;
+    // Overlapping loops (different lengths): the latest-starting one that holds t.
+    if (gap < bestGap || (gap === 0 && bestGap === 0)) {
+      best = sp;
+      bestGap = gap;
+    }
+  }
+  return best.beatSec;
 }
 
 // ─── where am I (the no-chords stage, design v1.4 P1.2) ─────────────────────

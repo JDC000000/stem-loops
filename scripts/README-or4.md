@@ -1,15 +1,17 @@
-# or4-merge.sh — orchestrator merge gate (OR-4 v3.5, §11 R6)
+# or4-merge.sh — orchestrator merge gate (OR-4 v3.5.1, §11 R6)
 
 **One gate for both sessions.** 19A (agentic/ops) and 19B (product) both merge through this script. v3.5 replaces 19A's v3.4
 (#382) and 19B's v3.4-R2 (#385, Jon approved the design 2026-11-23 23:29Z, "structurally solve" merge contention). Do not run a
-local fork of it; change it here, by PR (protected path: Jon merges).
+local fork of it; change it here, by PR (protected path). Tightening-only gate changes may be self-approved under M-SA with two reviewers;
+loosening changes are HELD for Jon (AGENTS.md M-8). When in doubt whether a change loosens a control, treat it as HELD.
 
 | Version | Where | Behind rule | Notable |
 |---|---|---|---|
 | v3.3-R2 | main (S18) | `behind_by == 0` | protected class + `JON_ROW`/`JON_PR` |
 | v3.4 | main, #382 (19A) | 1..20 behind for ANY PR if file-disjoint and no hot file | snapshot pin every run; `OR4_REPO` only in test mode |
 | v3.4-R2 | 19B local copy, #385 | opt-in `ALLOW_BEHIND=1`; non-protected only; ≤ 5; no overlap; no coupled file; no main deletions/renames | `branches/v3/main` re-checked right before the PUT |
-| **v3.5** | **main (this)** | **strictest union of both (below)** | + #384: git env scrub, `git replace` refs FAIL, `OR4_REPO` guard tested for rc and zero network calls |
+| v3.5 | main | strictest union of both (below) | + #384: git env scrub, `git replace` refs FAIL, `OR4_REPO` guard tested for rc and zero network calls |
+| **v3.5.1** | **main (this)** | unchanged from v3.5 | **tightening only** (#391, #393): strict `DRY_RUN`/`ALLOW_BEHIND`; PUT `sha=<head>` and pre-PUT main-moved tests; gate text names the `JON_ROW` ledger row |
 
 The orchestrator's merge gate. It squash-merges a PR **only** if every check below
 passes; otherwise it prints each `FAIL:` line and exits 1 without merging. It is
@@ -21,7 +23,7 @@ the scripted counterpart to Jon's `scripts/safe_merge.sh`; never use a bare
 ```sh
 DRY_RUN=1 scripts/or4-merge.sh <pr> <review-file> <reviewed-sha>   # ALWAYS run this first: every check, never merges
 scripts/or4-merge.sh <pr> <review-file> <reviewed-sha>             # real merge, only after a clean dry run
-JON_ROW=<n> JON_PR=<pr> scripts/or4-merge.sh ...                    # protected PRs only, see below
+JON_ROW=95 JON_PR=<pr> scripts/or4-merge.sh ...                    # protected PRs only (D-6 standing approval row), see below
 ALLOW_BEHIND=1 DRY_RUN=1 scripts/or4-merge.sh ...                  # allow a NON-protected PR 1..5 behind (see check 4)
 ```
 
@@ -51,6 +53,16 @@ The script fetches into the main clone at `/home/claude/stem-loops`.
 | 10c | Main unmoved (v3.5) | Immediately before the PUT, `branches/v3/main` is re-read; if it differs from the pinned SHA: `FAIL: main moved; re-run`, exit 1, no PUT. |
 | 11 | Merge | `PUT pulls/<pr>/merge` with `merge_method=squash` and `sha=<head>` pinned, so a push between check and merge is rejected by GitHub. Exit 1 unless the PUT succeeds **and** `merged_at` is set. |
 
+## v3.5.1 (tightening only; no check removed or loosened)
+
+- **Strict switches (#391).** `DRY_RUN` and `ALLOW_BEHIND` must each be unset, `0` or `1`. Any other value (`true`, `yes`, `TRUE`, `2`, ` 1`, empty)
+  exits 1 with `FAIL: DRY_RUN must be 0 or 1` / `FAIL: ALLOW_BEHIND must be 0 or 1` before any `gh`/`git` call (and before the `OR4_REPO` guard).
+  Previously any non-`1` value silently meant "real merge" / "behind not allowed".
+- **Tests (#391 M38, M09).** The merge PUT is captured from a shimmed `gh` and must carry `-f sha=<head>` and `merge_method=squash`; a main move between the
+  snapshot and the pre-PUT re-check must print `FAIL: main moved; re-run`, exit 1 and issue no PUT.
+- **Gate text (#393).** The header and the protected-PR FAIL message now say `JON_ROW = ledger row of the approval (D-6 standing row 95 for self-approved merges, per AGENTS.md M-8)`.
+  Text only: the check is unchanged (numeric `JON_ROW`, `JON_PR` equal to the PR).
+
 ## Behind guard and `ALLOW_BEHIND` (v3.5)
 
 Jon turned off "require branches up to date" on ruleset 26478884 (2026-11-23 16:34 Vancouver, LEDGER-19A rows 63/65), so
@@ -58,7 +70,7 @@ the gate need not force update-branch + a full CI rerun after every merge. v3.5 
 
 - `ALLOW_BEHIND` unset or anything but `1` → any `behind_by > 0` FAILS (update-branch first). This is the default.
 - `ALLOW_BEHIND=1` → a **non-protected** PR may be 1..5 behind when the file conditions hold. A **protected** PR always needs
-  `behind_by == 0`, even with `ALLOW_BEHIND=1` and a valid `JON_ROW`/`JON_PR` (Jon's approval covers the content, not a stale base).
+  `behind_by == 0`, even with `ALLOW_BEHIND=1` and a valid `JON_ROW`/`JON_PR` (the standing approval covers the content, not a stale base).
 
 Hot/coupled files (any depth, case-insensitive; exact regexes in `or4-merge.sh`):
 - **PR side:** `HOT_RE ∪ COUPLED_RE`.
@@ -84,7 +96,7 @@ listings. v3.5 re-reads main right before the PUT (check 10c), so the remaining 
 file) can still land. The backstop is v3/main push CI (M-5: main red means all merges stop). Checks 7, 9, 10, 3 and the
 `sha=<head>` pin on the merge PUT are unchanged.
 
-## Protected class and `JON_ROW` (v3.3)
+## Protected class and `JON_ROW` (v3.3; D-6 standing row from v3.5)
 
 Protected paths (always case-insensitive): `.github/`, `scripts/`, `**/.claude/`, and at ANY depth `AGENTS.md`,
 `CLAUDE*`, `.mcp.json`, `SKILL.md`; plus `CODEOWNERS`, any `migrations/`, `.env*`, and any path containing
@@ -94,17 +106,16 @@ The path list is `git diff --no-renames --name-only -z` with `core.quotePath=fal
 old and the new name and non-ASCII names are not quoted. The gate FAILS CLOSED if the merge-base or the diff
 fails or lists nothing, or if the PR labels/title cannot be read.
 
-Such a PR is refused unless **both** are set: `JON_ROW=<ledger row>` (numeric row of the entry where Jon named
-his approval of this PR) and `JON_PR=<pr>` equal to the PR number being merged (ties the approval to this PR;
+Such a PR is refused unless **both** are set: `JON_ROW=<ledger row>` (**95**: the JON D-6 standing approval, 2026-11-23 19:50 Vancouver, "stop asking me to merge") and `JON_PR=<pr>` equal to the PR number being merged (ties the approval to this PR;
 a stale exported JON_ROW cannot approve another PR). The gate prints both. It cannot verify the ledger row
-itself; never set them without Jon's named approval, and unset them after the run.
+itself. The gate only checks that both are numeric and `JON_PR` equals the PR (any numeric row passes). Set them only for a PR that meets M-SA (canonical: AGENTS.md M-8): a reviewer-agent PASS review, and a second reviewer on a third model for every protected-class PR. A HELD change (gate loosening, M-SA, CODEOWNERS, settings, rulesets, workflow merge logic) is not self-merged. The gate does not check reviewer model, a second review, or dry-run order; those are process duties. Always run `DRY_RUN=1` first (`DRY_RUN` must be unset, `0` or `1`; anything else FAILs; #391), and unset both after the run.
 
 `OR4_LIB=1` is for tests only: sourcing defines the functions; executing the script with it prints
 `OR4_LIB set: library mode, NOT a merge` to stderr and exits 2.
 
 ## Tests
 
-`python3 scripts/test_or4_merge.py` (offline, no network; 48 tests). It sources `or4-merge.sh` with `OR4_LIB=1`, which defines the
+`python3 scripts/test_or4_merge.py` (offline, no network; 53 tests). It sources `or4-merge.sh` with `OR4_LIB=1`, which defines the
 regexes and functions and returns before any network call, so the tests exercise the script's own definitions:
 - protected-path regex (35 protected paths, 6 ordinary), `protected_decision` (JON_ROW/JON_PR/label/title/paths), `is_protected_pr`;
 - `overlap_decision`: v3.4 cases (disjoint, overlap, hot file either side, lookalikes, listing failure, cap, renames) and `R2Harness`,

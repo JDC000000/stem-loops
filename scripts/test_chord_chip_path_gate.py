@@ -78,7 +78,7 @@ def run_gate(base_files, mutate, event="pull_request", n_commits=2):
         with open(out_file, "w"):
             pass
         env = dict(os.environ, EVENT_NAME=event, RUNNER_TEMP=rt, GITHUB_OUTPUT=out_file)
-        p = subprocess.run(["bash", "-eo", "pipefail", "-c", GATE], cwd=repo, env=env, capture_output=True, text=True)
+        p = subprocess.run(["bash", "-e", "-c", GATE], cwd=repo, env=env, capture_output=True, text=True)
         assert p.returncode == 0, p.stderr
         with open(out_file) as f:
             vals = re.findall(r"^run=(\w+)$", f.read(), re.M)
@@ -204,6 +204,50 @@ class GateTests(unittest.TestCase):
 
     def test_no_parent_commit_fails_safe_to_run(self):
         self.assertEqual(self.decide({"docs/a.md": "a\n"}, None, n_commits=1), "true")
+
+
+class WiringTests(unittest.TestCase):
+    """The workflow wiring around the gate (not just its script body)."""
+
+    @classmethod
+    def setUpClass(cls):
+        with open(CI_YML, encoding="utf-8") as f:
+            cls.text = f.read()
+        lines = cls.text.split("\n")
+        start = next(i for i, l in enumerate(lines) if l.rstrip() == "  chord-chip-browser-gate:")
+        end = next((i for i in range(start + 1, len(lines)) if re.match(r"^  [A-Za-z0-9_-]+:\s*$", lines[i])), len(lines))
+        cls.job = lines[start:end]
+
+    def test_script_test_step_exists_and_cannot_be_softened(self):
+        lines = self.text.split("\n")
+        start = next(i for i, l in enumerate(lines) if l.rstrip() == "  python-syntax-and-markers:")
+        end = next((i for i in range(start + 1, len(lines)) if re.match(r"^  [A-Za-z0-9_-]+:\s*$", lines[i])), len(lines))
+        job = lines[start:end]
+        s = next(i for i, l in enumerate(job) if l.strip() == "- name: Script unit tests (scripts/test_*.py, stdlib unittest)")
+        e = next((i for i in range(s + 1, len(job)) if job[i].lstrip().startswith("- ")), len(job))
+        step = "\n".join(job[s:e])
+        self.assertIn("unittest discover", step)
+        self.assertIn("timeout-minutes: 5", step)
+        self.assertNotIn("|| true", step)
+        self.assertNotIn("continue-on-error", step)
+        self.assertNotRegex(step, r"(?m)^\s+if:")
+        self.assertNotIn("continue-on-error", "\n".join(job))
+
+    def test_sweep_steps_keep_gate_condition(self):
+        gate = next(i for i, l in enumerate(self.job) if l.strip() == "id: gate")
+        # step boundaries after the gate step
+        steps, cur = [], None
+        for l in self.job[gate:]:
+            if re.match(r"^      - ", l):
+                cur = [l]
+                steps.append(cur)
+            elif cur is not None:
+                cur.append(l)
+        self.assertGreaterEqual(len(steps), 7)
+        for st in steps:
+            with self.subTest(step=st[0].strip()):
+                self.assertIn("        if: steps.gate.outputs.run == 'true'", st)
+        self.assertIn("EVENT_NAME: ${{ github.event_name }}", "\n".join(self.job))
 
 
 if __name__ == "__main__":

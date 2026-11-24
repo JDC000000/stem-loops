@@ -1,4 +1,4 @@
-"""Offline tests for scripts/or4-merge.sh (gate v3.3): protected-path regex + verdict-marker parsing.
+"""Offline tests for scripts/or4-merge.sh (gate v3.4): protected-path regex, overlap guard, verdict-marker parsing.
 
 The script is sourced with OR4_LIB=1, which defines PROTECTED_RE / marker_ok and returns before
 touching gh or git, so the tests use the script's own single definitions (no copy to drift).
@@ -96,6 +96,214 @@ class ProtectedDecision(unittest.TestCase):
                     {"JON_PR": "363"}):
             with self.subTest(env=env):
                 self.assertEqual(decision(prot="scripts/x.sh", **env).returncode, 1)
+
+
+def overlap(behind, pr, main, listing=True):
+    """Run overlap_decision on NUL-separated lists written to temp files (listing=False: empty main list)."""
+    with tempfile.TemporaryDirectory() as d:
+        pf, mf = os.path.join(d, "pr"), os.path.join(d, "main")
+        put(pf, "".join(p + "\0" for p in pr))
+        put(mf, "".join(p + "\0" for p in main) if listing else "")
+        return subprocess.run(["bash", "-c", f'OR4_LIB=1 source "{SCRIPT}" || exit 99\noverlap_decision "$@"', "bash",
+                               str(behind), pf, mf], capture_output=True, text=True)
+
+
+class OverlapGuard(unittest.TestCase):
+    def test_forged_origin_main_refused(self):
+        """forge.sh (review R2 B1): clone whose origin serves a forged v3/main (= PR's first commit) must not hide scripts/x.sh."""
+        with tempfile.TemporaryDirectory() as t:
+            wd = os.path.join(t, "w"); os.makedirs(wd); git(wd, "init", "-q", "-b", "v3/main")
+            put(os.path.join(wd, "base.txt"), "x\n" * 20); git(wd, "add", "-A"); git(wd, "commit", "-qm", "base")
+            base = _git_out(wd, "rev-parse", "HEAD")
+            git(wd, "checkout", "-q", "-b", "pr"); os.makedirs(os.path.join(wd, "scripts"))
+            put(os.path.join(wd, "scripts/x.sh"), "evil\n"); git(wd, "add", "-A"); git(wd, "commit", "-qm", "c1")
+            c1 = _git_out(wd, "rev-parse", "HEAD")
+            put(os.path.join(wd, "pr.txt"), "p\n"); git(wd, "add", "-A"); git(wd, "commit", "-qm", "c2")
+            head = _git_out(wd, "rev-parse", "HEAD")
+            origin, clone = os.path.join(t, "o.git"), os.path.join(t, "c")
+            subprocess.run(["git", "init", "-q", "--bare", origin], check=True)
+            git(wd, "push", "-q", origin, f"{c1}:refs/heads/v3/main", f"{head}:refs/pull/7/head")
+            subprocess.run(["git", "clone", "-q", "--no-local", "file://" + origin, clone], check=True, capture_output=True)
+            shim = os.path.join(t, "bin"); os.makedirs(shim)
+            put(os.path.join(shim, "gh"), f'''#!/bin/bash
+case "$*" in *compare/*) printf '0\\t{base}\\t{base}\\n';; *.head.sha*) echo {head};; *.draft*) echo false;; *labels*) echo;;
+ *.title*) echo t;; *total_count*) echo 12;; *check_runs*) echo 0;; */status*) echo 0;; *) exit 1;; esac
+''')
+            os.chmod(os.path.join(shim, "gh"), 0o755)
+            rv = os.path.join(t, "rv.md"); put(rv, f"VERDICT: PASS 95 HEAD {head[:7]}\n")
+            env = dict(os.environ, PATH=shim + ":" + os.environ["PATH"], OR4_REPO=clone)
+            for k in ("JON_ROW", "JON_PR", "OR4_LIB", "DRY_RUN", "OR4_TEST"):
+                env.pop(k, None)
+            # test mode: pin catches the forged main even though behind=0
+            r = subprocess.run(["bash", SCRIPT, "7", rv, head], capture_output=True, text=True, env=dict(env, DRY_RUN="1", OR4_TEST="1"))
+            self.assertIn("DRY_RUN fail=1", r.stdout, r.stdout); self.assertIn("main moved during gate", r.stdout)
+            # real-run path (no DRY_RUN / no OR4_TEST, or only one of them): OR4_REPO refused outright
+            for extra in ({}, {"DRY_RUN": "1"}, {"OR4_TEST": "1"}):
+                with self.subTest(extra=extra):
+                    r = subprocess.run(["bash", SCRIPT, "7", rv, head], capture_output=True, text=True, env=dict(env, **extra))
+                    self.assertEqual(r.returncode, 1); self.assertIn("OR4_REPO set outside test mode", r.stdout)
+                    self.assertNotIn("merged=", r.stdout)
+
+    def test_not_behind_passes(self):
+        self.assertEqual(overlap(0, ["a.ts"], []).returncode, 0)
+        self.assertEqual(overlap(0, ["a.ts"], ["a.ts"]).returncode, 0)  # behind 0 => lists irrelevant
+
+    def test_disjoint_passes(self):
+        r = overlap(3, ["apps/web/a.ts", "docs/x.md"], ["apps/worker/b.py"])
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertEqual(overlap(20, ["a"], ["b"]).returncode, 0)
+
+    def test_overlap_fails(self):
+        r = overlap(2, ["apps/web/a.ts", "docs/x.md"], ["docs/x.md", "z"])
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("overlap/hot file: update-branch first", r.stdout)
+        self.assertIn("docs/x.md", r.stdout)
+
+    def test_hot_file_either_side_fails(self):
+        hot = ["pnpm-lock.yaml", "apps/web/package-lock.json", "yarn.lock", "apps/worker/uv.lock", "poetry.lock", "Cargo.lock",
+               "package.json", "apps/web/package.json", "apps/worker/migrations/035_x.sql", "AGENTS.md", ".github/CODEOWNERS",
+               "CODEOWNERS", ".github/workflows/ci.yml", "tsconfig.json", "apps/web/tsconfig.build.json", "apps/web/next.config.mjs",
+               "pnpm-workspace.yaml", "APPS/WEB/PACKAGE.JSON",
+               "apps/worker/constraints-prod.txt", "apps/worker/requirements.txt", "apps/worker/requirements-dev.txt",
+               "apps/worker/pyproject.toml", "apps/training/pyproject.toml", ".npmrc", ".nvmrc", "turbo.json",
+               "apps/worker/Dockerfile", "apps/web/Dockerfile.prod", "apps/worker/fly.toml", "docker-compose.yml", "Makefile",
+               "apps/web/.eslintrc.json", "packages/types/schema/contract.schema.json", "packages/types/src/generated.ts"]
+        for h in hot:
+            with self.subTest(h=h, side="pr"):
+                self.assertEqual(overlap(1, [h, "ok.ts"], ["other.ts"]).returncode, 1)
+            with self.subTest(h=h, side="main"):
+                self.assertEqual(overlap(1, ["ok.ts"], ["other.ts", h]).returncode, 1)
+
+    def test_non_hot_lookalikes_pass(self):
+        for f in ["docs/package.json.md", "apps/web/src/tsconfig-notes.md", "my-pnpm-lock.yaml.txt", ".github/ISSUE_TEMPLATE/a.md",
+                  "apps/web/next-config.ts", "docs/migrations.md", "docs/Makefile.md", "docs/requirements.md", "packages/types/src/other.ts"]:
+            with self.subTest(f=f):
+                self.assertEqual(overlap(1, [f], ["other.ts"]).returncode, 0, f)
+
+    def test_listing_failure_fails_closed(self):
+        self.assertEqual(overlap(2, ["a.ts"], [], listing=False).returncode, 1)
+        self.assertEqual(overlap(2, [], ["b.ts"]).returncode, 1)
+        for bad in ("", "x", "-1", "1.5"):
+            with self.subTest(bad=bad):
+                self.assertEqual(overlap(bad, ["a"], ["b"]).returncode, 1)
+
+    def test_stale_cap(self):
+        r = overlap(21, ["a.ts"], ["b.ts"])
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("stale", r.stdout)
+
+    def test_lists_at_most_five_offenders(self):
+        r = overlap(1, [f"f{i}.ts" for i in range(9)], [f"f{i}.ts" for i in range(9)])
+        self.assertEqual(r.returncode, 1)
+        self.assertEqual(r.stdout.count(".ts"), 5)
+
+    def test_renames_listed_both_sides(self):
+        """A rename on main (old+new names listed) collides with a PR edit of the OLD name, and vice versa."""
+        with tempfile.TemporaryDirectory() as d:
+            git(d, "init", "-q", "-b", "main")
+            for rel in ("src/old.ts", "keep.ts"):
+                os.makedirs(os.path.dirname(os.path.join(d, rel)) or d, exist_ok=True)
+                put(os.path.join(d, rel), "line\n" * 30)
+            git(d, "add", "-A"); git(d, "commit", "-qm", "base")
+            base = subprocess.run(["git", "-C", d, "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+            git(d, "mv", "src/old.ts", "src/new.ts"); git(d, "commit", "-qam", "rename on main")
+            out = os.path.join(d, ".git", "ml")
+            r = sh('list_changed "$1" "$2" HEAD "$3" && tr "\\0" "\\n" <"$3"', d, base, out)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(set(r.stdout.split()), {"src/old.ts", "src/new.ts"})
+            self.assertEqual(overlap(1, ["src/old.ts"], ["src/old.ts", "src/new.ts"]).returncode, 1)
+            self.assertEqual(overlap(1, ["src/new.ts"], ["src/old.ts", "src/new.ts"]).returncode, 1)
+            self.assertEqual(overlap(1, ["keep.ts"], ["src/old.ts", "src/new.ts"]).returncode, 0)
+
+
+def _git_out(cwd, *a):
+    return subprocess.run(["git", "-C", cwd, *a], check=True, capture_output=True, text=True).stdout.strip()
+
+
+class GateWiring(unittest.TestCase):
+    """End-to-end: the real script (DRY_RUN=1) against a temp origin/clone with a PATH-shimmed gh, so the call-site
+    wiring (compare pinning, main-side listing, fail-closed) is exercised, not just overlap_decision."""
+    PR = "7"
+
+    def run_gate(self, main_files, behind=None, abase=None, amb=None):
+        with tempfile.TemporaryDirectory() as t:
+            origin, clone, wd = (os.path.join(t, x) for x in ("origin.git", "clone", "work"))
+            os.makedirs(wd); subprocess.run(["git", "init", "-q", "--bare", "-b", "v3/main", origin], check=True)
+            git(wd, "init", "-q", "-b", "v3/main")
+            put(os.path.join(wd, "base.txt"), "x\n" * 20); git(wd, "add", "-A"); git(wd, "commit", "-qm", "base")
+            base = _git_out(wd, "rev-parse", "HEAD")
+            git(wd, "checkout", "-q", "-b", "pr"); put(os.path.join(wd, "pr.txt"), "p\n"); git(wd, "add", "-A"); git(wd, "commit", "-qm", "pr")
+            head = _git_out(wd, "rev-parse", "HEAD")
+            git(wd, "checkout", "-q", "v3/main")
+            for f in main_files:
+                os.makedirs(os.path.dirname(os.path.join(wd, f)), exist_ok=True)
+                put(os.path.join(wd, f), "m\n"); git(wd, "add", "-A"); git(wd, "commit", "-qm", "main " + f)
+            main = _git_out(wd, "rev-parse", "HEAD")
+            git(wd, "push", "-q", origin, "v3/main:refs/heads/v3/main", f"{head}:refs/pull/{self.PR}/head")
+            subprocess.run(["git", "clone", "-q", "--no-local", "file://" + origin, clone], check=True, capture_output=True)
+            # the clone is made BEFORE the gate fetches the PR ref, like the real clone
+            n = len(main_files) if behind is None else behind
+            cmp_out = f"{n}\t{abase or main}\t{amb or base}"
+            shim = os.path.join(t, "bin"); os.makedirs(shim)
+            put(os.path.join(shim, "gh"), f'''#!/bin/bash
+a="$*"
+case "$a" in
+  *compare/*) printf '%s\\n' "$SHIM_CMP";;
+  *.head.sha*) echo "$SHIM_H";;
+  *.draft*) echo false;;
+  *labels*) echo "";;
+  *.title*) echo "t";;
+  *total_count*) echo 12;;
+  *check_runs*) echo 0;;
+  */status*) echo 0;;
+  *) echo "unexpected gh $a" >&2; exit 1;;
+esac
+''')
+            os.chmod(os.path.join(shim, "gh"), 0o755)
+            rv = os.path.join(t, "review.md"); put(rv, f"VERDICT: PASS 95 HEAD {head[:7]}\n")
+            env = dict(os.environ, PATH=shim + ":" + os.environ["PATH"], OR4_REPO=clone, OR4_TEST="1", DRY_RUN="1", SHIM_H=head, SHIM_CMP=cmp_out)
+            for k in ("JON_ROW", "JON_PR", "OR4_LIB"):
+                env.pop(k, None)
+            return subprocess.run(["bash", SCRIPT, self.PR, rv, head], capture_output=True, text=True, env=env), main, base
+
+    def test_disjoint_behind_passes(self):
+        r, _, _ = self.run_gate(["m1.txt"])
+        self.assertIn("DRY_RUN fail=0", r.stdout, r.stdout + r.stderr)
+
+    def test_overlap_and_hot_on_main_fail(self):
+        for f in ("pr.txt", "package.json", "apps/worker/constraints-prod.txt"):
+            with self.subTest(f=f):
+                r, _, _ = self.run_gate([f])
+                self.assertIn("DRY_RUN fail=1", r.stdout, r.stdout)
+                self.assertIn("overlap/hot file: update-branch first", r.stdout)
+
+    def test_main_listing_failure_not_swallowed(self):
+        # api says behind=1 but local origin/v3/main has nothing since merge-base: empty main listing must FAIL (M12)
+        r, main, base = self.run_gate([], behind=1, abase=None, amb=None)
+        self.assertEqual(main, base)
+        self.assertIn("DRY_RUN fail=1", r.stdout, r.stdout)
+
+    def test_main_moved_during_gate_fails(self):
+        r, _, _ = self.run_gate(["m1.txt"], abase="0" * 40)
+        self.assertIn("DRY_RUN fail=1", r.stdout); self.assertIn("main moved during gate", r.stdout)
+        r, _, _ = self.run_gate(["m1.txt"], amb="1" * 40)
+        self.assertIn("DRY_RUN fail=1", r.stdout); self.assertIn("main moved during gate", r.stdout)
+
+    def test_behind_21_and_garbage_fail(self):
+        r, _, _ = self.run_gate(["m1.txt"], behind=21)
+        self.assertIn("DRY_RUN fail=1", r.stdout); self.assertIn("stale", r.stdout)
+        r, _, _ = self.run_gate(["m1.txt"], behind="x")
+        self.assertIn("DRY_RUN fail=1", r.stdout)
+
+    def test_pin_applies_when_not_behind(self):
+        r, _, _ = self.run_gate([], abase="0" * 40)          # behind=0 but local main != api base
+        self.assertIn("DRY_RUN fail=1", r.stdout); self.assertIn("main moved during gate", r.stdout)
+        r, _, _ = self.run_gate([], amb="1" * 40)
+        self.assertIn("DRY_RUN fail=1", r.stdout); self.assertIn("main moved during gate", r.stdout)
+
+    def test_not_behind_passes(self):
+        r, _, _ = self.run_gate([])
+        self.assertIn("DRY_RUN fail=0", r.stdout, r.stdout + r.stderr)
 
 
 class ChangedFiles(unittest.TestCase):

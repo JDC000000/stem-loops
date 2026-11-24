@@ -289,6 +289,7 @@
   flex-direction: column;
   gap: var(--space-3);
   padding: 14px 20px 10px;
+  position: relative; /* the count-in numbers sit over the stage */
 }
 
 .chords {
@@ -549,4 +550,48 @@
   .error { grid-column: 2; grid-row: 1; margin: 6px 16px 0; }
   .main > fieldset { grid-column: 2; grid-row: 2; align-self: end; }
   .main > [data-testid='transport'] { grid-column: 2; grid-row: 3 / span 2; }
+}
+
+/* ── count-in (Phase C C2) ─────────────────────────────────────────────────
+   Neutral: white on #222. Amber is only the current chord, lime only Play.
+   No animation and no transition, so prefers-reduced-motion needs no case. */
+.countInItem {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-bottom: 4px;
+}
+.countInItem .menuItem {
+  justify-content: space-between;
+  gap: 12px;
+}
+.countInItem .menuItem:disabled {
+  color: var(--text-muted);
+  cursor: default;
+}
+.countInItem .menuItem[aria-pressed='true'] {
+  background: var(--bg-selected);
+  box-shadow: inset 0 0 0 2px var(--text-primary);
+}
+.countInState { font-size: 14px; color: var(--text-secondary); }
+.countIn {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+}
+.countInNum {
+  min-width: 112px;
+  min-height: 112px;
+  display: grid;
+  place-items: center;
+  border: 2px solid var(--text-primary);
+  border-radius: 56px;
+  background: var(--bg-selected);
+  color: var(--text-primary);
+  font-size: 64px;
+  font-weight: 700;
+  line-height: 1;
 }

@@ -19,6 +19,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ChordOverlay, type NowNext } from '@/components/ChordOverlay';
 import { type ChordMode, DEFAULT_CHORD_MODE, readChordMode, writeChordMode } from '@/lib/play/chord-mode';
+import {
+  COUNT_IN_NEEDS_BPM,
+  type ClickSink,
+  type CountIn,
+  cancelOnOtherInput,
+  countInBpm,
+  createClickSink,
+  createCountIn,
+  readCountIn,
+  writeCountIn,
+} from '@/lib/play/count-in';
 import { readTranspose, transposeBadge, writeTranspose } from '@/lib/play/transpose';
 import { TransposeMenuItem } from './TransposeMenuItem';
 import { LIGHT_AUDIO_NOTE } from '@/lib/play/device-support';
@@ -159,6 +170,9 @@ export function PlayerScreen(props: ScreenProps) {
     lightAudio = false,
     onPlay,
     onPause,
+    onPrime,
+    onUnprime,
+    getEngineLatencySec,
     onSeek,
     onGain,
     onMute,
@@ -238,6 +252,97 @@ export function PlayerScreen(props: ScreenProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phaseKind]);
   const playingNow = snapshot.status === 'playing';
+
+  // ── count-in (Phase C C2; story 4.8) ───────────────────────────────────────
+  // Optional, off by default, remembered per browser. One bar of clicks (4 beats
+  // at the song's BPM) before playback starts from a chip tap, a long-press loop
+  // start, ⟲ (while playing) or Play from pause. Never on a loop wrap: the wrap
+  // is the engine's native loop and does not come through here. Any other tap or
+  // key during the count cancels it.
+  const bpmNum = countInBpm(bpm);
+  const [countInOn, setCountInOn] = useState(false);
+  useEffect(() => setCountInOn(readCountIn()), []);
+  const countInReady = countInOn && bpmNum !== null;
+  const [countBeat, setCountBeat] = useState<number | null>(null);
+  const countRef = useRef<CountIn | null>(null);
+  // ONE click AudioContext per player: the sink owns it, opens it on the first
+  // click (inside the tap) and closes it here on unmount.
+  const sinkRef = useRef<ClickSink | null>(null);
+  useEffect(() => {
+    const sink = createClickSink();
+    sinkRef.current = sink;
+    return () => {
+      sink.close?.();
+      sinkRef.current = null;
+    };
+  }, []);
+  const unprimeRef = useRef(onUnprime);
+  unprimeRef.current = onUnprime;
+  const engineLatRef = useRef(getEngineLatencySec);
+  engineLatRef.current = getEngineLatencySec;
+  useEffect(() => {
+    const c = createCountIn({
+      bpm: bpmNum,
+      onBeat: setCountBeat,
+      clicks: sinkRef.current ?? undefined,
+      timing: () => ({ clickLatencySec: sinkRef.current?.latencySec?.() ?? 0, engineLatencySec: engineLatRef.current?.() ?? 0 }),
+      onCancel: () => unprimeRef.current?.(),
+    });
+    countRef.current = c;
+    return () => {
+      c.cancel();
+      countRef.current = null;
+    };
+  }, [bpmNum]);
+  const toggleCountIn = () => {
+    if (bpmNum === null) return;
+    const next = !countInOn;
+    setCountInOn(next);
+    writeCountIn(next);
+    if (!next) countRef.current?.cancel();
+  };
+  /**
+   * Run `go` (seek + play) after the count-in, or at once when it is off or the
+   * song has no tempo. While counting, the engine is paused: `before` is the
+   * seek, done now so the playhead already shows where the music will start.
+   */
+  const counted = (before: (() => void) | null, go: () => void): void => {
+    const c = countRef.current;
+    if (!countInReady || !c) {
+      before?.();
+      go();
+      return;
+    }
+    if (playingNow) onPause();
+    // Synchronous, inside the tap: the click context (opened and resumed by the
+    // first scheduled click) and the player's priming (audio session, element,
+    // engine context). Only the transport start waits for the count. start()
+    // first: it cancels a count already running, and that cancel must not undo
+    // the priming below.
+    c.start(go);
+    onPrime?.();
+    before?.();
+  };
+  // While the numbers are up, any other tap or key press cancels the count.
+  const counting = countBeat !== null;
+  useEffect(() => {
+    const c = countRef.current;
+    if (!counting || !c) return undefined;
+    return cancelOnOtherInput(c);
+  }, [counting]);
+  // Play from pause (button, Space, Replay, the Mix sheet's Play): count in first.
+  const onPlayCounted = () => {
+    const c = countRef.current;
+    if (countInReady && c) {
+      if (c.swallowPlay()) return; // the click of the tap that just cancelled the count
+      if (c.active) {
+        c.cancel(true);
+        return;
+      }
+    }
+    counted(null, onPlay);
+  };
+
   // D4: a TAP jumps to the section and plays (a loop that was on goes off);
   // a tap on a chip of the running loop stops the loop.
   const onTap = (i: number) => {
@@ -247,14 +352,24 @@ export function PlayerScreen(props: ScreenProps) {
     if (state.run !== shown.run || state.on !== shown.on) applyRun(state);
     const target = sections[i];
     if (jump && target) {
-      onSeek(target.startSec);
-      if (!playingNow) onPlay();
+      if (countInReady) {
+        counted(() => onSeek(target.startSec), onPlay);
+      } else {
+        onSeek(target.startSec);
+        if (!playingNow) onPlay();
+      }
     }
   };
   // D4: a HOLD loops; held while looping, it extends or shrinks the run (P2).
   const onLongPress = (i: number) => {
     stripUsed();
     const { state, extended } = holdChip(shown, i);
+    const region = state.on ? runRegion(sections, state.run) : null;
+    // A loop START only: a hold that extends or shrinks a loop that is already
+    // playing keeps the music going, exactly as before. The count pauses a playing
+    // song BEFORE the loop is installed (no blip of the new loop).
+    const countLoop = countInReady && !!region && !(playingNow && shown.on);
+    if (countLoop && playingNow) onPause();
     if (state.run !== shown.run || state.on !== shown.on) applyRun(state);
     if (extended && !hintSeen) {
       setHint(true);
@@ -262,7 +377,8 @@ export function PlayerScreen(props: ScreenProps) {
     } else {
       setHint(false);
     }
-    if (!playingNow) onPlay();
+    if (countLoop && region) counted(() => onSeek(region.startSec), onPlay);
+    else if (!playingNow) onPlay();
   };
   // The Loop button: loop the section under the playhead (or resume the run).
   const currentSection = sectionAt(sections, snapshot.positionSec);
@@ -273,7 +389,12 @@ export function PlayerScreen(props: ScreenProps) {
   const runOn = shown.on && !!shown.run;
   const band = runOn ? snapshot.loop : null;
   // ⟲ back to the start of this section (the loop's start while looping); play state is kept.
-  const onRestart = () => onSeek(restartTarget(sections, runOn ? snapshot.loop : null, snapshot.positionSec));
+  const onRestart = () => {
+    const to = restartTarget(sections, runOn ? snapshot.loop : null, snapshot.positionSec);
+    // Count-in only when it is playing (a paused ⟲ just moves the playhead).
+    if (countInReady && playingNow) counted(() => onSeek(to), onPlay);
+    else onSeek(to);
+  };
   // The first-use hint is drawn on the strip's top edge (SectionLoop firstHint),
   // above the chips, so it costs the chord stage no height and never sits next
   // to the "my part" pills (where "hold" solos: PR #331 r2 M-1). The run hint
@@ -418,7 +539,7 @@ export function PlayerScreen(props: ScreenProps) {
       : null;
 
   const playing = snapshot.status === 'playing';
-  const togglePlay = () => (playing ? onPause() : onPlay());
+  const togglePlay = () => (playing ? onPause() : onPlayCounted());
 
   const presets = (idPrefix: string) => (
     <Presets stems={snapshot.stems} part={part} onPreset={onPreset} onPart={onPart} idPrefix={idPrefix} />
@@ -604,6 +725,23 @@ export function PlayerScreen(props: ScreenProps) {
               >
                 Song info
               </button>
+              <div className={styles.countInItem} data-testid="count-in-item">
+                <button
+                  type="button"
+                  className={styles.menuItem}
+                  aria-pressed={countInReady}
+                  disabled={bpmNum === null}
+                  aria-describedby="player-count-in-note"
+                  onClick={toggleCountIn}
+                  data-testid="count-in-toggle"
+                >
+                  <span className={styles.countInName}>Count-in</span>
+                  <span className={styles.countInState}>{countInReady ? 'On' : 'Off'}</span>
+                </button>
+                <span id="player-count-in-note" className={styles.menuLabel}>
+                  {bpmNum === null ? COUNT_IN_NEEDS_BPM : 'One bar of clicks before it plays.'}
+                </span>
+              </div>
               {canRenameParts(playable, sections.length) ? (
                 <button
                   type="button"
@@ -668,6 +806,15 @@ export function PlayerScreen(props: ScreenProps) {
                 ) : null}
               </div>
             ) : null}
+            {countBeat !== null ? (
+              // Neutral numbers (amber is only the current chord). No animation at all, so
+              // reduced motion needs no special case; a polite live region says it once.
+              <div className={styles.countIn} data-testid="count-in" data-beat={countBeat} role="status" aria-label={`Count-in ${countBeat}`}>
+                <span className={styles.countInNum} aria-hidden="true">
+                  {countBeat}
+                </span>
+              </div>
+            ) : null}
             {/* Story 3. The chord stage stays mounted in EVERY phase, so a job
                 with no retained stems (6.4) or an unsupported browser (5.3)
                 still shows its chords. */}
@@ -719,7 +866,7 @@ export function PlayerScreen(props: ScreenProps) {
                 status={snapshot.status}
                 positionSec={snapshot.positionSec}
                 durationSec={snapshot.durationSec}
-                onPlay={onPlay}
+                onPlay={onPlayCounted}
                 onPause={onPause}
                 onSeek={onSeek}
                 ticks={sections.slice(1).map((r: LoopRegion) => r.startSec)}

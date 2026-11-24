@@ -254,6 +254,12 @@ export interface PlayEngine {
   resumeAudio?(): void;
   /** The AudioContext's reported `outputLatency` / `baseLatency`, or null. Optional for fakes. */
   audioLatency?(): { outputLatency?: number; baseLatency?: number } | null;
+  /**
+   * Seconds from a voice starting to it being heard through the time-stretch
+   * pipeline at the rate now playing (#383): 0 at 100% or with no stretch nodes.
+   * A start from `play()` is heard this much later. Optional for fakes.
+   */
+  stretchLatencySec?(): number;
   /** Subscribe to AudioContext state changes; returns an unsubscribe fn. Optional for fakes. */
   onAudioStateChange?(cb: (state: string) => void): () => void;
 

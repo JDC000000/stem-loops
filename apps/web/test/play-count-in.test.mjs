@@ -14,6 +14,7 @@ import { fileURLToPath } from 'node:url';
 import {
   COUNT_IN_BEATS, COUNT_IN_KEY, COUNT_IN_NEEDS_BPM, CANCEL_SWALLOW_MS, beatSec, clickOffsets, countInBpm, countInSec,
   createCountIn, cancelOnOtherInput, readCountIn, writeCountIn, createClickSink, timingOffsets, engineCountLatencySec, SETTLE_MS, CLICK_LEAD_SEC, ENGINE_LEAD_SEC,
+  MAX_LATENCY_SEC, MAX_ENGINE_LATENCY_SEC, contextLatencySec, countRate,
 } from '../src/lib/play/count-in.ts';
 import { buildModuleGraph } from './helpers/module-graph.mjs';
 import { withDom } from './helpers/dom.mjs';
@@ -171,7 +172,10 @@ test('timing: numbers land with their clicks, and play() is called early by (eng
   assert.ok(Math.abs(t.downbeat - (CLICK_LEAD_SEC + 0.02 - ENGINE_LEAD_SEC - 0.2)) < 1e-9);
   assert.ok(t.downbeat < 0, 'a slow route (phone) is called early');
   assert.deepEqual(timingOffsets({ clickLatencySec: NaN, engineLatencySec: -3 }), { ui: CLICK_LEAD_SEC, downbeat: CLICK_LEAD_SEC - ENGINE_LEAD_SEC }, 'garbage latency = 0');
-  assert.equal(timingOffsets({ clickLatencySec: 0, engineLatencySec: 99 }).downbeat, CLICK_LEAD_SEC - ENGINE_LEAD_SEC - 0.5, 'capped at 0.5 s');
+  // #387: the engine side is route + stretch, each capped at 0.5 s, the sum at 1 s
+  assert.equal(MAX_ENGINE_LATENCY_SEC, 2 * MAX_LATENCY_SEC);
+  assert.equal(timingOffsets({ clickLatencySec: 0, engineLatencySec: 99 }).downbeat, CLICK_LEAD_SEC - ENGINE_LEAD_SEC - MAX_ENGINE_LATENCY_SEC, 'engine capped at 1 s');
+  assert.equal(timingOffsets({ clickLatencySec: 99, engineLatencySec: 0 }).ui, CLICK_LEAD_SEC + MAX_LATENCY_SEC, 'click capped at 0.5 s');
 });
 
 test('timing in the controller: at 120 BPM with 0.2 s route latency play() is called 2000 - 220 ms after the start', () => {
@@ -723,8 +727,8 @@ test('R2-1: engine latency by route — the element route uses the route estimat
 
 test('R2-1 (source): Player feeds the count the engine context latency on the non-element route', () => {
   const src = read('src/components/play/Player.tsx');
-  const body = src.slice(src.indexOf('const getEngineLatencySec'), src.indexOf('const getEngineLatencySec') + 400);
-  assert.match(body, /engineCountLatencySec\(src, routed, routeLatencySec\(src, routed\)\)/);
+  const body = src.slice(src.indexOf('const getEngineLatencySec'), src.indexOf('const getEngineLatencySec') + 800);
+  assert.match(body, /engineCountLatencySec\(src, routed, routeLatencySec\(src, routed\), engine\?\.stretchLatencySec\?\.\(\) \?\? 0\)/);
 });
 
 test('R2-2: the first count reads latencies AFTER the in-gesture resume: both read 0 at start, real at SETTLE_MS, and the downbeat follows the later reading', () => {
@@ -736,27 +740,162 @@ test('R2-2: the first count reads latencies AFTER the in-gesture resume: both re
     timing: () => (ready ? { clickLatencySec: 0.2, engineLatencySec: 0.05 } : { clickLatencySec: 0, engineLatencySec: 0 }),
   });
   c.start(() => { thens += 1; });
+  // The resume completes a moment AFTER the tap (#387 I-5: flipping `ready`
+  // before any time passes let a SETTLE_MS of 0 pass this test too).
+  clock.tick(1);
   ready = true; // the contexts resumed and now report their latency
-  clock.tick(SETTLE_MS);
   const want = 2000 + timingOffsets({ clickLatencySec: 0.2, engineLatencySec: 0.05 }).downbeat * 1000; // the LATER reading
-  clock.tick(want - SETTLE_MS - 1); assert.equal(thens, 0);
+  assert.notEqual(want, 2000 + timingOffsets({ clickLatencySec: 0, engineLatencySec: 0 }).downbeat * 1000, 'the two readings differ');
+  clock.tick(want - 1 - 1); assert.equal(thens, 0, 'not at the first (unsettled) reading');
   clock.tick(1); assert.equal(thens, 1, 'called at the re-read downbeat');
   // never re-armed into the past, never twice
   clock.tick(5000); assert.equal(thens, 1);
 });
 
-test('R2-2: with a count too short to settle, it is armed once; a cancel during the settle wait leaves nothing pending', () => {
+test('R2-2: a cancel during the settle wait (before the re-read) leaves nothing pending', () => {
+  // #387 I-4: the old title claimed a "too short to settle" count is armed once,
+  // but no accepted tempo is that short (300 BPM = 800 ms > 2 x SETTLE_MS), and
+  // the test never checked it. It checks the cancel, so it says the cancel.
+  assert.ok(countInSec(300) * 1000 > 2 * SETTLE_MS, 'every accepted tempo re-reads');
   const clock = fakeClock();
   const c = createCountIn({ bpm: 300, timers: clock, onBeat() {} });
   c.start(() => {});
+  assert.ok(clock.pending() > COUNT_IN_BEATS, 'numbers, downbeat AND the settle re-read are pending');
+  clock.tick(SETTLE_MS - 1);
   c.cancel(true);
   assert.equal(clock.pending(), 0);
 });
 
-test('R2-3: the un-prime guard — a cancelled count never pauses the element while the engine is playing (source)', () => {
-  const src = read('src/components/play/Player.tsx');
-  const a = src.indexOf('const onUnprime');
-  const body = src.slice(a, src.indexOf('const getEngineLatencySec'));
-  assert.match(body, /getSnapshot\(\)\.status !== 'playing'\) outputRef\.current\?\.pause\(\)/, 'guarded by "engine not playing"');
-  assert.equal([...body.matchAll(/outputRef\.current\?\.pause\(\)/g)].length, 1);
+// R2-3 (the un-prime guard) is now behavioural: test/play-count-in-player.test.mjs
+// mounts the real Player over a fake engine and phone output (#387 I-3).
+
+// ═══ #387: slow-down rate (F5) and stretch latency ══════════════════════════
+
+test('#387 F5: a beat at a slow-down rate is 60 / (BPM x rate): 120 BPM at 75% counts at 90 BPM, at 90% at 108 BPM', () => {
+  assert.equal(beatSec(120, 1), 0.5);
+  assert.ok(Math.abs(beatSec(120, 0.75) - 60 / 90) < 1e-12);
+  assert.ok(Math.abs(beatSec(120, 0.9) - 60 / 108) < 1e-12);
+  assert.ok(Math.abs(countInSec(120, 0.75) - 8 / 3) < 1e-12, '4 beats at 90 BPM = 2667 ms, not 2000');
+  const offs = clickOffsets(120, 0.75);
+  assert.equal(offs.length, 4);
+  offs.forEach((o, i) => assert.ok(Math.abs(o - i * (2 / 3)) < 1e-12, `click ${i}`));
+  // no rate = 1; nonsense = 1 (never a zero / negative / infinite beat)
+  assert.equal(beatSec(120), 0.5);
+  for (const bad of [0, -1, NaN, Infinity, null, undefined, '0.75', 0.1, 5]) {
+    assert.equal(countRate(bad), 1, String(bad));
+    assert.equal(beatSec(120, bad), 0.5, String(bad));
+  }
+  assert.equal(countRate(0.9), 0.9);
+});
+
+test('#387 F5: the controller counts at the rate read at start: 120 BPM at 75% shows 3 at 667 ms and plays at 2667 ms', () => {
+  const clock = fakeClock();
+  const beats = [];
+  const clicks = [];
+  let rate = 0.75;
+  let thens = 0;
+  const c = createCountIn({
+    bpm: 120, timers: clock, onBeat: (b) => beats.push(b), rate: () => rate,
+    clicks: { schedule: (off, accent) => clicks.push([off, accent]), stop() {} },
+  });
+  c.start(() => { thens += 1; });
+  assert.deepEqual(clicks.map(([o]) => Math.round(o * 1000)), [0, 667, 1333, 2000], 'the clicks are on the SLOW beats');
+  clock.tick(666); assert.deepEqual(beats, [4], 'not at the full-tempo 500 ms');
+  clock.tick(1); assert.deepEqual(beats, [4, 3]);
+  clock.tick(1999); assert.equal(thens, 0, 'not at the full-tempo 2000 ms');
+  clock.tick(1); assert.equal(thens, 1, 'at 4 x 60 / (120 x 0.75)');
+  // read again at every start: back at 100% the next count is 2000 ms
+  rate = 1;
+  clicks.length = 0;
+  c.start(() => { thens += 1; });
+  assert.deepEqual(clicks.map(([o]) => o), [0, 0.5, 1, 1.5]);
+  clock.tick(1999); assert.equal(thens, 1);
+  clock.tick(1); assert.equal(thens, 2);
+  // a rate source that returns nothing usable counts at the song tempo
+  rate = undefined;
+  c.start(() => { thens += 1; });
+  clock.tick(2000); assert.equal(thens, 3);
+});
+
+test('#387: stretch latency is added to the engine side on every route, each part capped, so the first note lands on the 5th beat', () => {
+  const ST = 0.121; // SoundTouch at 75% (stretch.ts, pinned in play-slowdown.test.mjs)
+  // phone route: route estimate + stretch
+  assert.ok(Math.abs(engineCountLatencySec({ outputLatency: 0.01 }, true, 0.25, ST) - (0.25 + ST)) < 1e-12);
+  // desktop: device latency + stretch
+  assert.ok(Math.abs(engineCountLatencySec({ outputLatency: 0.2 }, false, 0, ST) - (0.2 + ST)) < 1e-12);
+  // 100%: stretch 0 = exactly the old figure
+  assert.equal(engineCountLatencySec({ outputLatency: 0.2 }, false, 0, 0), engineCountLatencySec({ outputLatency: 0.2 }, false, 0));
+  // garbage stretch = 0; each part capped at 0.5, so a long route is not clipped by the stretch
+  assert.equal(engineCountLatencySec(null, false, 0, NaN), 0);
+  assert.equal(engineCountLatencySec(null, true, 9, 9), 2 * MAX_LATENCY_SEC);
+  const t = timingOffsets({ clickLatencySec: 0, engineLatencySec: MAX_LATENCY_SEC + ST });
+  assert.ok(Math.abs(t.downbeat - (CLICK_LEAD_SEC - ENGINE_LEAD_SEC - MAX_LATENCY_SEC - ST)) < 1e-12, 'a 0.5 s route + stretch is not cut back to 0.5 s');
+  // in the controller: 120 BPM at 75% through a 0.121 s stretch, desktop, equal device latencies
+  const clock = fakeClock();
+  let thens = 0;
+  const c = createCountIn({
+    bpm: 120, timers: clock, onBeat() {}, rate: () => 0.75,
+    timing: () => ({ clickLatencySec: 0.02, engineLatencySec: engineCountLatencySec({ outputLatency: 0.02 }, false, 0, ST) }),
+  });
+  c.start(() => { thens += 1; });
+  const want = Math.max(0, (8 / 3 + CLICK_LEAD_SEC + 0.02 - ENGINE_LEAD_SEC - 0.02 - ST) * 1000);
+  // The heard downbeat: play() at want, heard at want + ENGINE_LEAD + 0.02 + ST; the 5th click
+  // would be heard at CLICK_LEAD + 4 beats + 0.02. They are the same instant:
+  assert.ok(Math.abs((want / 1000 + ENGINE_LEAD_SEC + 0.02 + ST) - (CLICK_LEAD_SEC + 8 / 3 + 0.02)) < 1e-9);
+  clock.tick(Math.floor(want)); assert.equal(thens, 0);
+  clock.tick(1); assert.equal(thens, 1);
+});
+
+test('#387 I-2: ONE context-latency fallback for both contexts: outputLatency, else (missing, 0, garbage) baseLatency', () => {
+  assert.equal(contextLatencySec({ outputLatency: 0.2, baseLatency: 0.01 }), 0.2);
+  assert.equal(contextLatencySec({ outputLatency: 0, baseLatency: 0.01 }), 0.01, '0 is "not known yet" (Chromium before running), not a reading');
+  assert.equal(contextLatencySec({ baseLatency: 0.01 }), 0.01);
+  assert.equal(contextLatencySec({ outputLatency: NaN, baseLatency: 0.01 }), 0.01);
+  assert.equal(contextLatencySec(null), 0);
+  assert.equal(contextLatencySec({ outputLatency: 9 }), MAX_LATENCY_SEC);
+  // the engine side (not routed) and the click sink both use it
+  assert.equal(engineCountLatencySec({ outputLatency: 0, baseLatency: 0.01 }, false, 0), 0.01);
+  const real = globalThis.AudioContext;
+  const { made, Ctx } = fakeAudio();
+  globalThis.AudioContext = Ctx;
+  try {
+    const sink = createClickSink();
+    sink.schedule(0, true);
+    made[0].outputLatency = 0;
+    made[0].baseLatency = 0.01;
+    assert.equal(sink.latencySec(), 0.01, 'was 0 with `??`: the click side read 0 while the engine side read 0.01');
+    made[0].outputLatency = 0.03;
+    assert.equal(sink.latencySec(), 0.03);
+    sink.close();
+  } finally {
+    if (real) globalThis.AudioContext = real; else delete globalThis.AudioContext;
+  }
+});
+
+test('#387 F5 (screen): with the song at 75% a chip tap counts 4-3-2-1 at the SLOW tempo and plays after 4 slow beats', async () => {
+  await withDom(async (dom) => {
+    setMedia(); fresh();
+    const log = [];
+    function Slow() {
+      const [status, setStatus] = React.useState('ready');
+      return React.createElement(Player.PlayerView, {
+        jobId: 'job-1', phase: { kind: 'ready' }, snapshot: snap({ status, playbackRate: 0.75 }), sections: SECTIONS,
+        onPlay: () => { log.push('play'); setStatus('playing'); }, onPause: () => log.push('pause'),
+        onSeek: (t) => log.push(`seek ${t}`), onGain() {}, onMute() {}, onSolo() {}, onLoop() {},
+        title: 'x', bpm: BPM, musicalKey: null,
+      });
+    }
+    await dom.mount(React.createElement(Slow));
+    await turnOn(dom);
+    await tap(dom, chip(dom, 2));
+    // 300 BPM at 75% = 225 BPM: a beat is 266.7 ms (200 ms at full tempo). With no
+    // latencies the numbers trail their clicks by CLICK_LEAD (30 ms) and play() is
+    // called ENGINE_LEAD - CLICK_LEAD (20 ms) early: "3" at 296.7, play at 1046.7.
+    // dom.advance() waits real time, so each check keeps a margin of 40+ ms.
+    await dom.advance(255); assert.equal(countNum(dom), '4', 'still 4 at 255 ms (full tempo shows 3 at 230)');
+    await dom.advance(85); assert.equal(countNum(dom), '3', '3 by 340 ms (shown 297-563 ms)');
+    await dom.advance(660); assert.deepEqual(log, ['seek 47'], 'not yet at 1000 ms (full tempo plays at 780)');
+    await dom.advance(120);
+    assert.deepEqual(log, ['seek 47', 'play'], 'plays at 4 x 266.7 - 20 = 1047 ms');
+  });
 });

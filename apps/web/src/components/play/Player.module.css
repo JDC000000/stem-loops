@@ -90,16 +90,22 @@
   margin-top: 2px;
   min-width: 0;
   display: flex;
-  /* Items WRAP onto a second line instead of shrinking: the capo badge never
-     squeezes the artist (PR #375 round 4); the header grows (min-height). */
-  flex-wrap: wrap;
-  row-gap: 2px;
+  /* No capo/transpose badge: ONE line, the artist is cut with an ellipsis (the
+     pre-PR fixed 56px header). The wrapping variant is .subWrap (badge only). */
+  flex-wrap: nowrap;
   align-items: center;
   gap: 8px;
   font-size: 13px;
   color: var(--text-muted);
   white-space: nowrap;
   overflow: hidden;
+}
+/* Badge present (PR #375 round 4, fixed in C1): items WRAP onto a second line
+   instead of shrinking, so the badge never squeezes the artist; the header
+   grows (min-height). Applied ONLY when the badge is shown. */
+.subWrap {
+  flex-wrap: wrap;
+  row-gap: 2px;
 }
 /* BPM and key at 20px (>= 20px: 25 arcmin cap height at 70 cm), white on the
    page: readable from a music stand. A chip, not a control: no pointer. */
@@ -124,13 +130,14 @@
   text-overflow: ellipsis;
 }
 .artist {
-  /* takes the rest of the line (basis 0) so it never forces a wrap by itself;
-     ellipsis when short, but never below 6ch */
+  /* takes the rest of the line (basis 0); ellipsis when short. No badge: it
+     may shrink to nothing (pre-PR). With the badge: never below 6ch (.subWrap). */
   flex: 1 1 0;
-  min-width: 6ch;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.subWrap .artist { min-width: 6ch; }
 
 .menuWrap { position: relative; flex-shrink: 0; }
 

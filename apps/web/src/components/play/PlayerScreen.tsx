@@ -471,7 +471,7 @@ export function PlayerScreen(props: ScreenProps) {
             {songTitle}
           </h1>
           {facts || artist || badge ? (
-            <span className={styles.sub}>
+            <span className={badge ? `${styles.sub} ${styles.subWrap}` : styles.sub}>
               {/* Phase A (J3): BPM and key in a 20px chip, readable from a
                   music stand at 70 cm. One source: jobs.bpm / jobs.musical_key. */}
               {facts ? (
@@ -481,7 +481,7 @@ export function PlayerScreen(props: ScreenProps) {
                 </span>
               ) : null}
               {artist ? <span className={styles.artist}>{artist}</span> : null}
-              {/* .sub wraps: when the badge does not fit it takes its own line. */}
+              {/* .subWrap (badge only): when the badge does not fit it takes its own line. */}
               {badge ? (
                 <span className={styles.capoBadge} data-testid="capo-indicator">
                   {badge}

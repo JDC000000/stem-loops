@@ -44,10 +44,12 @@ test('12 keys x 12 roots: the spelling follows the new key (major and minor)', (
         const flats = (minor ? flatMinor : flatMajor).has(newPc);
         assert.equal(spellingFor(key, t), flats ? 'flat' : 'sharp', `${key} ${t}`);
         for (let r = 0; r < 12; r++) {
-          // the raised 7th of a minor key, and F# in C major, stay sharp
+          // diatonic roots follow the new key's signature; borrowed roots are
+          // flats, except the raised 7th of a minor key and #IV of a major key
           const outPc = (r + t + 12) % 12;
-          const sharpened = minor ? outPc === (newPc + 11) % 12 : newPc === 0 && outPc === 6;
-          const want = (flats && !sharpened ? FLAT : SHARP)[outPc];
+          const scale = (minor ? [0, 2, 3, 5, 7, 8, 10] : [0, 2, 4, 5, 7, 9, 11]).map((d) => (newPc + d) % 12);
+          const sharpened = outPc === (minor ? (newPc + 11) % 12 : (newPc + 6) % 12);
+          const want = (scale.includes(outPc) ? (flats ? FLAT : SHARP) : sharpened ? SHARP : FLAT)[outPc];
           assert.equal(transposeLabel(`${SHARP[r]}:min`, t, key), `${want}:min`, `${key} ${t} root ${SHARP[r]}`);
         }
       }
@@ -190,7 +192,7 @@ test('displayRuns: simplify THEN transpose, names only, key-aware, sign (Capo 2 
   // the stored labels; transposing first would normalise the spelling and merge
   // them as a different run set.
   const on = displayRuns(raw, { ...base, transpose: -2 });
-  assert.deepEqual(names(on), ['0-3 G#:maj', '3-6 G#:maj', '6-9 D:min7', '9-12 G:maj/3', '12-15 N']);
+  assert.deepEqual(names(on), ['0-3 Ab:maj', '3-6 Ab:maj', '6-9 D:min7', '9-12 G:maj/3', '12-15 N']);
   // ...and the same input with Detailed has the same number of runs as loaded
   assert.equal(displayRuns(raw, { ...base, simplify: false, transpose: -2 }).length, raw.length);
   // transposing before simplifying gives a different (merged) result: guard the order
@@ -219,4 +221,26 @@ test('displayRuns: simplify THEN transpose, names only, key-aware, sign (Capo 2 
   const t0 = displayRuns(raw, { ...base, simplify: false, transpose: 0 });
   assert.equal(t0, raw, 'no shift, no Simple: the same array');
   assert.deepEqual(displayRuns(raw, { ...base, simplify: false, transpose: -2 }).map((r) => r.chordClass), raw.map((r) => r.chordClass));
+});
+
+test('S1: borrowed chords are flats (diatonic to the NEW key by signature), sharp exceptions kept', () => {
+  assert.equal(transposeLabel('C:maj', -2, 'A major'), 'Bb:maj');
+  assert.equal(transposeLabel('F:maj', -2, 'A major'), 'Eb:maj');
+  assert.equal(transposeLabel('Ab:maj', 2, 'C major'), 'Bb:maj');
+  assert.equal(transposeLabel('Bb:maj', -2, 'A major'), 'Ab:maj');
+  assert.equal(transposeLabel('A#:maj', -2, 'A major'), 'Ab:maj');
+  // diatonic roots keep the signature
+  assert.equal(transposeLabel('D:maj', -2, 'A major'), 'C:maj');
+  assert.equal(transposeLabel('E:maj', 2, 'F major'), 'F#:maj'); // F# is diatonic in G major
+  // exceptions: raised 7th in minor (C# in D minor, F# in G minor), #IV in major
+  assert.equal(transposeLabel('D#:dim', -2, 'E minor'), 'C#:dim');
+  assert.equal(transposeLabel('G#:dim', -2, 'A minor'), 'F#:dim');
+  assert.equal(transposeLabel('G#:dim', -2, 'D major'), 'F#:dim'); // F# in C major
+  assert.equal(transposeLabel('F#:maj', 7, 'C major'), 'C#:maj'); // C# in G major
+  // slash-chord note-name bass follows the same rule
+  assert.equal(transposeLabel('C/E', -2, 'A major'), 'Bb/D');
+  assert.equal(transposeLabel('Bb/F', -2, 'A major'), 'Ab/Eb');
+  // unknown key unchanged: flats going down, sharps going up
+  assert.equal(transposeLabel('C:maj', -2, null), 'Bb:maj');
+  assert.equal(transposeLabel('C:maj', 1, null), 'C#:maj');
 });

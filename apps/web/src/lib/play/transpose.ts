@@ -71,7 +71,12 @@ export function spellingFor(musicalKey: unknown, semis: number): Spelling {
 }
 
 /** One Harte chord label moved by `semis`, accidentals spelled `spelling`. */
-export function transposeHarte(label: string, semis: number, spelling: Spelling): string {
+export function transposeHarte(
+  label: string,
+  semis: number,
+  spelling: Spelling,
+  namer: (pc: number) => string = (pc) => noteName(pc, spelling),
+): string {
   if (typeof label !== 'string') return label;
   const m = /^(\s*)([A-G](?:#|b)*)(.*)$/.exec(label);
   if (!m) return label; // N, X, blank, anything else
@@ -86,28 +91,37 @@ export function transposeHarte(label: string, semis: number, spelling: Spelling)
   if (slash >= 0) {
     const bass = rest.slice(slash + 1);
     const bassPc = parseNote(bass); // a note-name bass moves; an interval ("3", "b7") does not
-    if (bassPc !== null) rest = rest.slice(0, slash + 1) + noteName(bassPc + semis, spelling);
+    if (bassPc !== null) rest = rest.slice(0, slash + 1) + namer(bassPc + semis);
   }
-  return m[1] + noteName(rootPc + semis, spelling) + rest;
+  return m[1] + namer(rootPc + semis) + rest;
 }
 
+const MAJOR_SCALE = [0, 2, 4, 5, 7, 9, 11];
+const MINOR_SCALE = [0, 2, 3, 5, 7, 8, 10];
+
 /**
- * The label a run shows, for the chosen shift and song key. Accidentals follow
- * the NEW key's signature, except the one chord-root a key always sharpens: the
- * raised 7th of a minor key (C# in D minor, F# in G minor) and F# in C major.
+ * The label a run shows, for the chosen shift and song key. Roots diatonic to
+ * the NEW key are spelled by that key's signature (sharps in a sharp key, flats
+ * in a flat key); every other root (a borrowed chord) is a flat (Bb, Eb, Ab),
+ * except the two a key always sharpens: the raised 7th of a minor key (C# in D
+ * minor, F# in G minor) and #IV in a major key (F# in C major, C# in G major).
+ * A note-name bass of a slash chord follows the same rule. Unknown key: as
+ * spellingFor (no per-root rule).
  */
 export function transposeLabel(label: string, semis: number, musicalKey: unknown): string {
   if (semis === 0) return label;
-  let spelling = spellingFor(musicalKey, semis);
+  const spelling = spellingFor(musicalKey, semis);
   const key = parseKey(musicalKey);
-  const m = /^\s*([A-G](?:#|b)*)/.exec(typeof label === 'string' ? label : '');
-  const rootPc = m ? parseNote(m[1]) : null;
-  if (key && rootPc !== null) {
-    const outPc = (rootPc + semis + 120) % 12;
-    const keyPc = (key.pc + semis + 120) % 12;
-    if (key.minor ? outPc === (keyPc + 11) % 12 : keyPc === 0 && outPc === 6) spelling = 'sharp';
-  }
-  return transposeHarte(label, semis, spelling);
+  if (!key) return transposeHarte(label, semis, spelling);
+  const keyPc = (((key.pc + semis) % 12) + 12) % 12;
+  const diatonic = new Set((key.minor ? MINOR_SCALE : MAJOR_SCALE).map((d) => (keyPc + d) % 12));
+  const sharpExtra = key.minor ? (keyPc + 11) % 12 : (keyPc + 6) % 12;
+  const namer = (pc: number): string => {
+    const p = ((pc % 12) + 12) % 12;
+    if (diatonic.has(p)) return noteName(p, spelling);
+    return noteName(p, p === sharpExtra ? 'sharp' : 'flat');
+  };
+  return transposeHarte(label, semis, spelling, namer);
 }
 
 /** The small indicator: "" at 0, "Capo 2" below 0, "+2" above. */

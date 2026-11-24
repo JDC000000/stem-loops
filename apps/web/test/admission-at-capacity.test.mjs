@@ -21,7 +21,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
 import { SAME_ORIGIN_URL, SAME_ORIGIN_IMPORT_RE, SAME_ORIGIN_HEADERS } from './helpers/same-origin.mjs';
-import { LINK_JOB_URL, LINK_JOB_IMPORT_RE } from './helpers/create-link-job.mjs';
+import { LINK_JOB_URL, LINK_JOB_IMPORT_RE, NO_PASTE_HOOKS_URL, LIBRARY_SERVER_IMPORT_RE } from './helpers/create-link-job.mjs';
 
 const WEB = join(dirname(fileURLToPath(import.meta.url)), '..');
 const SRC = (p) => join(WEB, 'src', p);
@@ -117,6 +117,7 @@ const wire = (js) =>
     .replace(/from ['"]@sentry\/nextjs['"]/g, `from '${stub.sentry}'`)
     .replace(SAME_ORIGIN_IMPORT_RE, `from '${SAME_ORIGIN_URL}'`)
     .replace(LINK_JOB_IMPORT_RE, `from '${LINK_JOB_URL}'`)
+    .replace(LIBRARY_SERVER_IMPORT_RE, `from '${NO_PASTE_HOOKS_URL}'`)
     .replace(/from ['"]next\/server['"]/g, `from '${stub.next}'`);
 
 const admission = await import(ADMISSION);

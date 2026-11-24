@@ -145,6 +145,10 @@ export interface LinkJobDeps {
 export interface LinkJobHookContext {
   userId: string;
   canonicalUrl: string;
+  /** #372 R2: the stems this job would be created with (the request's, or LINK_DEFAULT_STEMS). */
+  requestedStems: readonly string[];
+  /** #372 R2: the loop length this job would be created with (validated; default 4). */
+  loopLengthBars: number;
 }
 
 export interface CreateAuthedLinkJobInput {
@@ -294,7 +298,8 @@ async function run(input: CreateAuthedLinkJobInput, deps: LinkJobDeps): Promise<
     return json(400, { error_code: 'DOWNLOAD_INVALID_URL', message: 'stems must be a non-empty list of supported stems.' });
   }
 
-  const ctx: LinkJobHookContext = { userId: user.user_id, canonicalUrl };
+  const requestedStems = Array.isArray(stems) && stems.length ? (stems as string[]) : LINK_DEFAULT_STEMS;
+  const ctx: LinkJobHookContext = { userId: user.user_id, canonicalUrl, requestedStems, loopLengthBars: bars };
 
   // Hook 1 (D-e): before ANY gate that writes or locks.
   if (input.findExisting) {
@@ -351,7 +356,6 @@ async function run(input: CreateAuthedLinkJobInput, deps: LinkJobDeps): Promise<
   }
 
   const id = deps.randomUUID();
-  const requestedStems = Array.isArray(stems) && stems.length ? stems : LINK_DEFAULT_STEMS;
 
   const AUTHED_INSERT_SQL = `INSERT INTO jobs (id, youtube_url, requested_stems, loop_length_bars, status, client_ip_hash, client_fingerprint, user_id)
              SELECT $1, $2, $3, $4, 'queued', $5, '', $8::uuid
@@ -589,7 +593,7 @@ async function runMirrorRestore(
   bars: number,
   attempt = 0,
 ): Promise<LinkJobResult> {
-  const { user, stems } = input;
+  const { user } = input;
   const { db, EntitlementError } = deps;
   const parentJobId = funding.parentJobId;
   const limit = (): LinkJobResult => json(429, { error_code: 'RETRY_LIMIT', message: funding.limitMessage });
@@ -671,7 +675,6 @@ async function runMirrorRestore(
   }
 
   const id = deps.randomUUID();
-  const requestedStems = Array.isArray(stems) && stems.length ? stems : LINK_DEFAULT_STEMS;
   const RATE_SENTINEL = Symbol('rate_limited');
 
   let inserted: boolean;
@@ -721,7 +724,7 @@ async function runMirrorRestore(
 
       // 3. The retry row.
       const r = await client.query(RETRY_INSERT_SQL, [
-        id, ctx.canonicalUrl, requestedStems, bars, clientIpHash, deps.RATE_WINDOW_MS, deps.RATE_LIMIT, user.user_id,
+        id, ctx.canonicalUrl, ctx.requestedStems, bars, clientIpHash, deps.RATE_WINDOW_MS, deps.RATE_LIMIT, user.user_id,
         parentJobId, depth + 1,
       ]);
       if (!r.rowCount) {

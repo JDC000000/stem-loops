@@ -120,6 +120,27 @@
   color: var(--text-muted);
 }
 
+/* Phase C C1: the speed pill between the times, only when not at 100%.
+   Neutral (no lime, no amber), static: nothing to reduce for reduced motion. */
+.speed {
+  padding: 0 8px;
+  border: 1px solid var(--border-control);
+  border-radius: 10px;
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  font-family: var(--font-sans, inherit);
+  font-size: 12px;
+  line-height: 18px;
+}
+.sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
 /* ── the buttons ───────────────────────────────────────────────────────── */
 .buttons {
   height: 84px;

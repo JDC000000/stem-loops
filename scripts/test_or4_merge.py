@@ -1,4 +1,4 @@
-"""Offline tests for scripts/or4-merge.sh (gate v3.6 = v3.5.1 + money class / two protected reviews / merge-tail hardening; v3.5.1 = v3.4 ∪ 19B v3.4-R2 ∪ #384): protected-path regex, behind guard
+"""Offline tests for scripts/or4-merge.sh (gate v3.6.1 = v3.6 + wider MONEY_RE, non-ASCII path = money, strict VERDICT/SCORES counting; v3.6 = v3.5.1 + money class / two protected reviews / merge-tail hardening; v3.5.1 = v3.4 ∪ 19B v3.4-R2 ∪ #384): protected-path regex, behind guard
 (ALLOW_BEHIND, protected, <=5, overlap, hot/coupled, main deletions/renames), snapshot pin, pre-PUT main re-check, git env/replace
 hardening, OR4_REPO guard, verdict-marker parsing.
 
@@ -805,6 +805,97 @@ class Gate36(unittest.TestCase):
     def test_real_merge_still_succeeds(self):
         r, _, _ = self.run_gate([], real=True)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+
+class Gate361(unittest.TestCase):
+    """v3.6.1 (tightening only; #406): wider MONEY_RE, non-ASCII path = money, VERDICT/SCORES counted case-insensitively and when indented."""
+    PR = GateWiring.PR
+    run_gate = GateWiring.run_gate
+    MONEY_PR = Gate36.MONEY_PR
+
+    NEW_MONEY = [
+        "apps/web/src/app/api/library/remake/route.ts", "apps/web/src/app/api/library/route.ts", "apps/web/src/app/api/library/[entryId]/route.ts",
+        "apps/worker/src/worker/reaper.py", "apps/worker/src/worker/consumer.py", "apps/worker/tests/test_reaper_db.py",
+        "apps/web/src/lib/stem-urls.ts", "apps/web/src/lib/stem-keys.ts", "apps/web/test/stem-urls-contract.test.mjs",
+        "apps/web/src/app/account/page.tsx", "apps/web/src/app/account/delete/page.tsx", "apps/web/src/components/DeleteAccountForm.tsx",
+        "apps/web/test/account-portal-button.test.mjs", "apps/web/src/lib/db.ts",
+        "apps/worker/src/worker/job_failure.py", "apps/web/src/lib/jobs/retry-policy.ts", "apps/web/test/job-retry.test.mjs",
+        "apps/worker/migrations/042_v3_job_allowance_debits.sql", "apps/worker/migrations/013_v3_commercial.sql", "apps/worker/migrations/014_v3_seed_plans.sql",
+        "apps/worker/migrations/021_v3_users_deleted_at.sql", "apps/worker/migrations/031_v3_chord_edits_erase_fn.sql", "apps/worker/migrations/001_jobs.sql",
+        "apps/worker/src/worker/downloader/fetch_gates.py", "apps/web/src/lib/demo-rate.ts", "apps/web/src/lib/read-rate-limit.ts", "apps/web/src/lib/client-ip.ts",
+        "apps/web/src/lib/chords-claim.ts", "apps/web/test/job-page-gate.test.mjs", "apps/web/test/wav-download-gate.test.mjs",
+        "apps/web/src/lib/emails/templates/receipt.ts", "apps/web/src/app/success/page.tsx", "apps/web/src/lib/signed-url.ts", "apps/web/src/lib/presign.ts",
+        "apps/web/test/library-remake-route.test.mjs", "apps/web/src/lib/remake.ts",
+    ]
+    STILL_NOT_MONEY = ["apps/web/src/components/library/LibraryList.tsx", "apps/web/src/lib/play/engine.ts", "apps/web/src/lib/seo/meta.ts",
+                       "apps/web/src/app/(landing)/page.tsx", "apps/training/model/cqt_plan.py", "docs/notes.md", "apps/web/src/components/chrome/SignedInNav.tsx"]
+
+    def test_new_money_paths(self):
+        for pth in self.NEW_MONEY:
+            with self.subTest(p=pth):
+                self.assertEqual(sh('printf "%s\\0" "$1" | money_paths | grep -q .', pth).returncode, 0, pth)
+        for pth in self.STILL_NOT_MONEY:
+            with self.subTest(p=pth):
+                self.assertNotEqual(sh('printf "%s\\0" "$1" | money_paths | grep -q .', pth).returncode, 0, pth)
+
+    def test_new_money_path_through_gate_needs_two_reviews(self):
+        r, _, _ = self.run_gate([], review=MONEY_OK, pr_file="apps/web/src/app/api/library/remake/route.ts", JON_ROW="95", JON_PR="7")
+        self.assertIn("money=1", r.stdout); self.assertIn("DRY_RUN fail=1", r.stdout); self.assertIn("needs a SECOND review file", r.stdout)
+
+    def test_non_ascii_path_is_money(self):
+        for raw in ("apps/web/src/caf\u00e9.ts", "apps/web/src/\u017ftripe/x.ts", "docs/\u00fc.md"):
+            with self.subTest(p=raw):
+                # no ASCII money word; only the non-ASCII byte makes it money (also under a UTF-8 locale of the caller)
+                env = dict(os.environ, LC_ALL="C.UTF-8", LANG="C.UTF-8")
+                r = subprocess.run(["bash", "-c", f'OR4_LIB=1 source "{SCRIPT}" || exit 99\nmoney_paths | grep -aq .'], input=raw.encode() + b"\0",
+                                   capture_output=True, env=env)
+                self.assertEqual(r.returncode, 0, r.stderr)
+        for raw in (b"x/\x80", b"x/\xff", b"x/a\xc3"):   # raw (non-UTF-8) bytes at both ends of the range
+            r = subprocess.run(["bash", "-c", f'OR4_LIB=1 source "{SCRIPT}" || exit 99\nmoney_paths | grep -aq .'], input=raw + b"\0", capture_output=True)
+            self.assertEqual(r.returncode, 0, raw)
+        r = subprocess.run(["bash", "-c", f'OR4_LIB=1 source "{SCRIPT}" || exit 99\nmoney_paths | grep -aq .'], input=b"apps/web/src/plain.ts\0", capture_output=True)
+        self.assertNotEqual(r.returncode, 0)
+        r, _, _ = self.run_gate([], review=MONEY_OK, pr_file="apps/web/src/caf\u00e9.ts", JON_ROW="95", JON_PR="7")   # through the gate: money => second review
+        self.assertIn("money=1", r.stdout); self.assertIn("needs a SECOND review file", r.stdout)
+
+    def test_later_verdict_or_scores_any_case_or_indented_fails(self):
+        base = "VERDICT: PASS 95 HEAD @H\nSCORES: M-9 95 M-11 95\n"
+        for name, tail in {
+            "indented VERDICT FAIL": "  VERDICT: FAIL 20 HEAD @H\n", "tab-indented verdict": "\tverdict: fail\n", "lowercase verdict": "verdict: FAIL 20\n",
+            "indented SCORES": " SCORES: M-9 40 M-11 20\n", "lowercase scores": "scores: M-9 1 M-11 1\n", "mixed-case indented SCORES": "   Scores: M-9 1 M-11 1\n",
+        }.items():
+            for which in ("review1", "review2"):
+                with self.subTest(name=name, which=which):
+                    text = base + "notes\n" + tail
+                    kw = dict(review=text, review2=MONEY_OK2) if which == "review1" else dict(review=MONEY_OK, review2=text)
+                    r, _, _ = self.run_gate([], **kw, **self.MONEY_PR)
+                    self.assertIn("DRY_RUN fail=1", r.stdout, r.stdout)
+        # non-money, non-protected: only the VERDICT count applies
+        for tail in ("  VERDICT: FAIL 20 HEAD @H\n", "verdict: fail\n"):
+            with self.subTest(nonmoney=tail):
+                r, _, _ = self.run_gate([], review="VERDICT: PASS 95 HEAD @H\nbody @H\n" + tail)
+                self.assertIn("DRY_RUN fail=1", r.stdout, r.stdout); self.assertIn("exactly one VERDICT", r.stdout)
+        r, _, _ = self.run_gate([], review=MONEY_OK, review2=MONEY_OK2, **self.MONEY_PR)    # control: valid pair still passes
+        self.assertIn("DRY_RUN fail=0", r.stdout, r.stdout)
+
+    def test_scores_count_is_case_insensitive_unit(self):
+        # direct unit test of money_review_ok (kills the "SCORES count case-sensitive" mutant, which survived in v3.6)
+        with tempfile.TemporaryDirectory() as t:
+            f = os.path.join(t, "r.md")
+            for body, rc in (("VERDICT: PASS 95 HEAD abcdef0\nSCORES: M-9 95 M-11 95\n", 0),
+                             ("VERDICT: PASS 95 HEAD abcdef0\nSCORES: M-9 95 M-11 95\nscores: M-9 10 M-11 10\n", 1),
+                             ("VERDICT: PASS 95 HEAD abcdef0\nSCORES: M-9 95 M-11 95\n  Scores: M-9 10 M-11 10\n", 1)):
+                put(f, body)
+                self.assertEqual(sh('money_review_ok "$1"', f).returncode, rc, body)
+            for body, rc in (("VERDICT: PASS 95 HEAD abcdef0\nx\n", 0), ("VERDICT: PASS 95 HEAD abcdef0\n VERDICT: FAIL 1\n", 1),
+                             ("VERDICT: PASS 95 HEAD abcdef0\nverdict: FAIL 1\n", 1)):
+                put(f, body)
+                self.assertEqual(sh('verdict_unique "$1"', f).returncode, rc, body)
+
+    def test_header_names_v361(self):
+        with open(SCRIPT) as f:
+            head = "".join(f.readlines()[:8])
+        self.assertIn("v3.6.1", head)
 
 
 class R2Harness(unittest.TestCase):

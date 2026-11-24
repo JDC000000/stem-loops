@@ -27,6 +27,11 @@
    1. BASE — shared dark-mode foundation (accent-agnostic)
    ──────────────────────────────────────────────────── */
 :root {
+  /* A full-height page inside <body>, which pads by the safe-area insets (globals.css, #360):
+     100dvh minus those insets, so the page fills the screen without scrolling. Same as 100dvh
+     where there is no inset. Use this, never a bare 100dvh, for a page min-height. */
+  --page-min-h: calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
+
   /* ── Background ── */
   --bg-page:        #0d0d0d;   /* outermost canvas */
   --bg-surface:     #111111;   /* primary surface (cards, panels) */

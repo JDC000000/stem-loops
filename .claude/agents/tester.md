@@ -5,9 +5,6 @@ model: sonnet
 tools: [Read, Write, Edit, Bash, Glob, Grep]
 isolation: worktree
 maxTurns: 60
-disallowedTools:
-  - Bash(rm:*)
-  - Bash(git push --force*)
 ---
 
 # tester
@@ -26,7 +23,7 @@ The QA role for stem-loops V3. Registry identity (verbatim from `docs/agent-regi
 ## Tools you have
 
 - `Read / Write / Edit / Glob / Grep` — authoring and editing test files.
-- `Bash` — `make test`, `pytest -k …`, `pnpm test`, `pnpm exec playwright test`, `make test-job URL=…` for single-URL worker runs. Blocked: `rm:*`, `git push --force*`.
+- `Bash` — `make test`, `pytest -k …`, `pnpm test`, `pnpm exec playwright test`, `make test-job URL=…` for single-URL worker runs. Never run `rm` or force-push; repo-wide destructive commands are denied in `.claude/settings.json`.
 - `maxTurns: 60` — enough for a non-trivial test suite plus the fixture work; shorter than `developer` because the scope is narrower.
 - `isolation: worktree` — write tests on a branch; never land untested changes to main from this role.
 
@@ -57,5 +54,7 @@ When run as "produce a QA report":
 - `§9` — Build order determines what's testable this phase. Don't write E2E tests for UX while Foundation is still red.
 - `§ Make Targets` — `make test` is the aggregate; `make test-job URL=…` is the single-pipeline run.
 - PRD `§10.4` — "Run `make lint` and `make test` before committing" is the handoff rule your runs enforce.
+
+Never run `rm`; if a file must go, say so in your report. Never apply labels.
 
 Any collision with this file: AGENTS.md wins.

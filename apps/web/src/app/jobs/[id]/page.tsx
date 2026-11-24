@@ -42,9 +42,9 @@ export const dynamic = 'force-dynamic';
 
 // The player is a fixed, edge-to-edge screen that pads itself with the
 // safe-area insets (design v1.4, P1.1), and env(safe-area-inset-*) is only
-// non-zero under viewport-fit=cover. Scoped to THIS segment: Next 14.2 merges a
-// segment's `viewport` export over the root layout's (themeColor stays), so no
-// other page slides under the notch in landscape.
+// non-zero under viewport-fit=cover. Since #360 the root layout opts in for every
+// page (body and the fixed edge elements pad themselves), so this segment export is redundant;
+// it stays, harmlessly, as a local guarantee for the player.
 export const viewport: Viewport = { viewportFit: 'cover' };
 
 export default async function JobPage({ params }: { params: { id: string } }) {

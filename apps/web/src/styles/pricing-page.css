@@ -14,7 +14,7 @@
   margin: 0 auto;
   padding: 24px var(--sl-gutter, 16px) 64px;
   box-sizing: border-box;
-  min-height: 100dvh;
+  min-height: var(--page-min-h);
   font-family: var(--font-sans);
 }
 

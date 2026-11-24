@@ -275,7 +275,62 @@ export interface PlayEngineOptions {
   readonly decodeSampleRate?: number;
   /** See `OutputFactory`. Default: `ctx.destination`. */
   readonly createOutput?: OutputFactory;
+  /**
+   * Phase C C1 (Beta): pitch-kept slow-down. Absent: `setPlaybackRate` only
+   * ever accepts 1. See `StretchProvider` and stretch.ts.
+   */
+  readonly stretch?: StretchProvider;
 }
+
+/**
+ * The speeds the player offers (Phase C C1). 50% is deliberately NOT here: in
+ * the C0 spike the per-stem SoundTouch path overran the CPU budget and glitched
+ * at 50% (decision record 2026-11-23). Anything not in this list is refused.
+ */
+export const PLAYBACK_RATES = [1, 0.9, 0.75] as const;
+export type PlaybackRate = (typeof PLAYBACK_RATES)[number];
+export const isPlaybackRate = (r: unknown): r is PlaybackRate =>
+  typeof r === 'number' && (PLAYBACK_RATES as readonly number[]).includes(r);
+
+/** A pitch-preserving stretch node (the SoundTouch worklet contract). */
+export interface StretchNode extends AudioNode {
+  /**
+   * Set to the same rate as the source's own `playbackRate`; the node uses it
+   * to undo the pitch drop that the slower source causes.
+   */
+  readonly playbackRate: AudioParam;
+}
+
+/**
+ * Builds the per-stem stretch nodes. Injected so Node tests can run the real
+ * engine with fakes; the browser one is `soundTouchStretch()` (stretch.ts).
+ */
+export interface StretchProvider {
+  /** Load the worklet module into `ctx`. Called once per context. */
+  register(ctx: AudioContext): Promise<void>;
+  /** One node. Called exactly once per stem per engine (gate G1). */
+  create(ctx: AudioContext): StretchNode;
+  /**
+   * Resolves once the node's processor is running on the render thread. A node
+   * that is still being instantiated discards input, and six of them doing so
+   * by different amounts was the C0 review's 100–123 ms start-up skew.
+   */
+  ready?(node: StretchNode): Promise<void>;
+  /**
+   * Seconds from a sample entering the node to it being heard out of it, at
+   * `rate`. Measured and pinned per rate (gate G2); 0 at rate 1.
+   */
+  latencySec(rate: number): number;
+  /** Release a node for good (close its port). Called from `dispose()`. */
+  release?(node: StretchNode): void;
+}
+
+/**
+ * Extra time after the stretch pipeline's latency before its previous content
+ * is treated as drained. The pipeline is fed silence while no stem plays
+ * through it, so the old run leaves it within its latency; this is margin.
+ */
+const STRETCH_DRAIN_MARGIN_SEC = 0.03;
 
 interface MutableStem {
   availability: StemAvailability;
@@ -406,6 +461,34 @@ export class WebAudioPlayEngine implements PlayEngine {
   private readonly scheduleFrame: (cb: () => void) => FrameCanceller;
   private readonly decodeRate: number;
   private readonly createOutput: OutputFactory | null;
+  private readonly stretchProvider: StretchProvider | null;
+
+  // ── slow-down (Phase C C1) ─────────────────────────────────────────────────
+  /** Rate the sources run at now. Position advances `rate` song-seconds per context second. */
+  private rate: PlaybackRate = 1;
+  /** Rate the user asked for; differs from `rate` only while nodes are being prepared. */
+  private wantRate: PlaybackRate = 1;
+  /**
+   * The six stretch nodes. Created ONCE per engine, on the first rate below 1,
+   * then kept across seek, pause, rate change and song reload; released only by
+   * `dispose()` (gate G1). Empty until then, so an engine that is never slowed
+   * builds exactly today's graph.
+   */
+  private readonly stretchers = new Map<StemName, StretchNode>();
+  private stretchState: 'none' | 'preparing' | 'ready' | 'failed' = 'none';
+  /**
+   * Silence fed to every stretch node while it is linked, so a node keeps
+   * running between runs and its previous content drains out (muted) instead
+   * of sitting in the pipeline and playing at the start of the next run.
+   */
+  private feeder: AudioScheduledSourceNode | null = null;
+  /** True while feeder → stretchers → gains are connected. */
+  private stretchLinked = false;
+  /** Context time until which the previous stretched run may still be draining. */
+  private drainUntil = 0;
+  private unlinkTimer: ReturnType<typeof setTimeout> | null = null;
+  /** A stretched run's 'ended', held back by the pipeline latency. */
+  private endTimer: ReturnType<typeof setTimeout> | null = null;
 
   private ctx: AudioContext | null = null;
   /** Where every GainNode connects. Created once with the context. */
@@ -457,6 +540,200 @@ export class WebAudioPlayEngine implements PlayEngine {
     const r = options.decodeSampleRate;
     this.decodeRate = isFiniteNumber(r) && r > 0 ? r : PLAYBACK_SAMPLE_RATE;
     this.createOutput = typeof options.createOutput === 'function' ? options.createOutput : null;
+    const st = options.stretch;
+    this.stretchProvider =
+      st && typeof st.create === 'function' && typeof st.register === 'function' && typeof st.latencySec === 'function'
+        ? st
+        : null;
+  }
+
+  // ── speed (Phase C C1, Beta) ───────────────────────────────────────────────
+
+  /** True when this engine can slow down at all (a stretch provider was given and has not failed). */
+  get canChangeSpeed(): boolean {
+    return !!this.stretchProvider && this.stretchState !== 'failed';
+  }
+
+  /**
+   * Change speed with pitch kept. Only `PLAYBACK_RATES` are accepted (50% is
+   * not); anything else is a no-op. Sample-lock is kept the way a seek keeps
+   * it: every voice stops and every voice restarts from ONE (when, offset).
+   *
+   * The first rate below 1 builds and warms the stretch nodes (async); the
+   * rate is applied as soon as they run. `snapshot.playbackRate` is the rate
+   * actually playing; `snapshot.speedPending` is true while waiting.
+   */
+  setPlaybackRate(rate: number): void {
+    if (this.disposed || !isPlaybackRate(rate)) return;
+    if (rate !== 1 && !this.canChangeSpeed) return;
+    this.wantRate = rate;
+    if (rate === this.rate) {
+      this.emit();
+      return;
+    }
+    if (rate !== 1 && this.stretchState !== 'ready') {
+      void this.prepareStretch();
+      this.emit();
+      return;
+    }
+    this.applyRate(rate);
+  }
+
+  /** When the stretch pipeline will be silent, read at context time `now`. */
+  private drainEnd(now: number): number {
+    // Still sounding (or a run that ended by itself): its input stopped no
+    // later than now, so it is out within one latency.
+    if (this.drainUntil === Number.POSITIVE_INFINITY) {
+      return now + this.latencyAt(this.rate) + STRETCH_DRAIN_MARGIN_SEC;
+    }
+    return this.drainUntil;
+  }
+
+  /** Context seconds of stretch latency at `rate`; 0 at 100% (bypassed). */
+  private latencyAt(rate: number): number {
+    if (rate === 1 || !this.stretchProvider) return 0;
+    const l = this.stretchProvider.latencySec(rate);
+    return isFiniteNumber(l) && l > 0 ? l : 0;
+  }
+
+  private applyRate(rate: PlaybackRate): void {
+    const ctx = this.ctx;
+    if (rate !== 1) this.linkStretch();
+    this.cancelUnlink();
+    if (ctx && this.status === 'playing') {
+      const at = this.livePosition();
+      this.stopVoices();
+      this.rate = rate;
+      this.startVoices(at);
+      this.startFrameLoop();
+    } else {
+      this.rate = rate;
+    }
+    if (rate === 1) this.scheduleUnlink();
+    this.emit();
+  }
+
+  /** Build, connect and warm the six stretch nodes. Once per engine. */
+  private prepareStretch(): Promise<void> {
+    const ctx = this.ctx;
+    const p = this.stretchProvider;
+    if (!ctx || !p || this.stretchState !== 'none') return Promise.resolve();
+    this.stretchState = 'preparing';
+    return (async () => {
+      try {
+        await p.register(ctx);
+        if (this.disposed || this.ctx !== ctx) return;
+        for (const name of PLAYABLE_STEMS) {
+          if (!this.stretchers.has(name)) this.stretchers.set(name, p.create(ctx));
+        }
+        this.linkStretch();
+        if (p.ready) await Promise.all(Array.from(this.stretchers.values()).map((n) => p.ready!(n)));
+        if (this.disposed || this.ctx !== ctx) return;
+        this.stretchState = 'ready';
+        if (this.wantRate !== this.rate) this.applyRate(this.wantRate);
+        else if (this.rate === 1) this.scheduleUnlink();
+        this.emit();
+      } catch {
+        if (this.disposed) return;
+        // No slow-down on this device; normal speed is untouched.
+        this.stretchState = 'failed';
+        this.wantRate = this.rate;
+        this.releaseStretch();
+        this.emit();
+      }
+    })();
+  }
+
+  /** feeder → every stretch node → its stem's gain. Idempotent. */
+  private linkStretch(): void {
+    const ctx = this.ctx;
+    if (!ctx || this.stretchers.size === 0) return;
+    this.cancelUnlink();
+    if (this.stretchLinked) return;
+    if (!this.feeder) {
+      try {
+        const c = (ctx as { createConstantSource?: () => ConstantSourceNode }).createConstantSource?.();
+        if (c) {
+          c.offset.value = 0;
+          c.start();
+          this.feeder = c;
+        }
+      } catch {
+        this.feeder = null; // the pipeline then only drains while a stem plays
+      }
+    }
+    for (const [name, st] of Array.from(this.stretchers.entries())) {
+      try {
+        this.feeder?.connect(st);
+      } catch {
+        /* ignore */
+      }
+      const g = this.gains.get(name);
+      if (g) st.connect(g);
+    }
+    this.stretchLinked = true;
+  }
+
+  /** Back at 100%: once the pipeline has drained (silent), take it out of the graph entirely. */
+  private scheduleUnlink(): void {
+    if (!this.stretchLinked || this.rate !== 1) return;
+    this.cancelUnlink();
+    const ctx = this.ctx;
+    const waitSec = ctx ? Math.max(0, this.drainEnd(ctx.currentTime) - ctx.currentTime) : 0;
+    this.unlinkTimer = setTimeout(() => {
+      this.unlinkTimer = null;
+      if (this.disposed || this.rate !== 1) return;
+      const c = this.ctx;
+      // A suspended context drains nothing: wait on ITS clock, not the wall's.
+      if (c && c.currentTime < this.drainEnd(c.currentTime)) return this.scheduleUnlink();
+      this.unlinkStretch();
+    }, Math.ceil(waitSec * 1000) + 50);
+    // Housekeeping only: never keep a (test) process alive for it.
+    (this.unlinkTimer as { unref?: () => void }).unref?.();
+  }
+
+  private cancelUnlink(): void {
+    if (this.unlinkTimer) clearTimeout(this.unlinkTimer);
+    this.unlinkTimer = null;
+  }
+
+  /** feeder and stretch nodes disconnected; the nodes themselves are kept. */
+  private unlinkStretch(): void {
+    if (!this.stretchLinked) return;
+    try {
+      this.feeder?.disconnect();
+    } catch {
+      /* ignore */
+    }
+    for (const st of Array.from(this.stretchers.values())) {
+      try {
+        st.disconnect();
+      } catch {
+        /* ignore */
+      }
+    }
+    this.stretchLinked = false;
+  }
+
+  /** Engine teardown only: the one place stretch nodes are let go. */
+  private releaseStretch(): void {
+    this.cancelUnlink();
+    this.unlinkStretch();
+    const p = this.stretchProvider;
+    for (const st of Array.from(this.stretchers.values())) {
+      try {
+        p?.release?.(st);
+      } catch {
+        /* ignore */
+      }
+    }
+    this.stretchers.clear();
+    try {
+      this.feeder?.stop();
+    } catch {
+      /* ignore */
+    }
+    this.feeder = null;
   }
 
   /** The rate stems are decoded and played at, once a context exists; else the requested one. */
@@ -568,9 +845,14 @@ export class WebAudioPlayEngine implements PlayEngine {
       g.gain.setValueAtTime(this.targetGain(name), ctx.currentTime);
       g.connect(this.output ?? ctx.destination);
       this.gains.set(name, g);
+      // Stretch nodes outlive a song: re-attach them to this song's gains.
+      const st = this.stretchLinked ? this.stretchers.get(name) : undefined;
+      if (st) st.connect(g);
     }
 
     this.setStatus('ready');
+    // A speed remembered for this song can be applied before the first play.
+    if (this.wantRate !== 1 && this.stretchState === 'none') void this.prepareStretch();
   }
 
   private openContext(): AudioContext {
@@ -810,6 +1092,7 @@ export class WebAudioPlayEngine implements PlayEngine {
     this.disposed = true;
     this.stopFrameLoop();
     this.teardownAudioGraph();
+    this.releaseStretch();
     this.buffers.clear();
     this.stems.clear();
     this.status = 'idle';
@@ -905,6 +1188,14 @@ export class WebAudioPlayEngine implements PlayEngine {
     for (const [name, g] of Array.from(this.gains.entries())) {
       const target = this.targetGain(name);
       const p = g.gain;
+      if (!sounding && this.stretchLinked && this.drainUntil > now) {
+        // Paused, but the stretch pipeline is still draining the last run:
+        // stay muted until it is out, then take the new value.
+        p.cancelScheduledValues(now);
+        p.setTargetAtTime(0, now, FADE_SEC / 2);
+        p.setValueAtTime(target, this.drainEnd(now));
+        continue;
+      }
       if (!sounding) {
         // Nothing is audible, so a step cannot click and leaves the param in a
         // known state for the next start.
@@ -920,7 +1211,20 @@ export class WebAudioPlayEngine implements PlayEngine {
   private startVoices(offset: number): void {
     const ctx = this.ctx;
     if (!ctx) return;
-    const when = ctx.currentTime + START_LEAD_SEC;
+    const now = ctx.currentTime;
+    const rate = this.rate;
+    const stretched = rate !== 1 && this.stretchers.size > 0;
+    const drain = this.stretchLinked ? this.drainEnd(now) : 0;
+    // Gate G2: through the stretch nodes, the sample at `offset` is heard
+    // `latency` after `when`. The gain opens then and the clock is anchored
+    // there, so positionSec — what chords, sections, count-in and loops read —
+    // is what is HEARD. Whatever the previous run left in the pipeline drains
+    // (muted) before that: `when` waits for it if it has to. Leaving a
+    // stretched run for 100% likewise starts the direct sources only after the
+    // pipeline has drained, so its tail is never heard on top.
+    const latency = stretched ? this.latencyAt(rate) : 0;
+    const when = Math.max(now + START_LEAD_SEC, drain - latency);
+    const heardAt = when + latency;
     const loop = this.loop;
     const run = ++this.runId;
 
@@ -937,11 +1241,26 @@ export class WebAudioPlayEngine implements PlayEngine {
           src.loopEnd = loop.endSec;
           src.loop = true;
         }
-        src.connect(g);
+        const st = stretched ? this.stretchers.get(name) : undefined;
+        if (st) {
+          src.playbackRate.value = rate;
+          st.playbackRate.setValueAtTime(rate, when);
+          src.connect(st);
+        } else {
+          src.connect(g); // 100%: exactly today's graph (gate G1 bypass)
+        }
         const p = g.gain;
-        p.cancelScheduledValues(ctx.currentTime);
-        p.setValueAtTime(0, when);
-        p.linearRampToValueAtTime(this.targetGain(name), when + FADE_SEC);
+        if (this.stretchLinked) {
+          // The pipeline may still be draining the previous run: keep (or
+          // start) the fade to 0 and drop anything scheduled after it, so the
+          // old tail stays muted until the new run is heard.
+          holdCurrentValue(p, now);
+          p.setTargetAtTime(0, now, FADE_SEC / 2);
+        } else {
+          p.cancelScheduledValues(ctx.currentTime);
+        }
+        p.setValueAtTime(0, heardAt);
+        p.linearRampToValueAtTime(this.targetGain(name), heardAt + FADE_SEC);
         src.start(when, offset);
       } catch {
         continue; // a single stem failing to start must not take the run down
@@ -950,22 +1269,38 @@ export class WebAudioPlayEngine implements PlayEngine {
         if (this.disposed || run !== this.runId) return; // our own stop, ignore
         this.voices.delete(name);
         if (this.voices.size > 0) return;
-        this.stopFrameLoop();
-        this.pausedAt = this.durationSec;
-        this.status = 'ended';
-        this.emit();
+        const finish = () => {
+          this.endTimer = null;
+          if (this.disposed || run !== this.runId) return;
+          this.stopFrameLoop();
+          this.pausedAt = this.durationSec;
+          this.status = 'ended';
+          this.emit();
+        };
+        // Through the stretch pipeline the last `latency` of the song is still
+        // to be heard when the sources end. Say 'ended' only once it has been,
+        // so nothing downstream (the phone route pauses its <audio> element on
+        // leaving 'playing') cuts the tail. At 100% this stays synchronous.
+        if (latency > 0) {
+          this.endTimer = setTimeout(finish, Math.ceil(latency * 1000));
+          return;
+        }
+        finish();
       };
       this.voices.set(name, src);
     }
 
-    this.startCtxTime = when;
+    this.startCtxTime = heardAt;
     this.startOffset = offset;
     this.pausedAt = offset;
+    if (stretched) this.drainUntil = Number.POSITIVE_INFINITY; // sounding through the pipeline
   }
 
   private stopVoices(): void {
     const ctx = this.ctx;
     this.runId++; // invalidate this run's `onended`
+    if (this.endTimer) clearTimeout(this.endTimer);
+    this.endTimer = null;
     this.stopFrameLoop();
     for (const src of Array.from(this.voices.values())) {
       try {
@@ -985,6 +1320,10 @@ export class WebAudioPlayEngine implements PlayEngine {
       }
     }
     this.voices.clear();
+    if (ctx && this.drainUntil === Number.POSITIVE_INFINITY) {
+      // The stretched run's last input is still in the pipeline for its latency.
+      this.drainUntil = ctx.currentTime + STOP_LAG_SEC + this.latencyAt(this.rate) + STRETCH_DRAIN_MARGIN_SEC;
+    }
     if (ctx) {
       // Fade the (now doomed) sources out rather than cutting them.
       const now = ctx.currentTime;
@@ -997,6 +1336,16 @@ export class WebAudioPlayEngine implements PlayEngine {
 
   private teardownAudioGraph(): void {
     this.stopVoices();
+    // Detach (not release) the stretch nodes from the gains about to go.
+    if (this.stretchLinked) {
+      for (const st of Array.from(this.stretchers.values())) {
+        try {
+          st.disconnect();
+        } catch {
+          /* ignore */
+        }
+      }
+    }
     for (const g of Array.from(this.gains.values())) {
       try {
         g.disconnect();
@@ -1034,7 +1383,8 @@ export class WebAudioPlayEngine implements PlayEngine {
     const ctx = this.ctx;
     if (!ctx || this.status !== 'playing') return this.pausedAt;
     const elapsed = ctx.currentTime - this.startCtxTime;
-    const raw = this.startOffset + (elapsed > 0 ? elapsed : 0); // pre-roll reads as the start
+    // Song time: `rate` song-seconds per context second (1 at 100%, exact).
+    const raw = this.startOffset + (elapsed > 0 ? elapsed * this.rate : 0); // pre-roll reads as the start
     const loop = this.loop;
     if (loop) {
       const span = loop.endSec - loop.startSec;
@@ -1087,6 +1437,8 @@ export class WebAudioPlayEngine implements PlayEngine {
       loop: this.loop ? Object.freeze({ ...this.loop }) : null,
       degraded: degraded ? Object.freeze(degraded) : null,
       error: this.error ? Object.freeze({ ...this.error }) : null,
+      playbackRate: this.rate,
+      speedPending: this.wantRate !== this.rate,
     });
     if (snapshotsEqual(prev, next)) return prev;
     this.snapshot = next;
@@ -1160,6 +1512,7 @@ function holdCurrentValue(p: AudioParam, now: number): void {
 function snapshotsEqual(a: EngineSnapshot, b: EngineSnapshot): boolean {
   if (a === b) return true;
   if (a.status !== b.status || a.durationSec !== b.durationSec) return false;
+  if ((a.playbackRate ?? 1) !== (b.playbackRate ?? 1) || !!a.speedPending !== !!b.speedPending) return false;
   if (Math.abs(a.positionSec - b.positionSec) >= POSITION_EPSILON_SEC) return false;
   if ((a.loop === null) !== (b.loop === null)) return false;
   if (a.loop && b.loop) {

@@ -1,5 +1,13 @@
 #!/usr/bin/env bash
-# or4-merge.sh <pr> <review-file> <reviewed-sha> — OR-4 gate v3.5.1 (S19A): ONE gate for 19A and 19B.
+# or4-merge.sh <pr> <review-file> <reviewed-sha> [<review-file-2>] — OR-4 gate v3.6 (S20): ONE gate for 19A and 19B.
+# v3.6 (TIGHTENING ONLY; D-7, #396; no check removed or loosened): (1) MONEY class (MONEY_RE paths or a `[billing]` title, title parsed
+#   with jq; any parse/read error = money; MONEY=1 may only RAISE the class; the needs-jon-approval label makes a PR PROTECTED, not money;
+#   MONEY_RE is a floor, the orchestrator still classifies by reading the files; money implies protected): every review file needs marker
+#   score >= 93 and `SCORES: M-9 <n> M-11 <n>` (n integers 93-100) as the ONLY SCORES line, on line 2. (2) PROTECTED class: a SECOND review
+#   file (4th positional arg); both need a valid PASS marker at the same reviewed SHA, must be different files and differ after
+#   whitespace normalisation (a byte-level check, NOT proof of independence). (3) Every review file: exactly one `VERDICT:` line and it is
+#   line 1. (4) LC_ALL=C and grep -a on path matching (non-UTF-8 path bytes cannot hide a path). (5) Merge tail: pre-PUT main re-check FAILS
+#   CLOSED on any gh error; a PUT error or merged!=true exits 1 with a message; after the PUT, merged_at is re-read and must be non-null.
 # v3.5.1 (TIGHTENING ONLY; #391, #393): DRY_RUN and ALLOW_BEHIND must each be unset, "0" or "1" (anything else, incl. true/yes/"2"/" 1"/"",
 #   FAILS before any network call); text: approval is JON_ROW (see v3.3 below). No check removed or loosened.
 # v3.5 = the STRICTEST union of v3.4 (19A, #382) and v3.4-R2 (19B, #385; Jon 2026-11-23 23:29Z "structurally solve" merge
@@ -29,6 +37,8 @@ set -uo pipefail
 # mode too (harmless). GIT_CONFIG_*, GIT_ASKPASS, GIT_SSL_CAINFO, GIT_TERMINAL_PROMPT stay: the session's proxy/auth needs them.
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_REPLACE_REF_BASE GIT_NAMESPACE GIT_COMMON_DIR
 export GIT_NO_REPLACE_OBJECTS=1
+# v3.6: byte-wise matching: under a UTF-8 locale grep treats a path with an invalid byte as binary and prints nothing (hides it from the regexes).
+export LC_ALL=C
 # Single definitions shared with scripts/test_or4_merge.py (it sources this file with OR4_LIB=1; no copy can drift).
 # v3.3 R2: AGENTS.md/CLAUDE*/.mcp.json/SKILL.md match at ANY depth; matching is always case-insensitive (grep -i).
 PROTECTED_RE='^(\.github/|scripts/)|(^|/)(AGENTS\.md|CLAUDE[^/]*|\.mcp\.json|SKILL\.md)$|(^|/)\.claude/|CODEOWNERS|migrations/|(^|/)\.env|billing|stripe|entitlement|(^|/)auth(/|\.)|authz|oauth|middleware|webhook|service[-_]?role|secret'
@@ -37,7 +47,7 @@ marker_sha() { grep -E '^VERDICT: ' "$1" | tail -1 | grep -oE "^VERDICT: PASS (9
 # marker_ok <review-file> <reviewed-sha>: 0 iff the marker is valid and its sha is a prefix of <reviewed-sha>.
 marker_ok() { local ms; ms=$(marker_sha "$1"); [ -n "$ms" ] && [ "${2#$ms}" != "$2" ]; }
 # protected_match: stdin = NUL-separated paths; prints (newline-separated) those in the protected class.
-protected_match() { grep -zEi "$PROTECTED_RE" | tr '\0' '\n'; }
+protected_match() { grep -azEi "$PROTECTED_RE" | tr '\0' '\n'; }
 # protected_decision <labels> <title> <protected-paths> <pr>: prints notes; rc 1 = FAIL (protected and no valid approval).
 # Approval = JON_ROW (numeric ledger row) AND JON_PR equal to <pr> (ties the approval to this PR).
 protected_decision() {
@@ -50,6 +60,59 @@ protected_decision() {
     return 1
   fi
   return 0
+}
+# v3.6 (D-7): MONEY_RE = money/auth/job-admission paths. Case-insensitive (grep -i). A FLOOR, not the classification: the orchestrator still
+# classifies by reading the files (MONEY=1 raises). Over-matches on purpose. Adds to, never replaces, PROTECTED_RE.
+MONEY_RE='billing|stripe|entitlement|(^|/)auth(/|\.|z)|(^|/)auth[-_.]|authz|oauth|login|password|jwt|credits?|sessions?|service[-_]?role|secret|(^|[/_.-])rls([/_.-]|$)|(^|[/_.-])roles?([/_.-]|$)|grants?|webhook|api/jobs|jobs?[-_]?(admission|creat)|create[-_a-z]*job|claim[-_]?jobs?|job[-_]?access|admission|upload|retention|cleanup|spend|replicate|klangio|worker/pipeline|(^|/)r2|pricing|price|promo|quota|paid|payment|paywall|checkout|subscription|refund|trial|plan[-_]|users/me|hcaptcha'
+# money_paths: stdin = NUL-separated paths; prints (newline-separated) those matching MONEY_RE.
+money_paths() { grep -azEi "$MONEY_RE" | tr '\0' '\n'; }
+# money_meta <pr-json>: prints 1 if the title has [billing] (jq; the needs-jon-approval label is protected, NOT money), else 0. rc 1 on any parse problem.
+money_meta() {
+  local o
+  o=$(printf '%s' "$1" | jq -r 'if (.title|type)=="string" then (if (.title|test("\\[billing\\]";"i")) then 1 else 0 end) else error("bad") end' 2>/dev/null) || return 1
+  [[ "$o" =~ ^[01]$ ]] && echo "$o"
+}
+# marker_score <review-file>: the NN of the last valid "VERDICT: PASS NN HEAD sha" line, else nothing.
+marker_score() { grep -aE '^VERDICT: ' "$1" | tail -1 | grep -oE "^VERDICT: PASS (9[1-9]|100) HEAD [0-9a-f]{7,40}( |$)" | awk '{print $3}'; }
+# verdict_unique <review-file>: rc 0 iff the file has exactly ONE line starting VERDICT: (any case) and it is line 1 and a PASS marker line.
+verdict_unique() {
+  [ "$(grep -aciE '^VERDICT:' "$1" 2>/dev/null)" = 1 ] || return 1
+  sed -n 1p "$1" | grep -qE '^VERDICT: PASS (9[1-9]|100) HEAD [0-9a-f]{7,40}( |$)'
+}
+# money_review_ok <review-file>: rc 0 iff line 1 is the PASS marker (ending after the sha) with score 93-100, line 2 is exactly
+# "SCORES: M-9 <n> M-11 <n>" (n in 93-100), and it is the only SCORES line.
+money_review_ok() {
+  local sc; sc=$(marker_score "$1")
+  [[ "$sc" =~ ^(9[3-9]|100)$ ]] || return 1
+  sed -n 1p "$1" | grep -qE '^VERDICT: PASS (9[3-9]|100) HEAD [0-9a-f]{7,40}$' || return 1
+  [ "$(grep -aciE '^SCORES:' "$1" 2>/dev/null)" = 1 ] || return 1
+  sed -n 2p "$1" | grep -qE '^SCORES: M-9 (9[3-9]|100) M-11 (9[3-9]|100)$'
+}
+# review_norm <file>: CRLF -> LF, trailing whitespace stripped, blank lines dropped (for the near-duplicate check).
+review_norm() { tr -d '\r' <"$1" | sed -E 's/[[:space:]]+$//' | grep -av '^$'; }
+# review_pair_decision <protected 0|1> <money 0|1> <review1> <review2> <reviewed-sha>: rc 1 = FAIL (prints why).
+review_pair_decision() {
+  local prot=$1 money=$2 r1=$3 r2=${4:-} sha=$5 rc=0 f
+  if [ "$prot" = 1 ]; then
+    if [ -z "$r2" ] || [ ! -f "$r2" ]; then echo "FAIL: protected PR needs a SECOND review file (4th arg; missing or absent)"; return 1; fi
+    [ -f "$r1" ] || { echo "FAIL: first review file missing"; return 1; }
+    if [ "$r1" = "$r2" ] || [ "$r1" -ef "$r2" ]; then echo "FAIL: the two review files are the same path"; return 1; fi
+    if cmp -s "$r1" "$r2"; then echo "FAIL: the two review files are byte-identical"; return 1; fi
+    if cmp -s <(review_norm "$r1") <(review_norm "$r2"); then echo "FAIL: the two review files are identical after whitespace normalisation"; return 1; fi
+    for f in "$r1" "$r2"; do
+      marker_ok "$f" "$sha" || { echo "FAIL: $f lacks a valid PASS marker at reviewed SHA (protected: both reviews)"; rc=1; }
+      grep -aq "${sha:0:7}" "$f" || { echo "FAIL: $f does not name reviewed SHA ${sha:0:7}"; rc=1; }
+    done
+  fi
+  for f in "$r1" ${r2:+"$r2"}; do
+    verdict_unique "$f" || { echo "FAIL: $f must have exactly one VERDICT: line and it must be line 1 (a PASS marker)"; rc=1; }
+  done
+  if [ "$money" = 1 ]; then
+    for f in "$r1" ${r2:+"$r2"}; do
+      money_review_ok "$f" || { echo "FAIL: money PR: $f needs line 1 'VERDICT: PASS <93-100> HEAD <sha>', marker score >= 93 and line 2 exactly 'SCORES: M-9 <93-100> M-11 <93-100>' as the only SCORES line"; rc=1; }
+    done
+  fi
+  return $rc
 }
 # list_changed <repo> <base> <head> <outfile>: NUL-separated changed paths, renames split into delete+add (old AND new
 # names), unquoted. rc 0 only if git succeeded AND the list is non-empty (fail closed).
@@ -77,9 +140,9 @@ overlap_decision() {
   { [ -s "$pf" ] && [ -s "$mf" ] && [ -n "$df" ] && [ -f "$df" ]; } \
     || { echo "FAIL: behind_by=$bb and a changed-file listing is empty/unavailable (fail closed)"; return 1; }
   bad=$( { sort -zu "$pf" | comm -z -12 - <(sort -zu "$mf") | tr '\0' '\n'
-           grep -zEi "$HOT_RE|$COUPLED_RE" "$pf" | tr '\0' '\n'
-           grep -zEi "$HOT_RE" "$mf" | tr '\0' '\n'
-           grep -zEi "$COUPLED_MAIN_RE" "$mf" | grep -zEiv "$MAIN_EXEMPT_RE" | tr '\0' '\n'; } | sort -u | head -5 | tr '\n' ' ')
+           grep -azEi "$HOT_RE|$COUPLED_RE" "$pf" | tr '\0' '\n'
+           grep -azEi "$HOT_RE" "$mf" | tr '\0' '\n'
+           grep -azEi "$COUPLED_MAIN_RE" "$mf" | grep -azEiv "$MAIN_EXEMPT_RE" | tr '\0' '\n'; } | sort -u | head -5 | tr '\n' ' ')
   [ -z "$bad" ] || { echo "FAIL: behind_by=$bb overlap/hot/coupled file: update-branch first: $bad"; return 1; }
   bad=$(tr '\0' '\n' <"$df" | head -5 | tr '\n' ' ')
   [ -z "$bad" ] || { echo "FAIL: behind_by=$bb and main deleted/renamed files since merge-base: update-branch first: $bad"; return 1; }
@@ -114,7 +177,8 @@ replace_check() {
 }
 # main_unmoved <pinned-main-sha>: right before the merge PUT, v3/main must still be the pinned snapshot. rc 1 = FAIL.
 main_unmoved() {
-  local cur; cur=$(gh api repos/JDC000000/stem-loops/branches/v3/main --jq .commit.sha 2>/dev/null) || cur=""
+  local cur; cur=$(gh api repos/JDC000000/stem-loops/branches/v3/main --jq .commit.sha 2>/dev/null) \
+    || { echo "FAIL: cannot re-read v3/main before the merge (gh error); not merging (fail closed)"; return 1; }
   { [ -n "$1" ] && [ "$cur" = "$1" ]; } || { echo "FAIL: main moved; re-run (pinned=$1 now=$cur)"; return 1; }
 }
 if [ "${OR4_LIB:-0}" = 1 ]; then
@@ -124,8 +188,9 @@ fi
 # v3.5.1 (#391): strict switches, checked before ANY gh/git call (and before the OR4_REPO guard that reads DRY_RUN). Unset, "0" or "1" only;
 # a set-but-other value (true, yes, TRUE, 2, " 1", empty) FAILS rather than silently meaning "not dry-run" / "not allowed".
 if [ -n "${DRY_RUN+x}" ] && [ "$DRY_RUN" != 0 ] && [ "$DRY_RUN" != 1 ]; then echo "FAIL: DRY_RUN must be 0 or 1"; exit 1; fi
+if [ -n "${MONEY+x}" ] && [ "$MONEY" != 0 ] && [ "$MONEY" != 1 ]; then echo "FAIL: MONEY must be 0 or 1"; exit 1; fi
 if [ -n "${ALLOW_BEHIND+x}" ] && [ "$ALLOW_BEHIND" != 0 ] && [ "$ALLOW_BEHIND" != 1 ]; then echo "FAIL: ALLOW_BEHIND must be 0 or 1"; exit 1; fi
-PR=$1; REVIEW=$2; REVIEWED=$3; R=repos/JDC000000/stem-loops; REPO=/home/claude/stem-loops; fail=0
+PR=$1; REVIEW=$2; REVIEWED=$3; REVIEW2=${4:-}; R=repos/JDC000000/stem-loops; REPO=/home/claude/stem-loops; fail=0
 # v3.4 R3: OR4_REPO (test clone) is honoured ONLY with DRY_RUN=1 AND OR4_TEST=1; otherwise set => refuse (fail closed, never ignored).
 if [ -n "${OR4_REPO:-}" ]; then
   { [ "${DRY_RUN:-0}" = 1 ] && [ "${OR4_TEST:-0}" = 1 ]; } || { echo "FAIL: OR4_REPO set outside test mode"; exit 1; }
@@ -166,9 +231,17 @@ if list_changed "$REPO" "$mb" "$H" "$fl"; then
 else
   echo "FAIL: cannot list PR changed files (merge-base/diff failed or empty)"; fail=1; prot=""
 fi
+# v3.6: money class = MONEY_RE path or [billing] title (jq; any read/parse error = money). Money => protected (every protected requirement).
+prj=$(gh api $R/pulls/$PR) || prj=""
+mn=$(money_meta "$prj") || mn=1
+mpaths=""; [ -s "$fl" ] && mpaths=$(money_paths <"$fl" | head -5 | tr '\n' ' ')
+pm=0; { [ "$mn" = 1 ] || [ -n "$mpaths" ] || [ ! -s "$fl" ] || [ "${MONEY:-0}" = 1 ]; } && pm=1   # MONEY=1 only raises
+echo "money=$pm (${mpaths:-title/none})"
+[ "$pm" = 1 ] && [ -z "$prot" ] && prot="money-class:${mpaths:-title/MONEY}"
 protected_decision "$l" "$T" "$prot" "$PR" || fail=1
 # v3.5: behind guard (v3.4 overlap/hot ∪ v3.4-R2 ALLOW_BEHIND/protected/≤5/coupled/deletions); see overlap_decision.
 pp=1; is_protected_pr "$l" "$T" "$prot" || pp=0
+review_pair_decision "$pp" "$pm" "$REVIEW" "$REVIEW2" "$REVIEWED" || fail=1
 overlap_gate "$REPO" "$mb" "$bb" "$fl" "$pp" || fail=1
 n=$(gh api "$R/commits/$H/check-runs?per_page=100" --jq '[.check_runs[]|select(.conclusion!="success" and .conclusion!="skipped")]|length')
 [ "$n" = 0 ] || { echo "FAIL: $n checks not success/skipped"; fail=1; }
@@ -177,6 +250,10 @@ st=$(gh api "$R/commits/$H/status" --jq '[.statuses[]|select(.state!="success")]
 if [ "${DRY_RUN:-0}" = 1 ]; then echo "DRY_RUN fail=$fail (no merge)"; exit $fail; fi
 [ $fail = 0 ] || { echo "NOT MERGED"; exit 1; }
 main_unmoved "$apimain" || exit 1
-gh api -X PUT $R/pulls/$PR/merge -f merge_method=squash -f sha="$H" --jq '"merged=\(.merged) sha=\(.sha)"' || { echo "FAIL: merge PUT"; exit 1; }
-ma=$(gh api $R/pulls/$PR --jq '"\(.merged_at) \(.merged_by.login)"'); echo "merged_at merged_by = $ma"
-[ "${ma%% *}" != null ] || { echo "FAIL: not merged"; exit 1; }
+put_out=$(gh api -X PUT $R/pulls/$PR/merge -f merge_method=squash -f sha="$H" --jq '"merged=\(.merged) sha=\(.sha)"' 2>&1) \
+  || { echo "FAIL: merge PUT failed, NOT merged: $put_out"; exit 1; }
+echo "$put_out"
+case "$put_out" in *merged=true*) ;; *) echo "FAIL: merge PUT did not report merged=true: $put_out"; exit 1;; esac
+ma=$(gh api $R/pulls/$PR --jq '"\(.merged_at) \(.merged_by.login)"') || { echo "FAIL: cannot re-read PR after merge PUT (merge unverified)"; exit 1; }
+echo "merged_at merged_by = $ma"
+{ [ -n "${ma%% *}" ] && [ "${ma%% *}" != null ]; } || { echo "FAIL: not merged (merged_at null after PUT)"; exit 1; }

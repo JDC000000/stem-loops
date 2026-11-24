@@ -70,7 +70,7 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
 .demo-error { font-size: var(--text-md); color: var(--status-failed); }
 /* The layer the demo opens: portalled to <body>, above the page. The player inside is its
    own fixed 100svh screen; this only covers the page while the job is first fetched. */
-.demo-layer { position: fixed; inset: 0; z-index: var(--z-modal, 200); overflow-y: auto; background: var(--bg-page); }
+.demo-layer { position: fixed; inset: 0; z-index: var(--z-modal, 200); overflow-y: auto; background: var(--bg-page); padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px); box-sizing: border-box; }
 
 /* form */
 .tool { display: flex; flex-direction: column; gap: var(--space-4); }

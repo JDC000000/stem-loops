@@ -518,7 +518,9 @@ test('NOT on a loop wrap: the count only ever starts from a user action (source 
   assert.equal(callers, 4, 'tap + hold + ⟲ + Play: nothing else starts a count');
   const effects = [...src.matchAll(/useEffect\(\(\) => \{[^]*?\}, \[[^\]]*\]\);/g)].map((m) => m[0]);
   for (const e of effects) assert.doesNotMatch(e, /counted\(|\.start\(/, 'no effect starts a count');
-  assert.doesNotMatch(read('src/lib/play/engine.ts'), /count-in|countIn/i, 'the engine knows nothing of it');
+  // Comments may mention the count-in (#383's engine comment does); code may not.
+  const engineCode = read('src/lib/play/engine.ts').replace(/\/\*[^]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
+  assert.doesNotMatch(engineCode, /count-in|countIn/i, 'the engine knows nothing of it');
 });
 
 test('ON: while looping, position wrapping back to the loop start never counts in', async () => {

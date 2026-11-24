@@ -21,3 +21,6 @@ Artist width before/after (Demo, 390 Capo 2): 15.4 -> 65.6 px; (360 Capo 2): 0 -
 - 06-header-badge-plus-3-390x844.png
 - 07-see-all-chords-plus-3-360x800.png
 - 07-see-all-chords-plus-3-390x844.png
+
+Round 5 (visual): `.artist { flex: 1 1 0; min-width: 6ch }`, no max-width; all 14 PNGs regenerated, ONE headless Chromium. uptime at capture: 18:03:31 up 0 min, load average: 0.05, 0.01, 0.00
+Header height, no capo / capo: 390x844 56 / 81; 360x800 56 / 81 (no-capo = pre-#375 56 px). Artist width (Demo): 390 89.6 px, 360 59.6 px.

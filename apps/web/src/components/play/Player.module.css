@@ -47,8 +47,6 @@
 /* ── compact header (56px) ─────────────────────────────────────────────── */
 .head {
   min-height: 56px;
-  padding-top: 3px;
-  padding-bottom: 3px;
   box-sizing: border-box;
   flex-shrink: 0;
   display: flex;
@@ -126,10 +124,10 @@
   text-overflow: ellipsis;
 }
 .artist {
-  /* shrinks to an ellipsis, but never below 8ch: below that it wraps */
-  flex: 0 1 auto;
-  min-width: 8ch;
-  max-width: 100%;
+  /* takes the rest of the line (basis 0) so it never forces a wrap by itself;
+     ellipsis when short, but never below 6ch */
+  flex: 1 1 0;
+  min-width: 6ch;
   overflow: hidden;
   text-overflow: ellipsis;
 }

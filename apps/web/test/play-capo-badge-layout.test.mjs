@@ -18,24 +18,28 @@ test('badge and artist share the .sub row, which WRAPS (the badge goes to its ow
   assert.match(sub, /display:\s*flex/);
   assert.match(sub, /flex-wrap:\s*wrap/);
   assert.doesNotMatch(sub, /max-height/, 'wrapped line must not be clipped');
+  assert.doesNotMatch(sub, /(^|[\s;])height:/, '.sub must not have a fixed height');
 });
 
 test('header grows for the wrapped line (min-height, not a fixed height)', () => {
   const head = rule('.head');
   assert.match(head, /min-height:\s*56px/);
-  assert.doesNotMatch(head, /(^|[\s;])height:\s*56px/);
+  assert.doesNotMatch(head, /(^|[\s;])height:\s*\d/);
+  assert.doesNotMatch(head, /max-height/);
 });
 
 test('artist keeps a minimum width (never "D...")', () => {
   const a = rule('.artist');
   const mw = a.match(/min-width:\s*([\d.]+)(ch|px|em|rem)/);
-  assert.ok(mw && Number(mw[1]) >= (mw[2] === 'px' ? 40 : 4), `artist min-width too small: ${a}`);
-  assert.doesNotMatch(a, /flex:\s*1\s+1\s+0/);
+  assert.ok(mw && Number(mw[1]) >= (mw[2] === 'px' ? 40 : 6), `artist min-width must be >= 6ch: ${a}`);
+  assert.doesNotMatch(a, /max-width/, 'a max-width on the artist makes the row wrap with no capo');
+  assert.match(a, /flex:\s*1\s+1\s+0/, 'basis 0 so the artist alone never forces a wrap');
 });
 
 test('badge never shrinks; outline pill, >= 24px, no accent fill', () => {
   const b = rule('.capoBadge');
   assert.match(b, /flex:\s*0\s+0\s+auto/);
+  assert.doesNotMatch(b, /flex-shrink:\s*[1-9]/);
   assert.match(b, /min-height:\s*(2[4-9]|[3-9]\d)px/);
   assert.doesNotMatch(b, /lime|amber|accent|background/i);
 });

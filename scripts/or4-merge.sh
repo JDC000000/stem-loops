@@ -58,13 +58,13 @@ protected_decision() {
   return 0
 }
 # v3.6 (D-7): MONEY_RE = money/auth/job-admission paths. Case-insensitive (grep -i). Adds to, never replaces, PROTECTED_RE.
-MONEY_RE='billing|stripe|entitlement|(^|/)auth(/|\.|z)|authz|oauth|webhook|api/jobs|jobs?[-_]?(admission|creat)|admission|upload|retention|spend|replicate|klangio|pricing'
+MONEY_RE='billing|stripe|entitlement|(^|/)auth(/|\.|z)|authz|oauth|credits?|sessions?|service[-_]?role|secret|(^|[/_.-])rls([/_.-]|$)|grants?|webhook|api/jobs|jobs?[-_]?(admission|creat)|admission|upload|retention|spend|replicate|klangio|pricing'
 # money_paths: stdin = NUL-separated paths; prints (newline-separated) those matching MONEY_RE.
 money_paths() { grep -zEi "$MONEY_RE" | tr '\0' '\n'; }
-# money_meta <pr-json>: prints 1 if the title has [billing] or any label contains needs-jon-approval (jq), else 0. rc 1 on any parse problem.
+# money_meta <pr-json>: prints 1 if the title has [billing] (jq; the needs-jon-approval label is protected, NOT money), else 0. rc 1 on any parse problem.
 money_meta() {
   local o
-  o=$(printf '%s' "$1" | jq -r 'if ((.title|type)=="string") and ((.labels|type)=="array") then (if ((.title|test("\\[billing\\]";"i")) or ([.labels[].name|test("needs-jon-approval";"i")]|any)) then 1 else 0 end) else error("bad") end' 2>/dev/null) || return 1
+  o=$(printf '%s' "$1" | jq -r 'if (.title|type)=="string" then (if (.title|test("\\[billing\\]";"i")) then 1 else 0 end) else error("bad") end' 2>/dev/null) || return 1
   [[ "$o" =~ ^[01]$ ]] && echo "$o"
 }
 # marker_score <review-file>: the NN of the last valid "VERDICT: PASS NN HEAD sha" line, else nothing.
@@ -212,15 +212,16 @@ if list_changed "$REPO" "$mb" "$H" "$fl"; then
 else
   echo "FAIL: cannot list PR changed files (merge-base/diff failed or empty)"; fail=1; prot=""
 fi
-protected_decision "$l" "$T" "$prot" "$PR" || fail=1
-# v3.5: behind guard (v3.4 overlap/hot ∪ v3.4-R2 ALLOW_BEHIND/protected/≤5/coupled/deletions); see overlap_decision.
-pp=1; is_protected_pr "$l" "$T" "$prot" || pp=0
-# v3.6: money class (paths, or title/labels via jq; any read/parse error = money) and the review-file requirements.
+# v3.6: money class = MONEY_RE path or [billing] title (jq; any read/parse error = money). Money => protected (every protected requirement).
 prj=$(gh api $R/pulls/$PR) || prj=""
 mn=$(money_meta "$prj") || mn=1
 mpaths=""; [ -s "$fl" ] && mpaths=$(money_paths <"$fl" | head -5 | tr '\n' ' ')
 pm=0; { [ "$mn" = 1 ] || [ -n "$mpaths" ] || [ ! -s "$fl" ]; } && pm=1
-echo "money=$pm (${mpaths:-title/label/none})"
+echo "money=$pm (${mpaths:-title/none})"
+[ "$pm" = 1 ] && [ -z "$prot" ] && prot="money-class:${mpaths:-title}"
+protected_decision "$l" "$T" "$prot" "$PR" || fail=1
+# v3.5: behind guard (v3.4 overlap/hot ∪ v3.4-R2 ALLOW_BEHIND/protected/≤5/coupled/deletions); see overlap_decision.
+pp=1; is_protected_pr "$l" "$T" "$prot" || pp=0
 review_pair_decision "$pp" "$pm" "$REVIEW" "$REVIEW2" "$REVIEWED" || fail=1
 overlap_gate "$REPO" "$mb" "$bb" "$fl" "$pp" || fail=1
 n=$(gh api "$R/commits/$H/check-runs?per_page=100" --jq '[.check_runs[]|select(.conclusion!="success" and .conclusion!="skipped")]|length')

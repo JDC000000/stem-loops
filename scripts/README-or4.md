@@ -67,11 +67,13 @@ The script fetches into the main clone at `/home/claude/stem-loops`.
 
 ## v3.6 (tightening only; no check removed or loosened)
 
-- **Money class (D-7).** A PR is *money* if a changed path matches `MONEY_RE` (billing, stripe, entitlement, auth/authz/oauth, webhook, `api/jobs`, job
-  creation/admission, admission, upload, retention, spend, replicate, klangio, pricing; case-insensitive), or its title has `[billing]` or a label contains
-  `needs-jon-approval` (both read with `jq`; an unreadable or unparsable PR = money, fail closed). For every review file the gate sees, a money PR needs the
+- **Money class (D-7, AGENTS.md M-SA condition 6).** A PR is *money* if a changed path matches `MONEY_RE` (billing, stripe, entitlement, auth/authz/oauth,
+  credits, sessions, service-role, secret, `rls`, grants, webhook, `api/jobs`, job creation/admission, admission, upload, retention, spend, replicate, klangio,
+  pricing; case-insensitive) or its title has `[billing]` (title read with `jq`; an unreadable/unparsable PR = money, fail closed). The `needs-jon-approval`
+  label is protected, **not** money. **Money implies protected:** a money PR gets every protected requirement (numeric `JON_ROW` + matching `JON_PR`,
+  behind 0 and `ALLOW_BEHIND` refused, two review files) even when no path matches `PROTECTED_RE`. For every review file the gate sees, a money PR also needs
   marker score **>= 93** and **line 2 exactly** `SCORES: M-9 <n> M-11 <n>` (both integers 93-100, no extra text, no CRLF). Free-text or table scores, or the line
-  anywhere else, do not count. Money alone does not add the `JON_ROW` requirement (that stays tied to the protected class).
+  anywhere else, do not count. `MONEY_RE` over-matches on purpose (e.g. `chordnet-session.ts`, `smoke-staging-session.test.mjs`): when in doubt, money.
 - **Two reviews for protected PRs.** The second review file is the **4th positional argument** (not an env var). Both need a valid PASS marker at the same
   `<reviewed-sha>` and must name it; they must be different files (not the same path or a hard/symlink) and not byte-identical. Non-protected PRs still need one.
   A money+protected PR needs `SCORES` in both.

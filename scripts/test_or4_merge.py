@@ -560,7 +560,9 @@ MONEY_PATHS = ["apps/web/src/lib/billing/plans.ts", "apps/web/src/lib/stripe.ts"
                "apps/web/src/app/api/stripe/webhook/route.ts", "apps/web/src/app/api/jobs/route.ts", "apps/worker/src/worker/job_admission.py",
                "apps/web/src/lib/admission.ts", "apps/web/src/app/api/uploads/route.ts", "apps/worker/src/worker/retention.py",
                "apps/web/src/lib/spend.ts", "apps/worker/src/worker/replicate_client.py", "apps/worker/src/worker/klangio.py",
-               "apps/web/src/lib/pricing.ts"]
+               "apps/web/src/lib/pricing.ts", "apps/web/src/lib/pricing-copy.ts", "apps/web/src/lib/credits.ts",
+               "apps/web/src/lib/sessions.ts", "apps/worker/src/worker/service_role.py", "docs/secrets.md",
+               "apps/worker/db/rls_policies.sql", "apps/worker/db/grants.sql", "apps/web/src/app/api/jobs/create/route.ts"]
 NON_MONEY_PATHS = ["apps/web/src/components/x/Y.tsx", "docs/design/a.md", "packages/ui/src/b.ts", "README.md", "scripts/x.sh"]
 
 
@@ -568,14 +570,28 @@ class Gate36(unittest.TestCase):
     """v3.6 (tightening only): money class, two reviews for protected, merge-tail hardening. Same harness as GateWiring."""
     PR = GateWiring.PR
     run_gate = GateWiring.run_gate
-    MONEY_PR = {"pr_file": "apps/web/src/lib/pricing.ts"}      # money path, NOT protected
+    MONEY_PR = {"pr_file": "apps/web/src/lib/pricing.ts", "JON_ROW": "95", "JON_PR": "7"}   # money path outside PROTECTED_RE; money => protected
     PROT_PR = {"pr_file": "scripts/x.sh", "JON_ROW": "95", "JON_PR": "7"}   # protected path, NOT money
     P1 = "VERDICT: PASS 95 HEAD @H\nbody @H\n"
     P2 = "VERDICT: PASS 94 HEAD @H\nsecond reviewer @H\n"
 
     def money(self, review, **kw):
-        r, _, _ = self.run_gate([], review=review, **{**self.MONEY_PR, **kw})
+        r, _, _ = self.run_gate([], review=review, review2=MONEY_OK2, **{**self.MONEY_PR, **kw})
         return r
+
+    def test_money_path_is_protected_even_outside_protected_re(self):
+        for pth in ("apps/web/src/lib/admission.ts", "apps/web/src/lib/pricing-copy.ts"):
+            with self.subTest(p=pth):
+                self.assertFalse(is_protected(pth), pth)
+                kw = dict(pr_file=pth)
+                r, _, _ = self.run_gate([], review=MONEY_OK, **kw, JON_ROW="95", JON_PR="7")          # one review
+                self.assertIn("DRY_RUN fail=1", r.stdout, r.stdout); self.assertIn("needs a SECOND review file", r.stdout)
+                r, _, _ = self.run_gate([], review=MONEY_OK, review2=MONEY_OK2, **kw)                  # no JON_ROW
+                self.assertIn("DRY_RUN fail=1", r.stdout, r.stdout); self.assertIn("protected PR needs JON_ROW", r.stdout)
+                r, _, _ = self.run_gate(["m1.txt", "m2.txt"], review=MONEY_OK, review2=MONEY_OK2, **kw, JON_ROW="95", JON_PR="7")  # behind 2, ALLOW_BEHIND=1
+                self.assertIn("DRY_RUN fail=1", r.stdout, r.stdout); self.assertIn("protected PR must be up to date", r.stdout)
+                r, _, _ = self.run_gate([], review=MONEY_OK, review2=MONEY_OK2, **kw, JON_ROW="95", JON_PR="7")
+                self.assertIn("DRY_RUN fail=0", r.stdout, r.stdout)
 
     def test_money_re_paths(self):
         for pth in MONEY_PATHS:
@@ -588,9 +604,9 @@ class Gate36(unittest.TestCase):
     def test_money_meta_title_and_labels_via_jq(self):
         mm = lambda j: sh('money_meta "$1"', j)
         self.assertEqual(mm('{"title":"[Billing] x","labels":[]}').stdout.strip(), "1")
-        self.assertEqual(mm('{"title":"t","labels":[{"name":"a"},{"name":"Needs-Jon-Approval"}]}').stdout.strip(), "1")
+        self.assertEqual(mm('{"title":"t","labels":[{"name":"a"},{"name":"Needs-Jon-Approval"}]}').stdout.strip(), "0")   # label is protected, not money
         self.assertEqual(mm('{"title":"fix billing, no brackets","labels":[{"name":"bug"}]}').stdout.strip(), "0")
-        for bad in ("", "not json", '{"title":1,"labels":[]}', '{"title":"t"}'):
+        for bad in ("", "not json", '{"title":1,"labels":[]}', '{"labels":[]}'):
             self.assertNotEqual(mm(bad).returncode, 0, bad)       # unparsable => rc 1 => the gate treats the PR as money
 
     def test_money_valid_passes(self):
@@ -626,16 +642,16 @@ class Gate36(unittest.TestCase):
         r, _, _ = self.run_gate([])
         self.assertIn("DRY_RUN fail=0", r.stdout, r.stdout); self.assertIn("money=0", r.stdout)
 
-    def test_money_from_title_and_label_is_money(self):
-        for kw in ({"title": "[billing] plans"}, {"labels": "needs-jon-approval"}):
-            with self.subTest(kw=kw):
-                r, _, _ = self.run_gate([], review=self.P1, review2=self.P2, JON_ROW="95", JON_PR="7", **kw)
-                self.assertIn("FAIL: money PR", r.stdout, r.stdout)
-                r, _, _ = self.run_gate([], review=MONEY_OK, review2=MONEY_OK2, JON_ROW="95", JON_PR="7", **kw)
-                self.assertIn("DRY_RUN fail=0", r.stdout, r.stdout)
+    def test_money_from_title_is_money_but_label_alone_is_not(self):
+        r, _, _ = self.run_gate([], review=self.P1, review2=self.P2, JON_ROW="95", JON_PR="7", title="[billing] plans")
+        self.assertIn("FAIL: money PR", r.stdout, r.stdout)
+        r, _, _ = self.run_gate([], review=MONEY_OK, review2=MONEY_OK2, JON_ROW="95", JON_PR="7", title="[billing] plans")
+        self.assertIn("DRY_RUN fail=0", r.stdout, r.stdout)
+        r, _, _ = self.run_gate([], review=self.P1, review2=self.P2, JON_ROW="95", JON_PR="7", labels="needs-jon-approval")
+        self.assertIn("money=0", r.stdout); self.assertIn("DRY_RUN fail=0", r.stdout, r.stdout)    # protected (two reviews) but no SCORES
 
     def test_money_second_review_also_needs_scores(self):
-        r, _, _ = self.run_gate([], review=MONEY_OK, review2=self.P2, JON_ROW="95", JON_PR="7", labels="needs-jon-approval")
+        r, _, _ = self.run_gate([], review=MONEY_OK, review2=self.P2, JON_ROW="95", JON_PR="7", title="[billing] x")
         self.assertIn("DRY_RUN fail=1", r.stdout); self.assertIn("review2.md needs marker score", r.stdout)
 
     def test_pr_json_unreadable_is_money(self):

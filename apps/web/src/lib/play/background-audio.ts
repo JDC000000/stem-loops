@@ -333,6 +333,8 @@ export interface MediaSnapshot {
   readonly status: string;
   readonly positionSec: number;
   readonly durationSec: number;
+  /** Phase C C1: song-seconds per second (1, 0.9, 0.75). Absent = 1. */
+  readonly playbackRate?: number;
 }
 
 export interface MediaSessionOptions {
@@ -412,7 +414,7 @@ export function wireMediaSession(
     }
   }
 
-  let last: { status: string; duration: number; position: number; at: number } | null = null;
+  let last: { status: string; duration: number; position: number; at: number; rate: number } | null = null;
   let disposed = false;
 
   return {
@@ -421,14 +423,16 @@ export function wireMediaSession(
       const state = playbackStateFor(s.status);
       const duration = finite(s.durationSec) ? s.durationSec : 0;
       const position = finite(s.positionSec) ? Math.min(Math.max(0, s.positionSec), duration) : 0;
+      // Phase C C1: the speed, so the lock screen advances at the right pace.
+      const rate = finite(s.playbackRate) && s.playbackRate > 0 ? s.playbackRate : 1;
       const t = now();
-      let push = !last || last.status !== s.status || last.duration !== duration;
+      let push = !last || last.status !== s.status || last.duration !== duration || last.rate !== rate;
       if (!push && last) {
-        const expected = last.position + (last.status === 'playing' ? (t - last.at) / 1000 : 0);
+        const expected = last.position + (last.status === 'playing' ? ((t - last.at) / 1000) * last.rate : 0);
         push = Math.abs(position - expected) > POSITION_DRIFT_SEC;
       }
       if (!push) return;
-      last = { status: s.status, duration, position, at: t };
+      last = { status: s.status, duration, position, at: t, rate };
       try {
         ms.playbackState = state;
       } catch {
@@ -436,7 +440,7 @@ export function wireMediaSession(
       }
       if (typeof ms.setPositionState !== 'function') return;
       try {
-        if (duration > 0) ms.setPositionState({ duration, position, playbackRate: 1 });
+        if (duration > 0) ms.setPositionState({ duration, position, playbackRate: rate });
         else ms.setPositionState();
       } catch {
         /* a browser that rejects the state keeps its own */

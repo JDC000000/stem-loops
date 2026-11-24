@@ -16,7 +16,7 @@
 // Lines never cross a section, so every section starts a new line.
 
 import { type OverlayRun, activeRunIndex, displayText, estimateStageLabelPx } from './ChordOverlay.helpers.ts';
-import { type BeatGrid, partName } from '../lib/play/sections.ts';
+import { type BeatGrid, localBeatSec, partName } from '../lib/play/sections.ts';
 import { spellChord } from '../lib/play/notation.ts';
 import { MIN_TAP_PX } from './tapTarget.ts';
 
@@ -634,7 +634,11 @@ export function countdownState(
   const secLeft = Math.max(0, next.inSec);
   let beatsLeft: number | null = null;
   if (model.mode === 'bars' && cell) beatsLeft = beatsUntil(cell, secLeft, model.beatsPerBar);
-  else if (grid && grid.measured !== false && grid.beatSec > 0) beatsLeft = Math.max(1, Math.ceil(secLeft / grid.beatSec - 0.05));
+  else if (grid && grid.measured !== false && grid.beatSec > 0) {
+    // The LOCAL beat on a drifting track (#379): one BPM extrapolated miscounts as the tempo moves.
+    const beat = localBeatSec(grid, t);
+    beatsLeft = Math.max(1, Math.ceil(secLeft / beat - 0.05));
+  }
   const start = now && now.startSec <= t ? now.startSec : t;
   const total = t - start + secLeft;
   const fraction = total > 0 ? Math.min(1, Math.max(0, (t - start) / total)) : 0;

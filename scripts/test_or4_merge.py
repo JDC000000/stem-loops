@@ -894,7 +894,7 @@ class Gate361(unittest.TestCase):
 
     def test_header_names_v361(self):
         with open(SCRIPT) as f:
-            head = "".join(f.readlines()[:8])
+            head = "".join(f.readlines()[:24])
         self.assertIn("v3.6.1", head)
 
 
@@ -968,14 +968,14 @@ class Gate362(unittest.TestCase):
         P = "VERDICT: PASS 95 HEAD abcdef0\nSCORES: M-9 95 M-11 95\n"
         shapes = {"numbered": "1. VERDICT: FAIL", "numbered paren": "2) VERDICT: FAIL", "checkbox": "- [x] VERDICT: FAIL", "label R1": "R1 VERDICT: FAIL",
                   "label R1 colon": "R1: VERDICT: FAIL", "fullwidth colon": "VERDICT\uff1a FAIL", "dash": "VERDICT - FAIL", "em dash": "VERDICT \u2014 FAIL",
-                  "parenthetical": "VERDICT (final): FAIL", "no colon": "VERDICT FAIL", "bare word": "**Verdict**", "ZWSP prefix": "\u200bVERDICT: FAIL",
+                  "parenthetical": "VERDICT (final): FAIL", "no colon": "VERDICT FAIL", "table cell": "| VERDICT | FAIL |", "no-colon pass": "VERDICT PASS 99", "ZWSP prefix": "\u200bVERDICT: FAIL",
                   "BOM prefix": "\ufeffverdict: fail", "lone CR": "x\rVERDICT: FAIL", "form feed": "x\fVERDICT: FAIL", "vertical tab": "x\vVERDICT: FAIL",
                   "U+2028": "x\u2028VERDICT: FAIL", "U+2029": "x\u2029VERDICT: FAIL", "NEL": "x\u0085VERDICT: FAIL"}
         for name, line in shapes.items():
             with self.subTest(verdict=name):
                 self.assertEqual(self._unique(P + "body\n" + line + "\n")[0], 1, name)
             with self.subTest(scores=name):
-                self.assertEqual(self._unique(P + "body\n" + line.replace("VERDICT", "SCORES").replace("Verdict", "Scores").replace("verdict", "scores") + "\n")[1], 1, name)
+                self.assertEqual(self._unique(P + "body\n" + line.replace("VERDICT", "SCORES").replace("verdict", "scores").replace("FAIL", "M-9 1 M-11 1").replace("PASS 99", "40 40") + "\n")[1], 1, name)
         # through the whole gate too
         r, _, _ = GateWiring.run_gate(self, [], review="VERDICT: PASS 95 HEAD @H\nbody @H\n1. VERDICT - FAIL\n")
         self.assertIn("DRY_RUN fail=1", r.stdout, r.stdout)
@@ -986,6 +986,13 @@ class Gate362(unittest.TestCase):
             with self.subTest(body=body):
                 self.assertEqual(self._unique(body), (0, 0))
         self.assertEqual(self._unique("VERDICT: PASS 95 HEAD abcdef0\nbody\n")[0], 0)
+        # v3.6.2 R3 narrowing: lines that merely BEGIN with the word (headings, table rows, identifiers) are not counted; real rows from the #411/#412/#413 reviews
+        for line in ("## Verdict", "**Scores**", "| M2 VERDICT count back to `^VERDICT:` (no indent) | yes (5 failed) |", "| M5 VERDICT count case-sensitive | yes (5 failed) |",
+                     "| M3 SCORES count back to `^SCORES:` | yes (4 failed) |", "| SCORES must be line 2 | SCORES on line 3 | FAIL: claim true |",
+                     "- SCORES on line 2, both 93-100, marker 93-100 (`money_review_ok`). OK.", "- SCORES line 2, n 93-100, only SCORES line: gate lines 82-89, 112.",
+                     "| **M11 scores regex without the gap class before the colon** | **survives** |", "`verdict_unique` passes; VERDICT_LINE_RE is wider", "verdict_unique PASS"):
+            with self.subTest(benign=line):
+                self.assertEqual(self._unique(P + "body\n" + line + "\n"), (0, 0), line)
 
     def test_jobview_and_resend_are_money(self):
         for pth in ("apps/web/src/app/jobs/[id]/JobView.tsx", "apps/web/src/lib/emails/resend.ts"):
@@ -995,12 +1002,17 @@ class Gate362(unittest.TestCase):
             with self.subTest(p=pth):
                 self.assertFalse(self._money(pth), pth)
 
+    def test_fail_message_names_counted_lines(self):
+        r, _, _ = GateWiring.run_gate(self, [], review="VERDICT: PASS 95 HEAD @H\nbody @H\nx\n> VERDICT: FAIL\n")
+        self.assertIn("DRY_RUN fail=1", r.stdout, r.stdout)
+        self.assertIn("counted line(s): 1 4", r.stdout)
+
     def test_header_names_v362(self):
         with open(SCRIPT) as f:
             head = "".join(f.readlines()[:20])
         self.assertIn("v3.6.2", head)
         self.assertIn("RESIDUAL", head)
-        self.assertIn("never start ANY line", head)
+        self.assertIn("REVIEWERS: outside line 1", head)
 
 
 class R2Harness(unittest.TestCase):

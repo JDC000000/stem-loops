@@ -108,9 +108,17 @@ The script fetches into the main clone at `/home/claude/stem-loops`.
 
 - `MONEY_RE` also covers `apps/web/src/lib/library-server.ts`, `apps/web/src/app/jobs/[id]/page.tsx`, `apps/web/src/lib/emails/dispatch.ts`.
 - `MONEY_RE` also covers `jobs/[id]/JobView.tsx` and `emails/resend.ts`.
-- Case-insensitive counting predates v3.6.1; v3.6.1 added only indentation. v3.6.2 counts any line that, after a prefix of non-letters (tab, NBSP, `>`, `**`, `#`, `1.`, `- `, backtick), `[x]` boxes or a short label like `R1 `, has the word `VERDICT`/`SCORES` followed by a non-alphanumeric or end of line. **No colon is needed** (`VERDICT - FAIL`, `VERDICT (final): FAIL`, fullwidth colon). Lone CR, form feed, VT, NEL, U+2028 and U+2029 count as line breaks.
-- **Reviewers: never start any line, indented or not, in any case, with `VERDICT` or `SCORES` except the two marker lines (line 1 and, for money, line 2).** Prose that merely contains the word mid-line (`The verdict was good`, `Final verdict: FAIL`) is not counted.
-- **Residual (still hidden):** zero-width characters or homoglyphs inside the word, the word not at line start (`Final verdict: FAIL`), the word split across two lines, edited copies as a second review, marker score vs `min(M-9, M-11)`.
+- Case-insensitive counting predates v3.6.1; v3.6.1 added only indentation. v3.6.2 counts a line when, after a prefix of non-letters (indent, tab, NBSP, `>`, `**`, `#`, `|`, `- `, `1.`, `2)`, backtick), `[x]` boxes and short labels (1-3 letters + digits: `R1`, `M2`, `F3`, `PR4`), it has `VERDICT` followed by a colon (only non-alphanumerics between) or by `PASS`/`FAIL` (at most one word between), or `SCORES` followed by a colon, a number, or `M-9`/`M-11` (at most one word between). Lone CR, form feed, VT, NEL, U+2028 and U+2029 count as line breaks. The FAIL message names the counted line numbers.
+
+  | Shape | Counted? |
+  |---|---|
+  | `**VERDICT: FAIL**`, `> VERDICT: FAIL`, NBSP/ZWSP + `VERDICT: FAIL`, `VERDICT : FAIL`, `VERDICT (final): FAIL`, fullwidth colon | yes |
+  | `1. VERDICT: FAIL`, `- [x] VERDICT: FAIL`, `R1 VERDICT: FAIL`, `\| VERDICT \| FAIL \|`, `VERDICT PASS 99`, `VERDICT - FAIL` | yes |
+  | `R1 SCORES: M-9 1 M-11 1`, `SCORES 40 40`, `SCORES M-9 1`, `**SCORES**: ...` | yes |
+  | `## Verdict`, `**Scores**`, `\| M2 VERDICT count back to ... \|`, `- SCORES on line 2, both 93-100`, `verdict_unique`, `The verdict was good`, `Final verdict: FAIL` | no |
+
+- **Reviewers: outside line 1 (and line 2 for money) no line may begin, after indentation / quote / list / table / heading markup, numbering, `[x]` or a short label such as `R1`, `M2`, `F3`, with `VERDICT` then a colon or `PASS`/`FAIL`, or with `SCORES` then a colon, a number or `M-9`/`M-11`.** Headings, table rows and prose that only mention the words are fine.
+- **Residual (still hidden):** zero-width characters or homoglyphs inside the word, the bare word alone on a line, two or more words before `PASS`/`FAIL`, underscore-joined forms, the word + space + prose (`VERDICT changed to FAIL`), the word not at line start (`Final verdict: FAIL`), the word split across two lines, edited copies as a second review, marker score vs `min(M-9, M-11)`.
 
 ## Behind guard and `ALLOW_BEHIND` (v3.5)
 

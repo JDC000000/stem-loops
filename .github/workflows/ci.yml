@@ -411,7 +411,7 @@ jobs:
           python -I -u -m unittest discover -v -s scripts -p 'test_*.py' 2>&1 | tee "$RUNNER_TEMP/ut.log"
           [ "$(grep -cE '^Ran [0-9]+ tests? in ' "$RUNNER_TEMP/ut.log")" = 1 ] || { echo "expected exactly one unittest summary line"; exit 1; }
           n=$(sed -nE 's/^Ran ([0-9]+) tests? in .*/\1/p' "$RUNNER_TEMP/ut.log")
-          [ "${n:-0}" -ge 119 ] || { echo "only ${n:-0} tests ran (floor 119)"; exit 1; }
+          [ "${n:-0}" -ge 120 ] || { echo "only ${n:-0} tests ran (floor 120)"; exit 1; }
           [ "$(tail -n 1 "$RUNNER_TEMP/ut.log")" = "OK" ] || { echo "final line is not a bare OK (failures, skips, expected failures or unexpected successes)"; exit 1; }
           if grep -qE '^(OK|FAILED) \(.*(skipped|expected failures|unexpected successes)=' "$RUNNER_TEMP/ut.log"; then echo "skips, expected failures and unexpected successes are not allowed"; exit 1; fi
       - name: compileall packages/types

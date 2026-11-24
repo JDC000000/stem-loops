@@ -232,6 +232,15 @@ class WiringTests(unittest.TestCase):
         self.assertNotIn("continue-on-error", step)
         self.assertNotRegex(step, r"(?m)^\s+if:")
         self.assertNotIn("continue-on-error", "\n".join(job))
+        self.assertIn("set -euo pipefail", step)
+        self.assertIn("python -u -m unittest discover", step)
+        self.assertRegex(step, r"-ge (10[5-9]|1[1-9]\d|[2-9]\d\d|\d{4,}) \]")
+        self.assertIn("expected failures|unexpected successes", step)
+        self.assertIn('= "OK" ]', step)
+        self.assertIn("= 1 ]", step)
+        self.assertNotRegex(step, r"set \+[a-z]*e|\|\|\s*(:|true\b|echo\b)")
+        self.assertIn("-s scripts -p 'test_*.py'", step)
+        self.assertNotRegex("\n".join(job), r"(?m)^    if:")
 
     def test_sweep_steps_keep_gate_condition(self):
         gate = next(i for i, l in enumerate(self.job) if l.strip() == "id: gate")
@@ -247,7 +256,9 @@ class WiringTests(unittest.TestCase):
         for st in steps:
             with self.subTest(step=st[0].strip()):
                 self.assertIn("        if: steps.gate.outputs.run == 'true'", st)
-        self.assertIn("EVENT_NAME: ${{ github.event_name }}", "\n".join(self.job))
+        self.assertIn("          EVENT_NAME: ${{ github.event_name }}", self.job)
+        self.assertNotRegex("\n".join(self.job), r"(?m)^    if:")
+        self.assertNotIn("continue-on-error", "\n".join(self.job))
 
 
 if __name__ == "__main__":

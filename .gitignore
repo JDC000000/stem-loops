@@ -85,3 +85,4 @@ apps/worker/outputs/
 *.tsbuildinfo
 .vercel
 .env*
+.scratch/

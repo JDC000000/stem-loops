@@ -424,6 +424,61 @@ test('auto-scroll: holding at the bottom edge scrolls the page each frame; the r
   });
 });
 
+/**
+ * Hold the pointer 4px from the bottom edge and run `frames` frames, each `dtMs` apart on the
+ * rAF clock (the timestamp the component sees is synthetic; the harness's own clock is real time).
+ * Returns every scrollBy the page received. Wiring test for #343/#355 (#360): it goes through
+ * SetListView's real rAF loop, so it covers what the pure-helper tests cannot.
+ */
+async function runEdgeHold(dtMs, frames) {
+  return withDom(async (dom) => {
+    const f = stubFetch(okList);
+    const realRaf = dom.window.requestAnimationFrame;
+    let fakeNow = 1000;
+    // Same queue as the harness (so pendingFrames and teardown checks still work), synthetic time.
+    dom.window.requestAnimationFrame = (cb) => realRaf.call(dom.window, () => cb(fakeNow));
+    try {
+      const vp = stubViewport(dom.window, 300);
+      const { handle } = await mountList(dom);
+      await dom.pointer('pointerdown', handle(0), { clientX: 20, clientY: 126 });
+      await dom.pointer('pointermove', handle(0), { clientX: 20, clientY: 296 });
+      for (let i = 0; i < frames; i++) {
+        await dom.nextFrame();
+        fakeNow += dtMs;
+      }
+      await dom.pointer('pointerup', handle(0), { clientX: 20, clientY: 296 });
+      await dom.act();
+      return vp.calls;
+    } finally {
+      dom.window.requestAnimationFrame = realRaf;
+      f.restore();
+      await dom.unmountAll();
+    }
+  });
+}
+const sum = (a) => a.reduce((x, y) => x + y, 0);
+
+test('auto-scroll wiring: the same elapsed time scrolls the same distance at 120Hz as at 60Hz (frame time is used)', async () => {
+  // Frame 1 has no previous frame (nominal 16.67ms); the rest use the real gap. 160ms of gaps each.
+  const at120 = await runEdgeHold(8, 21);
+  const at60 = await runEdgeHold(16, 11);
+  assert.ok(at120.length > 0 && at60.length > 0, 'the loop scrolls the page (deleting the scrollPageBy wiring fails here)');
+  const speed = edgeScrollSpeed(296, 300); // px per second at 4px from the bottom
+  const ideal = (speed * 160) / 1000 + (speed * NOMINAL_FRAME_MS) / 1000; // gaps + the nominal first frame
+  assert.ok(Math.abs(sum(at120) - ideal) < 1, `120Hz total ${sum(at120)} within 1px of ${ideal.toFixed(2)}`);
+  assert.ok(Math.abs(sum(at60) - ideal) < 1, `60Hz total ${sum(at60)} within 1px of ${ideal.toFixed(2)}`);
+  assert.ok(Math.abs(sum(at120) - sum(at60)) <= 1, 'frame rate does not change the speed (lastFrameAt must be recorded each frame)');
+});
+
+test('auto-scroll wiring: a sub-pixel step per frame still adds up (fractional carry)', async () => {
+  // 4ms frames at ~990px/s is ~3.96px a frame: whole-pixel rounding per frame would lose ~1px each.
+  const calls = await runEdgeHold(4, 31);
+  assert.ok(calls.every((t) => Number.isInteger(t) && t > 0), 'whole pixels only');
+  const speed = edgeScrollSpeed(296, 300);
+  const ideal = (speed * 120) / 1000 + (speed * NOMINAL_FRAME_MS) / 1000;
+  assert.ok(sum(calls) > ideal - 1 && sum(calls) <= ideal + 1e-6, `total ${sum(calls)} tracks the ideal ${ideal.toFixed(2)} (carry kept)`);
+});
+
 test('auto-scroll: nothing scrolls away from the edges; the top edge scrolls up', async () => {
   await withDom(async (dom) => {
     const f = stubFetch(okList);

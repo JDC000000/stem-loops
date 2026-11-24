@@ -745,6 +745,8 @@ async function runMirrorRestore(
         );
       } else if (trialCharged) {
         deps.noteAllowanceDebitRecorded(await recordTrialOnlyDebit(client, user.user_id, id));
+      } else {
+        deps.noteAllowanceDebitRecorded(await deps.recordAllowanceDebit(client, user.user_id, id, { trialSong: false }));
       }
 
       // 4. Only now, with the row inserted: claim an unclaimed restore, and mark the parent.

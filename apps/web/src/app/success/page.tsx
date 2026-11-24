@@ -17,7 +17,7 @@ export default async function SuccessPage({
   const balance = user ? await serverGet<CreditsBalance>('/api/billing/credits/balance') : null;
 
   return (
-    <main style={{ minHeight: '100dvh', padding: '24px 16px', maxWidth: 560, margin: '0 auto', boxSizing: 'border-box' }}>
+    <main style={{ minHeight: 'var(--page-min-h)', padding: '24px 16px', maxWidth: 560, margin: '0 auto', boxSizing: 'border-box' }}>
       {user ? (
         <>
           <h1 style={{ fontSize: 28, margin: 0, color: 'var(--text-primary)' }}>Thank you</h1>

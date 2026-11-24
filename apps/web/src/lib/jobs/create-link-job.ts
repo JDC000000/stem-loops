@@ -651,7 +651,7 @@ async function runMirrorRestore(
   // The burst limit applies to every retry, free or charged (the button must not hammer). It
   // runs once per request: a FundingChanged re-run (attempt 1) already passed it and wrote its
   // row on attempt 0, so it is not counted twice (#345).
-  if (attempt === 0) {
+  if (attempt === -1) {
     const burst = await deps.checkBurstLimit(user.user_id);
     if (burst) {
       return {

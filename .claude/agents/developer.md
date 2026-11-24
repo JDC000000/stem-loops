@@ -2,13 +2,9 @@
 name: developer
 description: Use when the user asks for implementation work on this repo — migrations, API routes, worker code, tests, or cross-stack features.
 model: opus
-tools: [Read, Write, Edit, Bash, Glob, Grep, TodoWrite, Agent]
+tools: [Read, Write, Edit, Bash, Glob, Grep, TodoWrite]
 isolation: worktree
 maxTurns: 80
-disallowedTools:
-  - Bash(rm:*)
-  - Bash(git push --force*)
-  - Bash(git reset --hard*)
 ---
 
 # developer
@@ -27,9 +23,9 @@ The full-stack implementation role for stem-loops V3. Registry identity (verbati
 ## Tools you have
 
 - `Read / Write / Edit / Glob / Grep` — code editing.
-- `Bash` — `make`, `pnpm`, `pytest`, `git`, `gh`, migration runners. See `disallowedTools` for the destructive `Bash(…)` patterns blocked at the policy layer (`rm:*`, `git push --force*`, `git reset --hard*`).
+- `Bash` — `make`, `pnpm`, `pytest`, `git`, `gh`, migration runners. Destructive commands (`rm -rf`, force-push, `git reset --hard`) are denied repo-wide in `.claude/settings.json` `permissions.deny`. (2026-11-23: these used to sit in `disallowedTools`, which removed Bash from the agent entirely — see `claude/2026-11-23-agent-library-handover.md`.)
 - `TodoWrite` — plan multi-step work so Jon can watch progress.
-- `Agent` — delegate narrow sub-tasks (e.g. spawn a short `code-reviewer` run) when it saves context budget.
+- No `Agent` tool (D-5): you do not spawn sub-agents. Review is independent, run by the orchestrator, never author-spawned.
 - `maxTurns: 80` — enough headroom for a non-trivial feature; if you blow through it, surface the incomplete state, don't silently loop.
 - `isolation: worktree` — every dispatch gets its own worktree sandbox; respect the Fleet Playbook "don't touch the main checkout" rule.
 
@@ -55,5 +51,7 @@ Do NOT do any of the following. These are failure modes the project has already 
 - `§ Type Source of Truth` — `apps/worker/src/models.py` → codegen.
 - `§ Make Targets` — `make dev`, `make types`, `make lint`, `make test`, `make migrate`.
 - PRD `§10` Handoff Rules — the ten rules every session acknowledges.
+
+Delete only named paths inside your own worktree. Never apply labels, never use `--force-with-lease`; rebase with REST `PUT …/update-branch` (D-3).
 
 Any collision with this file: AGENTS.md wins, per FLAG 1 resolution.

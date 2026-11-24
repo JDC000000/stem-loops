@@ -31,3 +31,12 @@ Each agent receives:
 
 Code-review-agent fires at each milestone boundary (Gates 1–4) with a fresh context — it reads the
 git diff, not the session history. Security-review-agent fires once before Gate 4 cutover (T35).
+
+## Claude Code agent roster (added 2026-11-23)
+
+The roles above run as Claude Code agents in `.claude/agents/`. The canonical
+roster (models, roles, dispatch rules) is the table in
+`claude/parallel-work-rules.md`; it is kept only there to avoid drift. Name
+mapping: developer-custom → `developer` (CRHQ collapsed to one developer worker
+on 2026-06-20), code-review-agent → `code-reviewer`, tester-custom → `tester`,
+security-agent → `security`.

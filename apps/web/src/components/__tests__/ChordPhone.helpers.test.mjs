@@ -695,6 +695,52 @@ test('countdownState: the plain-list mode still counts beats on the measured gri
   assert.equal(countdownText(countdownState(seq, null, null, { inSec: 12.3 }, null, 10)), '12 s');
 });
 
+// ── #379: the countdown follows the local bar length on a drifting track ──
+// Loops cut on #376's beat-following grid: 4-bar loops at 118 BPM early, 124 BPM late
+// (job bpm 121). Each loop appears once per stem.
+const DRIFT_ROWS = [
+  [1.0, 1.0 + (16 * 60) / 118],
+  [40.0, 40.0 + (16 * 60) / 121],
+  [80.0, 80.0 + (16 * 60) / 124],
+].flatMap(([s, e]) => ['drums', 'bass'].map((stem) => ({ stem, bpm: '121.00', start_sec: String(s), end_sec: String(e), bar_count: 4 })));
+
+test('beatGridFromLoops: local beat spans only when loop lengths show drift; steady and old rows keep the one-BPM shape', async () => {
+  const { localBeatSec } = await import('../../lib/play/sections.ts');
+  const g = beatGridFromLoops(DRIFT_ROWS);
+  assert.equal(g.beatSec, 60 / 121);
+  assert.equal(g.spans.length, 3, 'one span per loop, not per stem');
+  assert.ok(Math.abs(localBeatSec(g, 5) - 60 / 118) < 1e-9, 'inside the first loop');
+  assert.ok(Math.abs(localBeatSec(g, 85) - 60 / 124) < 1e-9, 'inside the last loop');
+  assert.ok(Math.abs(localBeatSec(g, 70) - 60 / 124) < 1e-9, 'between loops: the nearest one');
+  assert.ok(Math.abs(localBeatSec(g, 200) - 60 / 124) < 1e-9, 'after the last loop');
+  // Steady (and pre-#376) rows: every loop is bar_count bars of the one BPM -> no spans.
+  const steady = [0.4, 30.4].map((s) => ({ bpm: 96, start_sec: s, end_sec: s + 4 * 4 * 0.625, bar_count: 4 }));
+  assert.deepEqual(beatGridFromLoops(steady), { beatSec: 0.625, anchorSec: 0.4, measured: true });
+  assert.equal(localBeatSec(beatGridFromLoops(steady), 10), 0.625);
+  // bar_count missing: bars are inferred from the length.
+  const inferred = beatGridFromLoops(DRIFT_ROWS.map(({ bar_count, ...r }) => r));
+  assert.ok(Math.abs(localBeatSec(inferred, 85) - 60 / 124) < 1e-9);
+  // A loop that is not whole bars of anything near the tempo is ignored.
+  assert.equal(beatGridFromLoops([{ bpm: 120, start_sec: 0, end_sec: 9.0, bar_count: 4 }]).spans, undefined);
+});
+
+test('countdownState: the plain-list countdown counts the LOCAL beat on a drifting track (#379)', async () => {
+  const { countdownState } = await import('../ChordPhone.helpers.ts');
+  const seq = { mode: 'sequence', beatsPerBar: 4 };
+  const g = beatGridFromLoops(DRIFT_ROWS);
+  for (const [t, bpm, start] of [[5, 118, 1], [85, 124, 80]]) {
+    const beat = 60 / bpm;
+    const at = (n, grid = g) => countdownState(seq, null, grid, { inSec: n * beat - 0.01 }, { startSec: start }, t);
+    for (const n of [1, 2, 3, 4, 8, 16]) assert.equal(at(n).beatsLeft, n, `${n} beats at ${bpm} bpm`);
+  }
+  // Guard: the one-BPM count (121) is wrong here. In the slow (118) stretch it already
+  // says 5 with 4 beats to go, so the 4-segment bar lit one segment late.
+  const oneBpm = { beatSec: g.beatSec, anchorSec: 0, measured: true };
+  const cd = countdownState(seq, null, oneBpm, { inSec: 4 * (60 / 118) - 0.01 }, { startSec: 1 }, 5);
+  assert.equal(cd.beatsLeft, 5);
+  assert.equal(countdownState(seq, null, g, { inSec: 4 * (60 / 118) - 0.01 }, { startSec: 1 }, 5).filled, 1);
+});
+
 test('phoneSlotLabel: " — edit" only on a cell that opens the editor', async () => {
   const { phoneSlotLabel } = await import('../ChordPhone.helpers.ts');
   const run = { kind: 'chord', label: 'E:min7' };

@@ -45,11 +45,13 @@ test('12 keys x 12 roots: the spelling follows the new key (major and minor)', (
         assert.equal(spellingFor(key, t), flats ? 'flat' : 'sharp', `${key} ${t}`);
         for (let r = 0; r < 12; r++) {
           // diatonic roots follow the new key's signature; borrowed roots are
-          // flats, except the raised 7th of a minor key and #IV of a major key
+          // flats, except #IV of a major key; minor keys: signature, except b2 (flat) and raised 7th (sharp)
           const outPc = (r + t + 12) % 12;
           const scale = (minor ? [0, 2, 3, 5, 7, 8, 10] : [0, 2, 4, 5, 7, 9, 11]).map((d) => (newPc + d) % 12);
           const sharpened = outPc === (minor ? (newPc + 11) % 12 : (newPc + 6) % 12);
-          const want = (scale.includes(outPc) ? (flats ? FLAT : SHARP) : sharpened ? SHARP : FLAT)[outPc];
+          const want = (minor
+            ? (sharpened ? SHARP : outPc === (newPc + 1) % 12 ? FLAT : flats ? FLAT : SHARP)
+            : (scale.includes(outPc) ? (flats ? FLAT : SHARP) : sharpened ? SHARP : FLAT))[outPc];
           assert.equal(transposeLabel(`${SHARP[r]}:min`, t, key), `${want}:min`, `${key} ${t} root ${SHARP[r]}`);
         }
       }
@@ -243,4 +245,11 @@ test('S1: borrowed chords are flats (diatonic to the NEW key by signature), shar
   // unknown key unchanged: flats going down, sharps going up
   assert.equal(transposeLabel('C:maj', -2, null), 'Bb:maj');
   assert.equal(transposeLabel('C:maj', 1, null), 'C#:maj');
+});
+
+test('S2: minor keys keep signature spelling; only b2 is flat, raised 7th sharp', () => {
+  assert.equal(transposeLabel('D:min', -1, 'F minor'), 'C#:min'); // C#m in E minor
+  assert.equal(transposeLabel('G#:min', -2, 'B minor'), 'F#:min'); // F#m in A minor
+  assert.equal(transposeLabel('E:dim7', -1, 'A# minor'), 'D#:dim7'); // D#dim7 in A minor
+  assert.equal(transposeLabel('C#:maj', -3, 'C minor'), 'Bb:maj'); // b2 in A minor: flat
 });

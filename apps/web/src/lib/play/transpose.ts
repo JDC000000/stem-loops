@@ -102,9 +102,10 @@ const MINOR_SCALE = [0, 2, 3, 5, 7, 8, 10];
 /**
  * The label a run shows, for the chosen shift and song key. Roots diatonic to
  * the NEW key are spelled by that key's signature (sharps in a sharp key, flats
- * in a flat key); every other root (a borrowed chord) is a flat (Bb, Eb, Ab),
- * except the two a key always sharpens: the raised 7th of a minor key (C# in D
- * minor, F# in G minor) and #IV in a major key (F# in C major, C# in G major).
+ * in a flat key); in a MAJOR key every other root (a borrowed chord) is a flat
+ * (Bb, Eb, Ab) except #IV (F# in C major, C# in G major); in a MINOR key the
+ * signature spells every root except the flat 2nd (flat) and the raised 7th
+ * (sharp: C# in D minor, F# in G minor).
  * A note-name bass of a slash chord follows the same rule. Unknown key: as
  * spellingFor (no per-root rule).
  */
@@ -118,6 +119,13 @@ export function transposeLabel(label: string, semis: number, musicalKey: unknown
   const sharpExtra = key.minor ? (keyPc + 11) % 12 : (keyPc + 6) % 12;
   const namer = (pc: number): string => {
     const p = ((pc % 12) + 12) % 12;
+    if (key.minor) {
+      // Minor keys: the key signature spells everything, except the flat 2nd
+      // (Bb in A minor: flat) and the raised 7th (C# in D minor: sharp).
+      if (p === sharpExtra) return noteName(p, 'sharp');
+      if (p === (keyPc + 1) % 12) return noteName(p, 'flat');
+      return noteName(p, spelling);
+    }
     if (diatonic.has(p)) return noteName(p, spelling);
     return noteName(p, p === sharpExtra ? 'sharp' : 'flat');
   };

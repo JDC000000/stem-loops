@@ -19,14 +19,14 @@ jobs:
     runs-on: ubuntu-latest
     if: ${{ inputs.target == 'all' || inputs.target == 'web' }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '20'
       # No `version:` here (QA-60). package.json pins `packageManager: pnpm@9.0.0`, and
       # pnpm/action-setup fails with "Multiple versions of pnpm specified" when both are
       # given. Same as every pnpm setup in ci.yml.
-      - uses: pnpm/action-setup@v4  # version from package.json packageManager
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4 -- version from package.json packageManager
       - name: Install deps
         run: pnpm install --frozen-lockfile
       - name: Deploy to Vercel
@@ -40,7 +40,7 @@ jobs:
     runs-on: ubuntu-latest
     if: ${{ inputs.target == 'all' || inputs.target == 'worker' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: superfly/flyctl-actions/setup-flyctl@fc53c09e1bc3be6f54706524e3b82c4f462f77be  # 1.5
       - name: Deploy to Fly.io
         # --ha=false: this app must stay at ONE Machine (FOR UPDATE SKIP LOCKED makes

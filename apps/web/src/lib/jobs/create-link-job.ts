@@ -44,11 +44,13 @@
 //
 //   ALLOW_YOUTUBE_INPUT → url / canonicalisation → loop bars → stems → [findExisting]
 //   → read the parent's restore (lock-free: picks the gates) → link entitlement (charged only)
-//   → checkAdmission → checkBurstLimit (every retry) → checkMonthlyQuota (unit only)
-//   → db.tx { consumeTrialInTx (trial song only) → SELECT parent … FOR UPDATE
+//   → checkAdmission → checkBurstLimit (once per request) → checkMonthlyQuota (unit only)
+//   → db.tx { consumeTrialInTx (trial song only)
+//             → SELECT the parent's debit row … FOR UPDATE (lock only; see LOCK ORDER below)
+//             → SELECT parent … FOR UPDATE
 //             → require owner, failed, link, retried_at IS NULL, retry_depth < RETRY_CAP
-//             → SELECT the parent's debit row … FOR UPDATE: the funding is decided HERE; if it
-//               differs from the lock-free read, roll back and run the gates again (once)
+//             → the funding is decided from the locked debit read; if it differs from the
+//               lock-free read, roll back and run the gates again (once)
 //             → [beforeInsert] → INSERT (retry_of, retry_depth = parent + 1)
 //             → rollPeriodIfStale → bump (unit only) → debit row (charged only)
 //             → claim the parent's debit row if still unclaimed (nothing given back)
@@ -64,9 +66,28 @@
 // restore that came first is seen and the retry is charged for it.
 //
 // A free retry (nothing was given back) therefore skips the paid entitlement, the quota and
-// the trial; admission and the burst limit still apply. Lock order is B0's: trial_grants →
-// the parent row (the "hook's lock") → entitlements. A second retry of the same parent waits
-// on the parent lock, then finds retried_at set and answers 200 with the first retry's id.
+// the trial; admission and the burst limit still apply. A second retry of the same parent
+// waits on the first lock it shares with the first retry (the debit row, or the parent row
+// when there is no debit row), then finds retried_at set and answers 200 with the first
+// retry's id.
+//
+// LOCK ORDER (#345): trial_grants → the parent's debit row → the parent job row (the "hook's
+// lock") → entitlements. The debit row comes BEFORE the job row because that is the order the
+// worker's restore takes them: restore_job_allowance() locks the debit row, then
+// job_failure._NOTE_RESTORED_SQL updates the job row, in the same transaction (fail_job's
+// second transaction). Parent-first here deadlocked against it. The other worker paths that
+// lock a job row before its debit row (_FAIL_SQL in fail_job's first transaction, the reaper's
+// FOR UPDATE SKIP LOCKED) only lock a job that is NOT yet failed, and the retry only runs on a
+// parent already committed as failed, so they never hold a row this transaction waits for.
+// trial_grants before the debit row is the reverse of restore_job_allowance(), but it is never
+// contended: the retry spends a trial song only when the debit row is already claimed, and a
+// claimed row is never locked by the restore again (its FOR UPDATE filters restored_at IS NULL).
+// The decisions are unchanged: the cap and owner checks still run under the parent lock, and
+// the funding is still decided from the locked debit read, after those checks.
+//
+// THE BURST ROW (#345). checkBurstLimit records one usage_events row per call. A FundingChanged
+// re-run is the same request, already counted by its first pass, so the re-run does not call
+// it again: one Try again tap = one burst row.
 
 import type { db as Db } from '@/lib/db';
 import type { checkAdmission as CheckAdmission } from '@/lib/admission';
@@ -627,15 +648,19 @@ async function runMirrorRestore(
     }
   }
 
-  // The burst limit applies to every retry, free or charged (the button must not hammer).
-  const burst = await deps.checkBurstLimit(user.user_id);
-  if (burst) {
-    return {
-      status: 429,
-      body: { error: 'too many requests', code: 'rate_limit_burst', retry_after_s: burst.retry_after_s },
-      headers: { 'content-type': 'application/json', 'Retry-After': String(burst.retry_after_s) },
-      raw: true,
-    };
+  // The burst limit applies to every retry, free or charged (the button must not hammer). It
+  // runs once per request: a FundingChanged re-run (attempt 1) already passed it and wrote its
+  // row on attempt 0, so it is not counted twice (#345).
+  if (attempt === 0) {
+    const burst = await deps.checkBurstLimit(user.user_id);
+    if (burst) {
+      return {
+        status: 429,
+        body: { error: 'too many requests', code: 'rate_limit_burst', retry_after_s: burst.retry_after_s },
+        headers: { 'content-type': 'application/json', 'Retry-After': String(burst.retry_after_s) },
+        raw: true,
+      };
+    }
   }
   // Only a retry that spends an allowance unit is quota-checked.
   if (charge.unit) {
@@ -652,7 +677,7 @@ async function runMirrorRestore(
   let inserted: boolean;
   try {
     inserted = await db.tx(async (client) => {
-      // 1. The trial song first (lock order: trial_grants → parent row → entitlements).
+      // 1. The trial song first (lock order: trial_grants → debit row → parent row → entitlements).
       let trialCharged = false;
       if (charge.trialSong) {
         const consume = await deps.consumeTrialInTx(client, user.user_id);
@@ -669,7 +694,12 @@ async function runMirrorRestore(
         // 'expired' / 'no_grant': there is no trial left to spend into, so this part is free.
       }
 
-      // 2. The cap, under the parent's row lock.
+      // 2. The parent's debit row lock BEFORE the parent job row (LOCK ORDER, #345: the worker's
+      //    restore takes the debit row, then the job row). Only the lock moves here; the funding
+      //    is still decided from this read in 2b, after the parent checks.
+      const lockedRestore = await lockParentRestore(client, parentJobId);
+
+      // 2a. The cap, under the parent's row lock.
       const p = (await client.query(LOCK_PARENT_SQL, [parentJobId])).rows[0] as LockedParent | undefined;
       if (!p || p.user_id !== user.user_id || p.status !== 'failed' || p.input_kind !== 'youtube') {
         throw new MirrorRefusal(json(404, NOT_FOUND_BODY));
@@ -684,7 +714,6 @@ async function runMirrorRestore(
       if (!(depth < RETRY_CAP)) throw new MirrorRefusal(limit());
 
       // 2b. The funding, decided under the debit row's lock (see THE LATE-RESTORE RACE).
-      const lockedRestore = await lockParentRestore(client, parentJobId);
       const lockedCharge = mirrorRestoreCharge(lockedRestore ?? null);
       if (lockedCharge.unit !== charge.unit || lockedCharge.trialSong !== charge.trialSong) throw new FundingChanged();
 

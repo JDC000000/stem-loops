@@ -230,7 +230,7 @@ jobs:
           # .github/CODEOWNERS. There are now THREE copies of this path set;
           # scripts/check_codeowners_drift.py fails CI if they diverge, so do
           # not hand-sync them and hope.
-          CO_RE='^(apps/web/src/lib/billing/|apps/worker/src/worker/billing/|apps/web/src/app/api/billing/|apps/web/src/app/api/entitlements/|apps/worker/migrations/[^/]*_v3_commercial[^/]*\.sql$|\.github/workflows/|\.github/CODEOWNERS$|(.*/)?AGENTS\.md$|(.*/)?CLAUDE\.md$|(.*/)?\.claude/|(.*/)?SKILL\.md$|(.*/)?CLAUDE\.local\.md$|(.*/)?\.mcp\.json$|scripts/)'
+          CO_RE='^(apps/web/src/lib/billing/|apps/worker/src/worker/billing/|apps/web/src/app/api/billing/|apps/web/src/app/api/entitlements/|(.*/)?migrations/|\.github/workflows/|\.github/CODEOWNERS$|(.*/)?AGENTS\.md$|(.*/)?CLAUDE\.md$|(.*/)?\.claude/|(.*/)?SKILL\.md$|(.*/)?CLAUDE\.local\.md$|(.*/)?\.mcp\.json$|scripts/)'
 
           BLOCK_REASON=""
           # Sets BLOCK_REASON and returns 0 when the PR must go to Jon.
@@ -473,7 +473,7 @@ jobs:
             printf '%s\n' "$MARKER" > body.md
             printf '%s\n\n' "**auto-merge did not merge this PR.** Branch protection blocked it:" >> body.md
             printf '> %s\n\n' "$REASON" >> body.md
-            printf '%s\n' "This is expected for PRs touching CODEOWNERS paths (billing, .github/workflows/**, AGENTS.md, CLAUDE.md, .claude/**, SKILL.md, scripts/**, commercial migrations). The workflow check is green because the workflow behaved correctly — it is the merge that was refused, not the automation that failed." >> body.md
+            printf '%s\n' "This is expected for PRs touching CODEOWNERS paths (billing, .github/workflows/**, AGENTS.md, CLAUDE.md, .claude/**, SKILL.md, scripts/**, all migrations/ directories per D-5). The workflow check is green because the workflow behaved correctly — it is the merge that was refused, not the automation that failed." >> body.md
             printf '\n%s\n' "**Path forward:** run scripts/safe_merge.sh $PR_NUM with CODEOWNER approval, or merge from the GitHub UI." >> body.md
             EXISTING=$(gh api "repos/$REPO/issues/$PR_NUM/comments" --jq ".[] | select(.body | startswith(\"$MARKER\")) | .id" 2>/dev/null | head -1)
             if [ -n "$EXISTING" ]; then

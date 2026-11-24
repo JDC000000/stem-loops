@@ -88,7 +88,7 @@ test('AC 9: an expired link row shows title (16 px), BPM · key (13 px), "Audio 
       const btn = row.querySelector('[data-testid="library-remake"]');
       assert.equal(btn.textContent, 'Re-make · uses 1 of your songs');
       assert.equal(btn.style.minHeight, '44px');
-      assert.equal(row.querySelector('a[href^="/jobs/"]'), null, 'an expired row does not link to a job (it has none)');
+      assert.equal(row.querySelector('a[href^="/jobs/"]') === null, true, 'an expired row does not link to a job (it has none)');
       // A live row next to it keeps its job link and shows BPM · key too.
       const live = dom.find(`a[href="/jobs/${LIVE}"]`);
       assert.equal(live.querySelector('[data-testid="song-meta"]').textContent, '95 BPM · G major');
@@ -141,7 +141,8 @@ test('Q3: an expired upload offers "Upload again" (home), never Re-make', async 
     try {
       await mountPage(dom);
       const row = entryRow(dom, UPLOAD);
-      assert.equal(row.querySelector('[data-testid="library-remake"]'), null);
+      // #352: compare `=== null`, not the node itself: a failing assert.equal on a DOM node OOMs while printing it.
+      assert.equal(row.querySelector('[data-testid="library-remake"]') === null, true, 'an upload offers no Re-make');
       const again = row.querySelector('[data-testid="library-upload-again"]');
       assert.equal(again.textContent, 'Upload again');
       assert.equal(again.getAttribute('href'), '/');
@@ -247,8 +248,22 @@ test('signed out, the library does not show the set lists link', async () => {
     const f = stubFetch(() => [401, {}]);
     try {
       await mountPage(dom);
-      assert.equal(dom.find('[data-testid="history-sets-link"]'), null);
+      assert.equal(dom.find('[data-testid="history-sets-link"]') === null, true, 'signed out: no set lists link');
       assert.ok(dom.find('[data-testid="history-sign-in"]'), 'the sign-in prompt shows instead');
+    } finally {
+      f.restore();
+    }
+  });
+});
+
+// #352 F2: a library fetch error (500) is not "signed in": the set lists link stays hidden.
+test('library fetch error (500): the set lists link is hidden', async () => {
+  await withDom(async (dom) => {
+    const f = stubFetch(() => [500, {}]);
+    try {
+      await mountPage(dom);
+      assert.equal(dom.find('[data-testid="history-sets-link"]') === null, true, 'fetch error: no set lists link');
+      assert.match(dom.window.document.body.textContent, /We could not load your library just now\./, 'the error note shows');
     } finally {
       f.restore();
     }

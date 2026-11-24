@@ -724,6 +724,28 @@ test('beatGridFromLoops: local beat spans only when loop lengths show drift; ste
   assert.equal(beatGridFromLoops([{ bpm: 120, start_sec: 0, end_sec: 9.0, bar_count: 4 }]).spans, undefined);
 });
 
+test('localBeatSec: overlapping spans -> the latest-starting span holding t; a shared edge -> the next span (#407 residue)', async () => {
+  const { localBeatSec } = await import('../../lib/play/sections.ts');
+  // Spans as beatGridFromLoops returns them: sorted by start.
+  const A = { startSec: 0, endSec: 20, beatSec: 0.5 };
+  const B = { startSec: 10, endSec: 30, beatSec: 0.48 };
+  const overlap = { beatSec: 0.49, spans: [A, B] };
+  assert.equal(localBeatSec(overlap, 5), 0.5, 'only A holds t');
+  assert.equal(localBeatSec(overlap, 15), 0.48, 'A and B both hold t: B starts later and wins');
+  assert.equal(localBeatSec(overlap, 25), 0.48, 'only B holds t');
+  // A short loop inside a long one: the inner (later-starting) one while it holds t, the outer one after.
+  const outer = { startSec: 0, endSec: 40, beatSec: 0.5 };
+  const inner = { startSec: 10, endSec: 20, beatSec: 0.47 };
+  const nested = { beatSec: 0.49, spans: [outer, inner] };
+  assert.equal(localBeatSec(nested, 15), 0.47, 'inside the inner loop');
+  assert.equal(localBeatSec(nested, 30), 0.5, 'past the inner loop: only the outer one holds t');
+  // Adjacent spans: exactly at the shared edge the next span wins, not the one that just ended.
+  const adj = { beatSec: 0.49, spans: [{ startSec: 0, endSec: 10, beatSec: 0.5 }, { startSec: 10, endSec: 20, beatSec: 0.48 }] };
+  assert.equal(localBeatSec(adj, 10), 0.48, 'at the shared edge');
+  assert.equal(localBeatSec(adj, 0), 0.5, 'at the first span start');
+  assert.equal(localBeatSec(adj, 20), 0.48, 'at the last span end');
+});
+
 test('countdownState: the plain-list countdown counts the LOCAL beat on a drifting track (#379)', async () => {
   const { countdownState } = await import('../ChordPhone.helpers.ts');
   const seq = { mode: 'sequence', beatsPerBar: 4 };

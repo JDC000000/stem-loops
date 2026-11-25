@@ -1,15 +1,15 @@
 ---
 name: parallel-work-rules
-version: v3.6.2
-date: 2026-11-24
-author: session 19A orchestrator (Claude Opus 5.5); v3.6 and v3.6.1 edits by session 20A, v3.6.2 by session 21A
+version: v3.6.3
+date: 2026-11-25
+author: session 19A orchestrator (Claude Opus 5.5); v3.6 and v3.6.1 edits by session 20A, v3.6.2 by session 21A, v3.6.3 by session 22A
 source: repo copy of Project claude/handover-19/PARALLEL-WORK-RULES-v3.5-2026-11-24.md, plus D-7 (SA-2 v1.2.1: Project claude/handover-19/19B/MERGE-AUTHORITY-SA2-v1.2.1-2026-11-24.md)
 supersedes: v3.4.2 (Project) and v3.4.3 (repo claude/parallel-work-rules.md, PR #388)
 precedence: Jon's explicit decisions (ledger `JON` rows) > AGENTS.md > this file. A conflict goes into the decision brief, never resolved by guessing.
 why: JON D-6, 2026-11-23 19:50 Vancouver (LEDGER-19A row 95) and JON D-7, 2026-11-23 ~20:45 Vancouver (LEDGER-19A row 110, "M-SA scope + SA-2 money rules"). D-6 verbatim: "Update your merge rules. Do a review of all the times you've asked me this session to merge and update the rules so you can self-approve. Update all documentation, stop asking me to merge. Update the rules. Learn from this session." Evidence: claude/handover-19/MERGE-ASK-REVIEW-19A-2026-11-24.md.
 ---
 
-# Parallel work rules v3.6.2
+# Parallel work rules v3.6.3
 
 **Standing rules from Jon**
 - JON 2026-11-23 11:03: always run the most parallel work these rules allow; end every cycle with one line on how Jon could unlock more.
@@ -44,8 +44,19 @@ why: JON D-6, 2026-11-23 19:50 Vancouver (LEDGER-19A row 95) and JON D-7, 2026-1
 
 1. **Split, then label** PARALLEL / SERIAL; > 5 tasks → file-ownership table before dispatch.
 2. **Two sessions.** The A session (19A, 20A, …) owns `.github/**`, `scripts/**`, `.claude/**`, `docs/agentic*`; the B session owns `apps/**`, `packages/**`, product docs. Cross-paths only via an issue. Chromium (2) and git-network (2) caps are shared: 1 each per session unless a hand-off is logged. **One merge gate** for both sessions (v3.6.2 today; #390, #395); never fork a private gate copy — propose changes as a PR (lesson: #382 vs #385 diverged).
-3. **One agent, one task, one worktree, one branch.** The orchestrator creates the worktree (an agent file may set `isolation: worktree`, but the platform denies it, so the orchestrator creates it). Brief = goal, files, done-definition, output path, COMMON-RULES pointer, turn budget. Agents reply ≤ 10 lines.
-4. **Agent types:** the roster lives in `.claude/agents/` and `docs/agent-registry.md`. `developer` and `release-ops` passed the O-6 Bash smoke test; others use `general-purpose` until smoke-tested (issue #389).
+3. **One agent, one task, one worktree, one branch.** The orchestrator creates the worktree and names its path in the brief; the agent works only there. Six agent files set `isolation: worktree` (roster below). Per the Claude Code docs that gives the agent a temporary worktree branched from the repo's default branch (not the PR branch, not the parent's `HEAD`), removed if unchanged; earlier sessions also saw the platform refuse it. Either way it is never the task worktree: the brief's path wins, and work left only in the isolation worktree does not count. Brief = goal, files, done-definition, output path, COMMON-RULES pointer, turn budget. Agents reply ≤ 10 lines.
+4. **Agent types:** the roster is the table below (the agent files in `.claude/agents/` are the source of truth for each field; `docs/agent-registry.md` maps the old registry names to it). All 8 passed the O-6 smoke test as real subagent types (`developer`, `release-ops` in S19; the other six in S21A, #389 comment of 2026-11-24), so dispatch the named type, not `general-purpose`.
+
+   | Agent | Model (default) | Tools (frontmatter) | May write | `isolation` | `maxTurns` | Use for |
+   |---|---|---|---|---|---|---|
+   | `orchestrator` | sonnet | Read, Grep, Glob, Bash, Write, Agent, TodoWrite | ledger / handover files outside the repo (rule 13); never code, reviews or docs | — (main session) | 120 | split, dispatch, check proof, M-SA merges |
+   | `task-splitter` | sonnet | Read, Grep, Glob, Bash, Write | its ticket list only | — | 40 | phase or > 5 tickets → PARALLEL/SERIAL tickets |
+   | `developer` | opus (sonnet for routine) | Read, Write, Edit, Bash, Glob, Grep, TodoWrite | code, tests, docs in its worktree; push its branch, open a draft PR | worktree | 80 | implementation |
+   | `tester` | sonnet | Read, Write, Edit, Bash, Glob, Grep | tests in its worktree | worktree | 60 | write / repair tests |
+   | `code-reviewer` | sonnet (any model ≠ author) | Read, Grep, Glob, Bash; `disallowedTools` Write, Edit, NotebookEdit, Agent | its review file only (via shell redirect); no git or GitHub writes, enforced by a PreToolUse hook (`scripts/agent_readonly_guard.py`) | worktree | 40 | adversarial review, tests + ≥ 3 mutants |
+   | `security` | sonnet | same as `code-reviewer`, same hook | its findings file only; no git or GitHub writes (hook) | worktree | 50 | security audit, money-class second lens |
+   | `release-ops` | sonnet | Read, Grep, Glob, Bash | evidence packets; no merges, labels or workflow edits (prose rule, no hook) | worktree | 60 | merge-evidence packets, CI triage, deploy checks |
+   | `batch-runner` | haiku | Read, Grep, Glob, Bash, Edit | bulk edits in files the brief names; no git writes | worktree | 30 | mechanical batches, inventories |
 5. **Hot files and money:** one writer at a time for migrations, generated files, lockfiles, shared config, AGENTS.md. No paid APIs without Jon's budget. After any Jon DB step verify **both** DBs.
 6. **Model per task:** haiku (sweeps), sonnet (routine code/docs), opus (money, security, cross-stack, synthesis), fable (safety-critical second review).
 7. **Check the proof yourself:** PR exists, diff non-empty, CI on the head SHA, gate evidence re-read from GitHub. Review markers are checked verbatim; never convert a malformed score (lesson: `PASS 9/10`).
@@ -54,7 +65,7 @@ why: JON D-6, 2026-11-23 19:50 Vancouver (LEDGER-19A row 95) and JON D-7, 2026-1
 10. **Concurrency:** ≥ 5 agents when there is work, cap 10; background CI waits, no polling check-ins. Don't loop update-branch while another session merges: use `ALLOW_BEHIND=1` where eligible, else update once right before merge.
 11. **Jon's attention:** one batched brief per cycle, only for decisions that are really his (hard-rule items in M-SA 5, product calls, refusals). Never re-ask what is approved. **Never ask for a merge.**
 12. **Stop rules:** second failure of the same task → stop and report; near usage limit → no new agents; heavy context → write the handover.
-13. **Measure every cycle** in the Project ledger: agents, models, merges, review rounds/scores, refusals, Jon asks (target: 0 merge asks), unlock line. Session notes never go into the repo.
+13. **Measure every cycle** in the Project ledger: agents, models, merges, review rounds/scores, refusals, Jon asks (target: 0 merge asks), unlock line. Session notes never go into the repo; that includes the orchestrator's cycle log (`.claude/agents/orchestrator.md` step 6 writes it to the Project ledger, never `claude/cycles/`).
 
 ## 3 · Lessons from session 19A (2026-11-23)
 
@@ -69,6 +80,7 @@ why: JON D-6, 2026-11-23 19:50 Vancouver (LEDGER-19A row 95) and JON D-7, 2026-1
 | L7 | A test override (OR4_REPO) nearly became a bypass | test hooks must fail closed outside test mode |
 
 ## Changelog
+- **v3.6.3 (2026-11-25, docs + agent read-only enforcement, tightening only; #389 residue):** §2 rule 4 gains the roster table that `docs/agent-registry.md` and `orchestrator.md` pointed to, and records that all 8 agent types passed O-6 (S21A). Rule 3 no longer says `isolation: worktree` is simply denied while 6 agent files set it: the orchestrator-created worktree in the brief always wins. Rule 13 names the orchestrator cycle log as a session note (Project ledger, not the repo); `orchestrator.md` step 6 and anti-goal 1 follow. `code-reviewer` and `security` are read-only by frontmatter (`disallowedTools` + a PreToolUse Bash hook, `scripts/agent_readonly_guard.py`, which fails closed on any unresolved shell expansion or redirect next to git/gh/curl/wget or inline interpreter code, blocks outright any command naming such a program (quotes and backslashes removed) next to `$(`, `${`, a backtick, `<<<`, an unquoted heredoc, eval/trap/source or `bash -c`, exempting only a `cat > file <<'EOF'` body, and matches programs by basename incl. git's dashed programs such as `git-push`; #442, #446), not only by prose; JON approval LEDGER-22A row 8; `.claude/settings.json` unchanged (its rules are global and cannot target one agent). Rule 9a (gate v3.3, D-1…D-5 pending), the other #389 item, was already removed by the v3.5 rewrite; §1 condition 4's "Rule 9b" keeps its v3.4.x name for the delta review. §1 is unchanged.
 - **v3.6.2 + #430 (2026-11-25, docs only, alignment):** gate references say v3.6.2 (condition 3 requires ≥ v3.6.2; §2 "one merge gate"); condition 6 says the #406 example paths are now in `MONEY_RE` (still a floor); the enforced list describes v3.6.2's counted VERDICT/SCORES shapes; the process list names only the shapes v3.6.2 still misses.
 - **v3.6.2 (2026-11-24, docs only, tightening/alignment; #412, R1 rounds 1-2):** the v3.6.1 entry's "gate v3.6 is on `main`" is corrected to `v3/main`. Round 2: orchestrator.md shows the 4th arg as `[<review-2>]`, required for protected/money, adds line-1 marker score ≥ 93 and bars `JON_ROW=95` only for a PR implementing a JON row; "single review at 91" only outside the protected class; release-ops: a title can only raise the class; "red `v3/main`"; "Do not self-merge" names the HELD PR. a revert of a PR that carried an applied migration is held for Jon in the red-main revert path too (not only health-fail); orchestrator agent file aligned to gate v3.6 (4-arg form, `MONEY=1`, never 95 for rules PRs); release-ops 'non-protected' excludes money class and `[billing]` titles; enforced list restores protected needs numeric `JON_ROW` + matching `JON_PR`; process list adds ledger-verify of a rules-PR row and that the gate accepts one review at 91 for a money PR its regex misses; 'Do not self-merge' reworded; `main` is `v3/main`; non-ASCII path sets `MONEY=1`.
 - **v3.6.1 (2026-11-24, docs only, tightening/alignment; #404, #406):** gate v3.6 is on `v3/main`. Condition 6: `MONEY_RE` is a floor, the orchestrator still classifies and sets `MONEY=1` when in doubt, non-ASCII path = money. Gate-vs-process table updated (gate now enforces two review files for protected/money, one VERDICT on line 1, SCORES line 2 ≥ 93, money ⇒ protected; still process: model ≠ author, real independence, money classification beyond the regex, real-PG log check, Residue). Gate invocation shows the 4th positional arg. Round-2 items from #400: worker deploys dispatched by the orchestrator under M-SA, never a subagent; a JON-row rules PR uses that row, never 95, and contains only what the row names; class D Beta arm cites the JON row and the orchestrator verifies it; deploy only when CI is green at the head being deployed; `why:` cites D-7; revert of a PR that carried an applied migration is held for Jon; §2.8 points to the money bar.

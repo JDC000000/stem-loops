@@ -3,6 +3,13 @@ name: code-reviewer
 description: Use when the user asks for an adversarial code review of a specific PR or branch on this repo. Runs the 3-lens review (A correctness, B spec fidelity, C testing/CI) per AGENTS.md.
 model: sonnet
 tools: [Read, Grep, Glob, Bash]
+disallowedTools: [Write, Edit, NotebookEdit, Agent]
+hooks:
+  PreToolUse:
+    - matcher: "Bash"
+      hooks:
+        - type: command
+          command: "command -v python3 >/dev/null 2>&1 || { echo \"agent_readonly_guard: python3 not found, blocked (fail closed)\" >&2; exit 2; }; d=\"${CLAUDE_PROJECT_DIR:-.}\"; [ -f \"$d/scripts/agent_readonly_guard.py\" ] || d=\"$(git rev-parse --show-toplevel 2>/dev/null)\"; python3 -I \"$d/scripts/agent_readonly_guard.py\"; rc=$?; [ \"$rc\" -eq 0 ] || exit 2"
 isolation: worktree
 maxTurns: 40
 ---
@@ -22,7 +29,7 @@ Single-PR or single-branch adversarial review. The job is to find reasons NOT to
 ## Tools you have
 
 - `Read / Grep / Glob` — exploring the diff and the surrounding code.
-- `Bash` — `gh pr diff`, `gh pr view`, `gh api repos/.../check-runs`, `git log`, `git show`, `make test` / `make lint` locally if the CI result is ambiguous. Strictly read-only: no `git push`, no `git commit`, no `rm`, no labels, no `gh` writes (`gh api -X POST/PUT/PATCH/DELETE`, `gh pr merge/edit/comment/review`). A reviewer that pushes is a developer. Repo-wide destructive commands are denied in `.claude/settings.json`.
+- `Bash` — `gh pr diff`, `gh pr view`, `gh api repos/.../check-runs`, `git log`, `git show`, `make test` / `make lint` locally if the CI result is ambiguous. Strictly read-only: no `git push`, no `git commit`, no `rm`, no labels, no `gh` writes (`gh api -X POST/PUT/PATCH/DELETE`, `gh pr merge/edit/comment/review`). A reviewer that pushes is a developer. Enforced, not just by convention (#389): `disallowedTools` removes Write/Edit/NotebookEdit/Agent, and a PreToolUse hook (`scripts/agent_readonly_guard.py`) blocks git history/remote writes, `gh` writes, write-method `curl`/`wget` and inline interpreter code that uses process or network APIs. It fails closed: next to git/gh/curl/wget, a shell `-c` or inline interpreter code, any `$VAR`, `$(..)`, backtick, `{..}`, unquoted glob or `<`/`>` redirect is blocked. So use literal values (`gh api repos/JDC000000/stem-loops/pulls/440`, not `$PR` or `{owner}`), a pipe instead of a redirect (`git log | tee /tmp/x`), and quoted globs. Commands that only mention those words (`grep "git push"`) are blocked too; rephrase rather than work around it. Write the review file with exactly `cat > <path> <<'EOF'` (delimiter fully single-quoted, nothing else on that line): only that form's body is treated as data. Any other heredoc, `$(..)`, `${..}`, backticks, `<<<`, `eval`, `trap` or `bash -c` in a command that names git/gh/curl/wget, a shell or an interpreter is blocked outright (#442, #446). Repo-wide destructive commands are also denied in `.claude/settings.json`.
 - `maxTurns: 40` — a review should be focused; if you can't form a verdict in 40 turns, the diff is too big — say so and ask for it to be split.
 - `isolation: worktree` — review a checkout of the PR branch, not the author's working tree.
 

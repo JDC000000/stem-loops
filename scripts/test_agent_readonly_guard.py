@@ -1,0 +1,554 @@
+"""Tests for scripts/agent_readonly_guard.py and the read-only frontmatter of
+the code-reviewer and security agents (#389). Stdlib unittest only."""
+import json
+import pathlib
+import re
+import subprocess
+import sys
+import unittest
+
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+GUARD = ROOT / "scripts" / "agent_readonly_guard.py"
+AGENTS = ROOT / ".claude" / "agents"
+READ_ONLY_AGENTS = ("code-reviewer", "security")
+WRITE_TOOLS = {"Write", "Edit", "NotebookEdit", "MultiEdit", "Agent", "Task"}
+
+
+def run_guard(payload):
+    raw = payload if isinstance(payload, str) else json.dumps(payload)
+    p = subprocess.run([sys.executable, "-I", str(GUARD)], input=raw,
+                       capture_output=True, text=True, timeout=30)
+    return p.returncode, p.stderr
+
+
+def bash(cmd):
+    return run_guard({"tool_name": "Bash", "tool_input": {"command": cmd}})
+
+
+ALLOWED = [
+    "git log --oneline -5",
+    "git -C /home/claude/s22/wt diff origin/v3/main...HEAD",
+    "git --no-pager show HEAD:scripts/or4-merge.sh",
+    "git fetch --depth=50 origin pull/12/head",
+    "git worktree add /tmp/rv -b rv FETCH_HEAD",
+    "git stash list && git status --porcelain",
+    "git checkout -- scripts/x.py",
+    "git config --get remote.origin.url",
+    "git remote -v",
+    "git branch --show-current",
+    "gh pr view 12 --json headRefOid",
+    "gh pr diff 12",
+    "gh -R JDC000000/stem-loops pr checks 12",
+    "gh api repos/JDC000000/stem-loops/pulls/12",
+    "gh api repos/o/r/commits/abc/check-runs --jq '.check_runs[].conclusion'",
+    "gh api -X GET search/issues -f q=repo:o/r",
+    "gh issue view 389",
+    "python3 -I -u -m unittest discover -v -s scripts -p 'test_*.py'",
+    "cp scripts/x.py /tmp/m1.py && sed -i 's/>=/>/' /tmp/m1.py",
+    "curl -sS https://example.com/health",
+    "grep -n push .claude/settings.json",
+    "cat > /home/claude/s22/reviews/R1.md <<'EOF'\nthe author ran git push; it's fine\ngh pr merge is not used\nEOF",
+    "cat > /tmp/r.md <<'E.F'\ngit push mentioned\nE.F\ngit log -1",
+    "gh api repos/o/r/pulls/440 --jq '.head.sha'",
+    "gh api repos/o/r/commits/x/check-runs --jq '.check_runs[] | \"\\(.name) | \\(.status)\"'",
+    "gh api -X GET search/code -f q=git",
+    "gh api -iX GET rate_limit",
+    "cd /home/claude/s22/wt && git log -1 && git diff --stat origin/v3/main...HEAD -- scripts/",
+    "git fetch origin pull/440/head:pr440 && git worktree add ../rv pr440",
+    "git --attr-source HEAD log -1",
+    "git -c user.name='A B' log -1",
+    "git -C '/a b' status",
+    "for f in a b; do echo $f; done",
+    "curl -sS -o /dev/null -w '%{http_code}' https://stem-loops.fly.dev/health",
+    "curl -sSI https://x",
+    "wget -q -O - https://x",
+    # R3: COMMON-RULES-22 reviewer setup (literal values only)
+    "flock /home/claude/s22/git-net.lock git -C /home/claude/stem-loops fetch --depth=50 origin pull/440/head:pr440-rv",
+    "git -C /home/claude/stem-loops worktree add /home/claude/s22/rv-440 pr440-rv",
+    "git -C /home/claude/stem-loops worktree remove --force /home/claude/s22/rv-440",
+    "python3 -I -u -m unittest discover -v -s scripts -p 'test_*.py' > /tmp/t.log 2>&1; tail -4 /tmp/t.log",
+    "python3 - <<'PY'\nprint('the git guard and gh tools')\nPY",
+    "python3 -c 'import json; print(json.load(open(\"x.json\"))[\"a\"])'",
+    "git config user.name",
+    "git -c safe.directory=/x log -1",
+    "GH_PAGER=cat gh pr view 1",
+    "bash /home/claude/s22/tools440/mut.sh M01 scripts/x.py 'a' 'b'",
+    "DRY_RUN=1 bash scripts/or4-merge.sh 440 /home/claude/s22/reviews/R1.md 78fd663",
+    "for f in a b; do wc -l \"$f\"; done",
+    "[ -f x ] && echo y",
+    "{ git log -1; } | head",
+    "git log | tee /tmp/x",
+    "git diff -- 'scripts/*.py'",
+    "make test",
+    "echo 'unclosed",
+    "date -u +%FT%TZ; gh api 'repos/o/r/commits/abc/check-runs?per_page=100' --jq '.check_runs[] | select(.conclusion!=\"success\") | .name'",
+    "gh api repos/o/r/pulls/440/commits --jq '.[] | {sha: .sha[0:7], msg: .commit.message}'",
+    "curl -fsSL -o /tmp/x -H \"Accept: application/json\" -w '%{http_code}' https://example.com/",
+]
+
+BLOCKED = [
+    "git push origin HEAD:x",
+    "git -C /x push origin y",
+    "git -c push.negotiate=true push origin HEAD:b",
+    "flock /home/claude/s22/git-net.lock git -c push.negotiate=true push origin HEAD:b",
+    "bash -c \"git push origin x\"",
+    "sh -c 'cd /x && git commit -m y'",
+    "g''it push",
+    "g\\it push",
+    "echo $(git push)",
+    "echo `git push`",
+    "/usr/bin/git push",
+    "git commit -am msg",
+    "git merge origin/v3/main",
+    "git rebase origin/v3/main",
+    "git reset HEAD~1",
+    "git tag v1",
+    "git pull",
+    "git update-ref refs/heads/x HEAD",
+    "git -c alias.p=push p origin x",
+    "git config alias.p push",
+    "git remote set-url origin https://x",
+    "git branch -D x",
+    "git log && git push",
+    "bash <<EOF\ngit push\nEOF",
+    "cat <<EOF | bash\ngit push\nEOF",
+    "gh pr merge 12 --squash",
+    "gh pr comment 12 -b hi",
+    "gh pr review 12 --approve",
+    "gh pr edit 12 --add-label x",
+    "gh pr ready 12",
+    "gh issue comment 414 -b x",
+    "gh issue create -t x",
+    "gh label create x",
+    "gh workflow run deploy.yml",
+    "gh run rerun 1",
+    "gh secret set X",
+    "gh alias set m 'pr merge'",
+    "gh api -X POST repos/o/r/issues/1/comments -f body=x",
+    "gh api --method=PATCH repos/o/r/pulls/1",
+    "gh api -XDELETE repos/o/r/labels/x",
+    "gh api repos/o/r/issues/1/comments -f body=x",
+    "gh api repos/o/r/pulls -F draft=true",
+    "gh api repos/o/r/x --input body.json",
+    "gh api graphql -f query='{viewer{login}}'",
+    "curl -X POST https://api.github.com/x",
+    "curl -d x=1 https://api.github.com/x",
+    "curl --json {} https://x",
+    "wget --post-data=x https://x",
+    # R1 (fable) bypasses that must be blocked
+    "gh api -iX POST repos/o/r/issues/1/comments",
+    "gh api -if body=x repos/o/r/issues/1/comments",
+    "curl -sX POST https://api.github.com/x",
+    "curl -sSd x=1 https://api.github.com/x",
+    "curl -s -dx=1 https://x",
+    "curl -sS -XPOST https://x",
+    "curl -XPOST https://x",
+    "curl -sT f https://x",
+    "curl -sF a=b https://x",
+    "curl -K cfg https://x",
+    "curl --config cfg https://x",
+    "curl --dat x=1 https://x",
+    "curl -so /dev/null -d@f https://x",
+    "curl --request=PUT https://x",
+    "git --attr-source HEAD push origin HEAD:x",
+    "git -C '/tmp/my repo' push origin HEAD:x",
+    "git -c user.name='Rev Bot' -c user.email=r@x commit -am fix",
+    "cat > /dev/null <<E.F\nx\nE.F\ngit push origin HEAD:x",
+    "cat > /dev/null <<'E-F'\nx\nE-F\ngit push origin HEAD:x",
+    "cat > /dev/null <<EOF\nno closing line\ngit push",
+    "echo push origin HEAD:x | xargs git",
+    "/usr/bin/gi? push origin HEAD:x",
+    "git pu${Z}sh origin HEAD:x",
+    "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=alias.p GIT_CONFIG_VALUE_0=push git p origin HEAD:x",
+    "X=git; $X push",
+    "export G=/usr/bin/gh; $G pr merge 1",
+    "{git,push,origin,HEAD:x}",
+    "python3 -c 'import subprocess; subprocess.run([\"git\",\"push\"])'",
+    "git p origin x",
+    "git clean -fdx",
+    "gh api graphql",
+    "gh api -X GET graphql",
+    "gh api /graphql -X GET",
+    "wget --method POST https://x",
+    "wget --method=PUT https://x",
+    "wget --post-d=x https://x",
+    "gh api -X GET -X POST repos/o/r/x",
+    "gh api --method post repos/o/r/x",
+    "git reflog expire --all",
+    # R2 (fable) bypasses: unresolved expansion next to a guarded program
+    "gh api repos/{owner}/{repo}/issues/1/comments -f body=hi",
+    "gh api -X GET repos/{owner}/{repo}/pulls -f state=open",
+    "gh api repos/JDC000000/stem-loops/issues/$N/comments -f body=hi",
+    "gh api repos/$REPO/pulls/440/merge -X PUT",
+    "gh api \"repos/$REPO/pulls/440/merge\" -X PUT",
+    "curl -sS https://api.github.com/repos/$R/issues -d '{\"title\":\"x\"}'",
+    "curl -s $URL -X POST",
+    "git -C $WT push origin HEAD:x",
+    "git -C $(pwd) commit -am x",
+    "git -C `pwd` push origin HEAD:x",
+    "git $OPTS push origin HEAD:x",
+    "git $'push' origin HEAD:x",
+    "git -c user.name=$USER commit -am x",
+    "gh api repos/o/r/issues/1/comments < body.json --input -",
+    "gh api repos/o/r/commits/$SHA/check-runs",
+    "git log > /tmp/x",
+    "git diff -- *.py",
+    "git -C",
+    "wget -e method=POST -e body_data=x https://x",
+    "wget --execute post_data=a=b https://x",
+    "wget --me=POST https://x",
+    "wget -qe method=POST https://x",
+    "curl --expand-request POST https://x",
+    "curl --expand-data x=1 https://x",
+    "curl --variable a=b https://x",
+    "git remote -v add evil https://x",
+    "git branch -dr origin/x",
+    "git branch -Dq somebranch",
+    "python3 -c \"import urllib.request as u; u.urlopen('https://x')\"",
+    # R3: fail-closed rules
+    "env X=1 $G push",
+    "/usr/bin/gi? push",
+    "python3 -Ic 'import os; os.system(\"x\")'",
+    "python3 <<'PY'\nimport subprocess\nPY",
+    "python3 - <<'PY'\nimport os\nos.system('x')\nPY",
+    "echo x | python3",
+    "cat f | bash",
+    "node -e \"require('https')\"",
+    "perl -e 'system(\"git push\")'",
+    "ruby -e 'Net::HTTP.post'",
+    "php -r 'shell_exec(\"x\");'",
+    "bash -c 'git -C $W push'",
+    "sh -c \"$CMD\"",
+    "bash -s < x",
+    "xargs -I{} git log",
+    "find . -exec git push \\;",
+    "timeout 5 $X",
+    "nice -n 5 \"$(echo git)\" push",
+    "do $X push",
+    "if git push; then :; fi",
+    "f(){ git \"$@\"; }; f push",
+    "{ git push; }",
+    "exec 3<>/dev/tcp/api.github.com/443",
+    "cat > /dev/tcp/203.0.113.1/80 <<'EOF'\nPOST / HTTP/1.0\nEOF",
+    "git -c credential.helper='!sh -c x' fetch",
+    "git -c core.sshCommand=x fetch",
+    "git fetch --upload-pack='x' origin",
+    "git clone --template=/tmp/t x",
+    "GIT_SSH_COMMAND=x git fetch",
+    "PAGER='sh -c x' git log",
+    "git bisect run make",
+    "git grep -Ofoo x",
+    "git log 'unclosed",
+    "cat > /dev/null <<EOF\nno closing line\ngit push",
+    # #442 (PR #440 R3 fable F-1..F-6)
+    "cat > /tmp/rev.md <<EOF\nDo not run `git -C /w push origin HEAD:h1`\nEOF",
+    "cat <<EOF\n$(git -C /w push origin HEAD:h2)\nEOF",
+    "python3 - <<EOF\nprint(1) # $(git -C /w push origin HEAD:h3)\nEOF",
+    "python3 - <<EOF\nprint('$HOME')\nEOF",
+    "cat <<E\"O\"F\nx\nEOF\ngit -C /w push origin HEAD:h4\nE",
+    "cat <<\\EOF\nx\nEOF\ngit push\nE",
+    "cat /dev/null # <<EOF\ngit -C /w push origin HEAD:h5\nEOF",
+    "cd /w && /usr/lib/git-core/git-push origin HEAD:g1",
+    "/usr/lib/git-core/git-commit --allow-empty -m g2",
+    "git-push origin HEAD:x",
+    "timeout 5 git-receive-pack /x",
+    "git-lfs push origin main",
+    "/usr/local/bin/gh pr merge 1",
+    "/usr/bin/curl -d x=1 https://x",
+    "/usr/bin/python3 -c 'import subprocess'",
+    "curl -s --js '{\"a\":1}' http://127.0.0.1:1/x",
+    "curl -s --up /etc/hostname http://127.0.0.1:1/x",
+    "curl --da x=1 https://x",
+    "curl --form-s a=b https://x",
+    "curl --req=POST https://x",
+    "bash -o pipefail -c \"git -C $W push origin HEAD:s1\"",
+    "bash -euo pipefail -c \"cd $W && git push origin HEAD:s2\"",
+    "bash -o pipefail -c 'git push origin HEAD:s3'",
+    "sh +o errexit -c 'git commit -m x'",
+    "trap \"git -C $W push origin HEAD:t1\" EXIT",
+    "trap 'git push origin HEAD:t2' EXIT",
+    "echo \"git -C ${W} push\"",
+    "python3 -c \"from http import client as c; c.HTTPConnection('h')\"",
+    "node --input-type=module -e 'import http from \"node:http\"; http.request(\"x\")'",
+    "node -r fs -e 'fetch(\"http://x\",{method:\"POST\"})'",
+    "node --import 'data:text/javascript,fetch(1)' -e 1",
+    "ruby -r json -e 'require \"socket\"; TCPSocket.new(\"h\",1)'",
+    "php -r 'echo file_get_contents(\"http://x\", false, stream_context_create([]));'",
+    "bun -e 'await fetch(\"http://x\",{method:\"POST\"})'",
+    "deno eval 'await fetch(\"http://x\")'",
+    "lua -e 'os.execute(\"git push\")'",
+    "vim -es -c ':!git -C /w push origin HEAD:v1' -c q",
+    "tar -cf /dev/null --checkpoint=1 --checkpoint-action=exec='git -C /w push origin HEAD:tar1' /etc/hostname",
+    "env \"-Sgit -C /w push origin HEAD:env1\"",
+    "git clone -c core.sshCommand=/tmp/p.sh ssh://h/r /tmp/z",
+    "git clone --config=core.sshCommand=/tmp/p.sh ssh://h/r /tmp/z",
+    "git config --comment --get alias.p push",
+    "wget -q -O- --use-askpass=/tmp/p.sh http://x",
+    "source /dev/stdin <<< \"git push\"",
+    # #446 R1: coarse pre-filter -- a guarded program next to any construct
+    # the parser could misjudge blocks outright (these were allowed before)
+    "out=$(python3 -I -u -m unittest discover -s scripts 2>&1 | tail -3); echo $out",
+    "cat > /tmp/r.md <<EOF\nprice $5, see `git log -1`\nEOF",
+    "bash -o pipefail -c 'git log -1 | head'",
+    "for f in $(git diff --name-only f9f92f3 HEAD); do wc -l \"$f\"; done",
+    "trap 'rm -f /tmp/x' EXIT",
+    "cat <<EOF\n$(case a in a) git -C /w push origin HEAD:n01;; esac)\nEOF",
+    "echo $((git -C /w push origin HEAD:n02); true)",
+    "cat <<EOF\n$((git -C /w push origin HEAD:n03); true)\nEOF",
+    "cat <<EOF\n${x:-$(git -C /w push origin HEAD:n04)}\nEOF",
+    "cat <<EOF\n${x:-`git -C /w push origin HEAD:n05`}\nEOF",
+    "cat > r.md <<EOF\n${x#$(git push)}\nEOF",
+    "cat > r.md <<EOF\n$(( $(git push) ))\nEOF",
+    "cat > r.md <<EOF\n${x:-${y:-$(gh pr merge 1)}}\nEOF",
+    "g''it -C /w push origin HEAD:n08\necho 'unclosed",
+    "g\\it -C /w push origin HEAD:n09\necho \"unclosed",
+    "cat <<EOF\nx\nEO\\\nF\ngit -C /w push origin HEAD:n11\nEOF",
+    "cat <<'EOF' | . /dev/stdin\ngit push origin HEAD:n10\nEOF",
+    ". <(cat <<'EOF'\ngit push origin HEAD:m11\nEOF\n)",
+    "trap '{git,-C,/w,push,origin,HEAD:m01}' EXIT",
+    "flock /tmp/l -c '{git,-C,/w,push,origin,HEAD:m02}'",
+    "trap 'git -C /w config alias.zz push # --get' EXIT",
+    "flock /tmp/l -c 'gh api repos/o/r/issues/1/comments -f body=x # -X GET'",
+    "python3 - <<'EOF'\nfrom os import execvp\nexecvp(\"git\", [\"git\", \"push\"])\nEOF",
+    "python3 - <<'EOF'\nimport json  # $(git push)\nEOF",
+    "cat > /tmp/r.md <<\"EOF\"\n$(git push)\nEOF",
+    "cat > /tmp/r.md <<EOF\nplain text, see git log\nEOF",
+    "cat <<'EOF' | sh\ngit log\nEOF",
+    "/usr/lib/git-core/GIT-PUSH origin HEAD:x",
+    "/usr/lib/git-core/git-push/ origin HEAD:x",
+    "GIT push origin HEAD:x",
+    "python3 - <<'PY'\nprint(\"${HOME} git\")\nPY",
+    "git log -1 | bash /tmp/s.sh",
+    # #446 R1 A-1: a long option's value is not a method flag
+    "gh api repos/JDC000000/stem-loops/issues/442/comments -f body=x --template -XGET",
+    "gh api repos/JDC000000/stem-loops/issues/442/comments -f body=x --jq -XGET",
+    "gh api repos/o/r/issues/1/comments -f body=x -q -XGET",
+    "gh api repos/o/r/issues/1/comments -f body=x --header -XGET",
+    "gh api repos/o/r/issues/1/comments -f body=x --method",
+    "gh api repos/o/r/issues/1/comments -f body=x --weird -XGET",
+    # #446 R1 A-4
+    "git branch --del keepme",
+    "git branch --de keepme",
+    "git config --uns user.name",
+    "git config --remove-sec alias",
+    "git fetch --upload-pa=/tmp/p origin",
+    "git clone --conf core.sshCommand=/tmp/p ssh://h/r /tmp/z",
+    "git init --templ=/tmp/t /tmp/z",
+    "gh auth status --show-token",
+    "gh auth status -t",
+]
+
+# #446 R1: still allowed under the coarse filter
+ALLOWED += [
+    "cat > /home/claude/s22/reviews/PR446-R2-x.md <<'EOF'\nthe author ran `git push origin HEAD:x`; $(gh pr merge 1) ${x:-y}\nEOF",
+    "cat <<'EOF' > /tmp/r.md\ngit push is mentioned; `gh pr merge`\nEOF",
+    "gh api -X GET search/issues -f q=repo:o/r --jq '.items[].number'",
+    "gh api --method GET search/issues -f q=x --paginate",
+    "gh auth status",
+    "git branch --contains HEAD",
+    "git config --get-regexp alias",
+    "git format-patch --to=x@y -1",
+    "cat > /tmp/r.md <<EOF\nprice $5 and no program names\nEOF",
+]
+
+# #442: reads that must keep passing after the R3 fixes
+ALLOWED += [
+    "cat > /home/claude/s22/reviews/R1.md <<'EOF'\nDo not run `git push origin HEAD:x`; costs $5\nEOF",
+    "ls /usr/lib/git-core | head",
+    "/usr/bin/git log -1",
+    "/usr/lib/git-core/git-log -1",
+    "curl -sS --compressed --max-time 10 https://example.com/",
+    "python3 -c \"print('https://example.com')\"",
+    "node -r fs -e 'console.log(1)'",
+    "git log -1 # then read the diff",
+    "git clone -c core.quotepath=false /x /tmp/y",
+]
+
+
+class GuardCommands(unittest.TestCase):
+    def test_allowed(self):
+        for cmd in ALLOWED:
+            with self.subTest(cmd=cmd):
+                rc, err = bash(cmd)
+                self.assertEqual(rc, 0, err)
+
+    def test_blocked(self):
+        for cmd in BLOCKED:
+            with self.subTest(cmd=cmd):
+                rc, err = bash(cmd)
+                self.assertEqual(rc, 2, cmd)
+                self.assertIn("agent_readonly_guard: blocked", err)
+
+    def test_every_blocked_git_subcommand(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("guard", GUARD)
+        g = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(g)
+        self.assertEqual(g.GIT_BLOCKED & g.GIT_ALLOWED, set())
+        fixed = ["push", "commit", "merge", "rebase", "reset", "cherry-pick", "revert",
+                 "am", "tag", "update-ref", "pull", "clean", "send-pack", "receive-pack",
+                 "http-push", "commit-tree", "symbolic-ref", "notes", "replace"]
+        for sub in sorted(set(g.GIT_BLOCKED) | set(fixed)):
+            for form in ("git %s x", "git -C /x %s", "git --attr-source HEAD %s"):
+                with self.subTest(cmd=form % sub):
+                    self.assertIsNotNone(g.violation(form % sub))
+        remote_writes = {"add", "remove", "rm", "rename", "set-url", "set-head",
+                         "set-branches", "prune", "update"}
+        self.assertEqual(g.GIT_REMOTE_WRITES, remote_writes)
+        for sub in sorted(remote_writes):
+            with self.subTest(remote=sub):
+                self.assertIsNotNone(g.violation("git remote %s origin https://x" % sub))
+        for sub in ("log", "diff", "show", "fetch", "status", "worktree", "checkout"):
+            with self.subTest(allowed=sub):
+                self.assertIsNone(g.violation("git %s" % sub))
+
+    def test_non_bash_tool_passes(self):
+        rc, _ = run_guard({"tool_name": "Read", "tool_input": {"file_path": "/x"}})
+        self.assertEqual(rc, 0)
+
+    def test_fail_closed(self):
+        for raw in ("", "not json", "[]",
+                    json.dumps({"tool_name": "Bash", "tool_input": {}}),
+                    json.dumps({"tool_name": "Bash", "tool_input": {"command": 3}})):
+            with self.subTest(raw=raw):
+                rc, err = run_guard(raw)
+                self.assertEqual(rc, 2)
+                self.assertIn("fail closed", err)
+
+
+def frontmatter(name):
+    text = (AGENTS / (name + ".md")).read_text()
+    m = re.match(r"---\n(.*?)\n---\n", text, re.S)
+    assert m, name
+    return m.group(1)
+
+
+def list_field(fm, key):
+    m = re.search(r"^%s:\s*\[(.*?)\]\s*$" % key, fm, re.M)
+    if not m:
+        return None
+    return {t.strip() for t in m.group(1).split(",") if t.strip()}
+
+
+def _load_guard():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("agent_readonly_guard", GUARD)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+class GuardInternals442(unittest.TestCase):
+    """#442: lexer and name helpers behind the R3 fixes."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.g = _load_guard()
+
+    def test_heredoc_delimiter_quote_removal(self):
+        for src, want in (("<<EOF", ("EOF", False)), ("<<'EOF'", ("EOF", True)),
+                          ('<<E"O"F', ("EOF", True)), ("<<\\EOF", ("EOF", True)),
+                          ("<< 'E F'", ("E F", True)),
+                          ("<<'E'OF", ("EOF", True)), ('<<E"O"\\F', ("EOF", True))):
+            with self.subTest(src=src):
+                d, q, _ = self.g._heredoc_word(src, 2)
+                self.assertEqual((d, q), want)
+
+    def test_unquoted_heredoc_expansions(self):
+        subs, exp = self.g._heredoc_expansions("a `git push` $(gh pr merge 1) \\$x")
+        self.assertEqual(subs, ["git push", "gh pr merge 1"])
+        self.assertTrue(exp)
+        self.assertEqual(self.g._heredoc_expansions("plain \\$x \\`y\\`"), ([], False))
+
+    def test_git_dashed_names(self):
+        self.assertEqual(self.g._git_dashed("/usr/lib/git-core/git-push"), "push")
+        self.assertEqual(self.g._name("git-commit"), "git")
+        self.assertIsNone(self.g._git_dashed("/usr/lib/git-core"))
+        self.assertIsNone(self.g._git_dashed("git-notes.md"))
+
+    def test_shell_option_values_skipped(self):
+        sc = self.g._shell_code
+        self.assertEqual(sc(["bash", "-o", "pipefail", "-c", "x"], 0), ("x", False))
+        self.assertEqual(sc(["bash", "-euo", "pipefail", "-c", "y"], 0), ("y", False))
+        self.assertEqual(sc(["bash", "-o", "pipefail", "s.sh"], 0), (None, False))
+        self.assertEqual(sc(["bash", "-o", "pipefail"], 0), (None, True))
+
+    def test_curl_any_unambiguous_prefix(self):
+        for opt in ("--js", "--up", "--form-s", "--data-b"):
+            with self.subTest(opt=opt):
+                self.assertIsNotNone(self.g.violation("curl %s x https://h" % opt))
+
+
+class ReadOnlyFrontmatter(unittest.TestCase):
+    def test_no_write_tools(self):
+        for name in READ_ONLY_AGENTS:
+            with self.subTest(agent=name):
+                fm = frontmatter(name)
+                tools = list_field(fm, "tools")
+                self.assertIsNotNone(tools, "tools must be an explicit allowlist")
+                self.assertEqual(tools & WRITE_TOOLS, set())
+                self.assertTrue(tools <= {"Read", "Grep", "Glob", "Bash"}, tools)
+                denied = list_field(fm, "disallowedTools") or set()
+                self.assertTrue({"Write", "Edit", "NotebookEdit", "Agent"} <= denied, denied)
+
+    def test_bash_hook_wired(self):
+        for name in READ_ONLY_AGENTS:
+            with self.subTest(agent=name):
+                fm = frontmatter(name)
+                self.assertRegex(fm, r"(?m)^hooks:\n  PreToolUse:\n    - matcher: \"Bash\"\n"
+                                     r"      hooks:\n        - type: command\n"
+                                     r"          command: .*scripts/agent_readonly_guard\.py")
+                self.assertNotRegex(fm, r"(?m)^permissionMode:\s*(bypassPermissions|acceptEdits)")
+
+    def test_hook_command_runs_guard(self):
+        # Execute the exact hook command from the frontmatter, the way the CLI
+        # would (sh -c, CLAUDE_PROJECT_DIR set), on one blocked and one allowed call.
+        import os
+        for name in READ_ONLY_AGENTS:
+            fm = frontmatter(name)
+            cmd = re.search(r"(?m)^          command: (.*)$", fm).group(1)
+            cmd = json.loads(cmd) if cmd.startswith('"') else cmd
+            env = dict(os.environ, CLAUDE_PROJECT_DIR=str(ROOT))
+            for c, want in (("git push origin x", 2), ("git log -1", 0)):
+                with self.subTest(agent=name, c=c):
+                    p = subprocess.run(["sh", "-c", cmd], cwd=str(ROOT), env=env,
+                                       input=json.dumps({"tool_name": "Bash",
+                                                         "tool_input": {"command": c}}),
+                                       capture_output=True, text=True, timeout=30)
+                    self.assertEqual(p.returncode, want, p.stderr)
+            # No python3 on PATH (sh and git only): must exit 2, not 127.
+            import shutil
+            import tempfile
+            with tempfile.TemporaryDirectory() as tmp:
+                os.symlink(shutil.which("git"), os.path.join(tmp, "git"))
+                env2 = dict(os.environ, CLAUDE_PROJECT_DIR=str(ROOT), PATH=tmp)
+                p = subprocess.run([shutil.which("sh"), "-c", cmd], cwd=str(ROOT), env=env2,
+                                   input=json.dumps({"tool_name": "Bash",
+                                                     "tool_input": {"command": "git push"}}),
+                                   capture_output=True, text=True, timeout=30)
+                with self.subTest(agent=name, case="no python3"):
+                    self.assertEqual(p.returncode, 2, p.stderr)
+                # python3 present but exiting 1 (e.g. a crash before main): must be 2
+                with open(os.path.join(tmp, "python3"), "w") as fh:
+                    fh.write("#!/bin/sh\nexit 1\n")
+                os.chmod(os.path.join(tmp, "python3"), 0o755)
+                os.symlink(shutil.which("sh"), os.path.join(tmp, "sh"))
+                p = subprocess.run([shutil.which("sh"), "-c", cmd], cwd=str(ROOT), env=env2,
+                                   input="{}", capture_output=True, text=True, timeout=30)
+                with self.subTest(agent=name, case="python3 exits 1"):
+                    self.assertEqual(p.returncode, 2, p.stderr)
+            # CLAUDE_PROJECT_DIR without the guard: falls back to the git
+            # toplevel of cwd; with neither, every Bash call is blocked.
+            env = dict(os.environ, CLAUDE_PROJECT_DIR="/nonexistent-389")
+            for cwd, c, want in ((str(ROOT / "docs"), "git push", 2), (str(ROOT / "docs"), "git log", 0),
+                                 ("/", "git log", 2)):
+                with self.subTest(agent=name, cwd=cwd, c=c):
+                    p = subprocess.run(["sh", "-c", cmd], cwd=cwd, env=env,
+                                       input=json.dumps({"tool_name": "Bash",
+                                                         "tool_input": {"command": c}}),
+                                       capture_output=True, text=True, timeout=30)
+                    self.assertEqual(p.returncode, want, p.stderr)
+
+
+if __name__ == "__main__":
+    unittest.main()

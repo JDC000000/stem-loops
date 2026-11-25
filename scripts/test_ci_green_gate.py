@@ -560,7 +560,11 @@ def _yaml_scalar(s):
         m = re.match(r"'((?:[^']|'')*)'" if q == "'" else r'"((?:[^"\\]|\\.)*)"', s)
         if not m or s[m.end():].strip()[:1] not in ("", "#"):
             raise YamlSubsetError(f"bad quoted scalar {s!r}")
-        return m.group(1).replace("''", "'") if q == "'" else m.group(1).replace('\\"', '"')
+        if q == '"' and "\\" in m.group(1):
+            # PR450 R1 fable B1: `"al\x77ays()"` is `always()` to a YAML parser. Fail closed on
+            # every double-quoted escape (\x, \u, \U, \", ...) rather than decode some of them.
+            raise YamlSubsetError(f"backslash escape in double-quoted scalar {s!r}")
+        return m.group(1).replace("''", "'") if q == "'" else m.group(1)
     if s[:1] in ("&", "*", "!", "%", "@", "`", "|", ">", "{", "[") or s.startswith("<<"):
         raise YamlSubsetError(f"unsupported scalar {s!r}")
     return re.split(r"\s#", s, maxsplit=1)[0].rstrip()
@@ -579,7 +583,9 @@ def yaml_subset_load(text):
     and `needs :` all become `needs`, so a structural check cannot be dodged by spelling
     (PR445 R2 fable R1-R4/R7/R16-R18). Comments are dropped wherever they sit, column 0
     included. Anything outside the subset (anchors, aliases, tags, non-empty flow maps,
-    tabs, duplicate keys, documents) raises YamlSubsetError instead of being guessed at.
+    tabs, duplicate keys, documents, any backslash escape in a double-quoted scalar,
+    multi-line flow scalars) raises YamlSubsetError instead of being guessed at, so every
+    accepted scalar is byte-equal to the value a YAML parser yields.
     Returns (tree, spellings): spellings lists every key whose source text was not the
     bare key itself (quoted, or whitespace before the colon).
     """
@@ -691,7 +697,8 @@ def yaml_subset_load(text):
     return tree, spellings
 
 
-STATUS_FUNCS = re.compile(r"\b(always|failure|cancelled|success)\s*\(|\bneeds\.")
+# Actions function names are case-insensitive (`Always()` works), hence IGNORECASE.
+STATUS_FUNCS = re.compile(r"\b(always|failure|cancelled|success)\s*\(|\bneeds\.", re.IGNORECASE)
 
 
 def deploy_structure_violations(text):
@@ -735,8 +742,18 @@ def deploy_structure_violations(text):
         if needs != ["ci-green-gate"]:
             v.append(f"{name}: needs {job.get('needs')!r}, want ci-green-gate")
         cond = job.get("if")
-        if not isinstance(cond, str) or STATUS_FUNCS.search(cond):
-            v.append(f"{name}: if {cond!r} (missing, or a status function/needs.* overrides the gate)")
+        if not isinstance(cond, str):
+            v.append(f"{name}: if {cond!r} missing")
+        elif STATUS_FUNCS.search(cond):
+            v.append(f"{name}: if {cond!r} has a status function or needs.* that overrides the gate")
+        else:
+            # PR450 R1 sonnet note: a literal `if: true` (or a dropped gate_only clause) passes
+            # the deny-list; require that gate_only=true skips the job for every target.
+            try:
+                if any(eval_if(cond, {"target": t, "gate_only": True}) for t in ("all", "web", "worker")):
+                    v.append(f"{name}: if {cond!r} runs with gate_only=true")
+            except (ValueError, KeyError, SyntaxError) as e:
+                v.append(f"{name}: if {cond!r} not evaluable ({e})")
         if job.get("environment") != "production":
             v.append(f"{name}: environment {job.get('environment')!r}, want production")
         if secrets - DEPLOY_SECRETS.get(name, set()) or "secrets[" in flat or "toJSON(secrets" in flat:
@@ -1199,6 +1216,42 @@ STRUCTURE_MUTANTS = [
     ("flow-style job", None, "  deploy-flow: {runs-on: ubuntu-latest}\n", "unparseable"),
     ("anchor/alias", "  deploy-worker:\n", "  deploy-worker: &w\n", "unparseable"),
     ("duplicate if key", _WEB_IF, _WEB_IF + "    if: ${{ always() }}\n", "duplicate"),
+    # PR450 R1 fable B1: double-quoted escapes spelling a status function.
+    ("if dq \\x escape", _WEB_IF, '    if: "${{ al\\x77ays() }}"\n', "backslash escape"),
+    ("if dq \\u escape", _WEB_IF, '    if: "${{ \\u0066ailure() }}"\n', "backslash escape"),
+    ("if dq \\U escape", _WEB_IF, '    if: "${{ always\\U00000028) }}"\n', "backslash escape"),
+    ("needs dq escape", "    needs: ci-green-gate\n", '    needs: "ci-green-gat\\x65"\n', "backslash escape"),
+    ("secret via dq escape", "VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}",
+     'VERCEL_ORG_ID: "${{ secrets\\x2eFLY_API_TOKEN }}"', "backslash escape"),
+    # PR450 R1 fable B2: one row per rule of deploy_structure_violations, each `want`
+    # unique to that rule's message.
+    ("if success()", _WEB_IF, "    if: ${{ success() && inputs.target == 'web' }}\n", "has a status function"),
+    ("if needs.* result", _WEB_IF, "    if: ${{ needs.ci-green-gate.result != 'x' }}\n", "has a status function"),
+    ("if upper-case Always()", _WEB_IF, "    if: ${{ Always() }}\n", "has a status function"),
+    ("if dropped", _WEB_IF, "", "deploy-web: if None missing"),
+    ("if literal true (R1 sonnet note)", _WEB_IF, "    if: true\n", "runs with gate_only=true"),
+    ("if gate_only clause dropped", _WEB_IF,
+     "    if: ${{ inputs.target == 'all' || inputs.target == 'web' }}\n", "runs with gate_only=true"),
+    ("if other context", _WEB_IF, "    if: ${{ github.ref != '' }}\n", "not evaluable"),
+    ("needs gate + drift", "    needs: ci-green-gate\n", "    needs: [ci-green-gate, ruleset-drift]\n",
+     "needs ['ci-green-gate', 'ruleset-drift']"),
+    ("extra job (job set)", "\n  deploy-web:\n", "\n  deploy-x:\n    runs-on: u\n\n  deploy-web:\n", "job set ["),
+    ("extra top-level key", "\njobs:\n", "\nenv:\n  X: '1'\n\njobs:\n", "top-level keys"),
+    ("workflow permissions", "\npermissions: {}\n", "\npermissions: write-all\n", "workflow permissions"),
+    ("secret in gate job", "          GH_TOKEN: ${{ github.token }}\n          REPO: ${{ github.repository }}\n          SHA",
+     "          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}\n          REPO: ${{ github.repository }}\n          SHA",
+     "ci-green-gate: uses secrets"),
+    ("foreign secret in deploy-web", "VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}",
+     "VERCEL_ORG_ID: ${{ secrets.FLY_API_TOKEN }}", "deploy-web: secrets"),
+    ("toJSON(secrets) in deploy-worker", "FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}",
+     "FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}\n          ALL: ${{ toJSON(secrets) }}", "deploy-worker: secrets"),
+    ("continue-on-error on deploy job", _WORKER_ENV,
+     _WORKER_ENV.replace("    environment: production\n", "    environment: production\n    continue-on-error: true\n"),
+     "job key continue-on-error"),
+    ("job-level env on deploy job", _WORKER_ENV.replace("superfly", "actions/setup-node"),
+     _WORKER_ENV.replace("superfly", "actions/setup-node").replace(
+         "    environment: production\n", "    environment: production\n    env:\n      X: '1'\n"),
+     "job key env"),
 ]
 
 
@@ -1285,6 +1338,9 @@ class DeployWorkflowStructure(unittest.TestCase):
             ("duplicate", "a: 1\na: 2\n"), ("tab indent", "a:\n\tb: 1\n"), ("document", "a: 1\n---\nb: 2\n"),
             ("bad indent", "a:\n    b: 1\n  c: 2\n"), ("plain multiline", "a:\n  just text\n"),
             ("block header", "a: |2\n  x\n"),
+            ("dq \\x", 'a: "al\\x77ays()"\n'), ("dq \\u", 'a: "\\u0061"\n'), ("dq \\U", 'a: "\\U00000061"\n'),
+            ("dq \\\"", 'a: "x\\"y"\n'), ("dq \\\\", 'a: "x\\\\y"\n'), ("dq key escape", '"\\x69f": 1\n'),
+            ("dq multi-line", 'a: "x\n  y"\n'),
         ):
             with self.subTest(case=label), self.assertRaises(YamlSubsetError):
                 yaml_subset_load(text)

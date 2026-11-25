@@ -11,8 +11,9 @@ promote, dispatch workflows, merge, or post on #414.
 - **Real deploys:** Jon, until A2 is recorded active (all five activation steps in the
   approvals file). After that, a B-session orchestrator may dispatch `deploy.yml` (A2).
 - **A sessions never run a real deploy.** 22A's only dispatch is G-1: `deploy.yml` with
-  `gate_only=true` (gate job only; deploy jobs do not run). `gate_only` exists only once the
-  guard-hardening PR #445 is merged; it is not on `v3/main` yet.
+  `gate_only=true` (gate job only; deploy jobs do not run):
+  `gh workflow run deploy.yml --ref v3/main -f target=all -f gate_only=true`. `gate_only` and
+  environment `production` (both deploy jobs) are on `v3/main` since #445 (4c371ac).
 - **Fast path:** Jon's, with one exception (A2b(b), §2).
 
 **AGENTS.md divergence (known).** AGENTS.md "Worker deploy" (D-7) still says: dispatch
@@ -35,7 +36,8 @@ Run the post-deploy check after every dispatch (A2 (3)). The deploy **failed** i
 - Idle queue: not a failure. While A2 is active, A2b(a) allows one fixed public demo song
   as a smoke job (≤ 2/day, recorded in the ledger). Otherwise the ledger row says
   "unverified until next real job" and the next watch must confirm it.
-- `/health` is DB-free by design and is **not** the check (liveness only).
+- `/health` is DB-free by design and is **not** the check (liveness only). The
+  `Ruleset drift warning (non-blocking)` job only warns and is not part of the check either.
 - Tester-facing outage (site down, uploads failing, jobs stuck): message Jon for the fast
   path at once, and start the slow path in parallel.
 
@@ -53,8 +55,11 @@ the production branch `v3/main`, ⋮ → Instant Rollback). CLI: `vercel rollbac
   instant-rollback: tell Jon and use the slow path.
 - **After a rollback, auto-assignment of production domains is off:** the next
   `vercel deploy --prod` from `deploy.yml` is created but not served. [V1] When the slow-path
-  redeploy is green, Jon (or A2b(b) while A2 is active) undoes it: tile → **Manage** → promote
-  that deployment, or `vercel promote <url>`; this restores auto-assignment. [V1]
+  redeploy is green, **Jon** undoes the rollback: on the project overview the production
+  deployment tile shows a **Manage** button → select the new deployment → **Confirm** (or
+  `vercel promote <url>`); this promotes it and restores auto-assignment. [V1] This is Jon's
+  only: A2b(b) covers promoting the immediately previous deployment on a failed check, not
+  promoting the new one.
 - Hobby plans can roll back only to the immediately previous deployment; Pro to any
   deployment that served production. [V1] Rollbacks/promotions run one at a time per project.
 
@@ -85,8 +90,8 @@ fly status --app stem-loops && fly logs --app stem-loops   # one Machine; job cl
 3. Wait until `v3/main` CI is **complete and green** on the revert's merge SHA (~25 min).
 4. In a DEPLOY window (§4), the deployer (Jon, or a B session under A2) dispatches a **new**
    run from `v3/main`: `gh workflow run deploy.yml --ref v3/main -f target=<worker|web|all>`
-   (target = what the bad deploy touched). Repeat the §1 check. If web was rolled back, promote
-   the new deployment (§2) or it is never served.
+   (target = what the bad deploy touched). Repeat the §1 check. If web was rolled back, Jon
+   promotes the new deployment (§2); until then it is not served.
 
 - **Never `gh run rerun` any deploy run**, including the one that just failed, and never
   "re-run failed jobs" on one. A re-run uses that run's commit and workflow file (an old SHA;

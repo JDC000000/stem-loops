@@ -11,6 +11,7 @@ track here is synthetic with exact ground truth (rendered in-test, nothing commi
 * steady: the normal case must produce exactly the output it did before the fix.
 """
 
+import math
 import os
 
 import numpy as np
@@ -189,14 +190,17 @@ def test_grid_bar_index_round_trips_on_a_drifting_grid():
 # ---------------------------------------------------------------------------
 # Steady tempo, no lead-in: output unchanged by the fix.
 #
-# The oracle is the pre-fix (v3/main c9f69d0) steady placement, copied verbatim below and
-# run in the same process on the same audio, boundaries and onset envelope. Hard-coded
-# floats are not a usable oracle here: the walk compares ``t <= b`` where ``t`` and ``b``
-# are the same bar reached by two float paths (anchor + 5*bar + 4*bar vs anchor + 9*bar),
-# so whether a phrase boundary on that bar counts was a last-ulp coin flip that depended on
-# the anchor's low bits (CI took bar 9 where the capture machine took bar 10 on the 102 BPM
-# track). #398 fixed it with a 1 us tolerance; the oracle carries the same tie tolerance and
-# is otherwise the verbatim pre-fix walk. Same process => same bits => exact compare.
+# The oracle is the pre-fix (v3/main c9f69d0) steady placement, inlined below with ONE
+# deliberate deviation (the #398 tie tolerance, see next), and run in the same process on
+# the same audio, boundaries and onset envelope. Hard-coded floats are not a usable oracle
+# here: the pre-fix walk compared ``t <= b < t + loop_dur`` where ``t`` and ``b`` can be the
+# same bar reached by two float paths (anchor + 5*bar + 4*bar vs anchor + 9*bar), so whether
+# a phrase boundary on that bar counted was a last-ulp coin flip that depended on the
+# anchor's low bits (CI took bar 9 where the capture machine took bar 10 on the 102 BPM
+# track). #398/#420 fixed it in ``_walk_steady`` with TIE_EPS_S (1 us) on both window edges;
+# the oracle carries the same 1 us tolerance on both edges, so it is the pre-fix walk plus
+# that fix, not a verbatim copy. Same process => same bits => exact compare. The edges
+# themselves are pinned by the ``_walk_steady`` unit tests further down.
 # ---------------------------------------------------------------------------
 
 STEADY_CASES = [
@@ -309,6 +313,42 @@ def test_steady_walk_boundary_tie_is_deterministic():
         assert len(results) == 1, f"{bpm} BPM: placement varies with the anchor's low bits"
         (bars,) = results
         assert bars[:4] == (0, 5, 9, 13)  # every on-grid boundary counts, incl. bar 9 and 13
+
+
+def test_steady_walk_end_edge_tie_is_exclusive():
+    """#424: a lone boundary exactly on bar ``bars`` (the next window's first bar) is NOT
+    in the current window ``[t, t + loop_dur)``: the walk takes bar 0 from the grid, then
+    the boundary as the next start. Starts are (0, 4, 8, ...), never (4, ...).
+
+    A boundary from another float path (snap_to_bar, a summed bar) can land an ulp or two
+    below ``t + loop_dur``, so the exclusive end needs the same TIE_EPS_S as the start edge.
+    Kills "end edge without eps" (``b < t + loop_dur``) and "inclusive end" (``<=``).
+    """
+    from worker.extractor.loop_extractor import _walk_steady
+
+    for bpm in (102.0, 97.0, 128.0, 83.0, 140.0):
+        bar = 4 * 60.0 / bpm
+        loop_dur = 4 * bar
+        base = 0.1234567
+        results = set()
+        for k in range(-40, 41):
+            a = base + k * 1e-9
+            end = a + loop_dur  # the walk's first window end, bit for bit
+            # The same bar via several float paths: exact, summed bar by bar, and one or
+            # two ulps below the window end (the case a bare ``b < t + loop_dur`` gets wrong).
+            b_down1 = math.nextafter(end, -math.inf)
+            for b in (
+                a + 4 * bar,
+                a + bar + bar + bar + bar,
+                b_down1,
+                math.nextafter(b_down1, -math.inf),
+            ):
+                starts = _walk_steady(a, loop_dur, [b], song_len=a + 40 * bar)
+                assert starts[0] == a, f"{bpm} BPM, nudge {k}, b={b!r}: loop 1 must start at bar 0"
+                results.add(tuple(round((x - a) / bar) for x in starts))
+        assert len(results) == 1, f"{bpm} BPM: placement varies with the anchor's low bits"
+        (bars,) = results
+        assert bars == tuple(range(0, 40, 4))  # (0, 4, 8, ..., 36): 10 loops, not (4, ...)
 
 
 def test_first_beat_at_t0_is_bar_one():

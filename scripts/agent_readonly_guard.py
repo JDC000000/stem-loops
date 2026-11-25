@@ -7,8 +7,19 @@ is active, https://code.claude.com/docs/en/sub-agents). Those agents keep Bash
 because reviews must run tests and executed mutants, so this hook vetoes the
 Bash calls that could change repo history, a remote, or GitHub state.
 
-Design (R3, fail closed by construction)
-----------------------------------------
+Design (R3 + #446, fail closed by construction)
+------------------------------------------------
+0. Coarse pre-filter (`_coarse`, #446 R1). Delete quotes and backslashes
+   from the command (so g''it, g\\it and "git" all read as git). If that text
+   names any guarded program (git, gh, curl, wget, git-*, a shell, an
+   interpreter, eval, source, `.`, exec wrappers such as env/flock/xargs/
+   timeout/trap, find -exec) AND the raw command has any of `$(`, `$((`,
+   `${`, `$[`, a backtick, `<<<`, `<(`/`>(`, a heredoc whose delimiter is not
+   fully single-quoted, a pipe into sh/bash/./source, /dev/stdin, eval, trap,
+   source, `-c` after a shell or flock, or does not parse, it is blocked
+   outright. The one exemption is the body of `cat > <file> <<'EOF'` (alone
+   on its line, delimiter fully single-quoted, closed): it is data. Only what
+   passes this filter reaches the finer rules below.
 1. A small shell lexer splits the command into simple commands (on
    ; & | && || ( ) newline) and words, removing quotes. While lexing it marks
    a command UNRESOLVED when it contains anything whose value the lexer cannot
@@ -44,7 +55,13 @@ Design (R3, fail closed by construction)
      alias, ...) is blocked.
    - gh: read allowlist; `gh api` only as GET (any non-GET -X/--method, or a
      body flag -f/-F/--field/--raw-field/--input without -X GET, blocks;
-     short-flag clusters such as -iX/-if are expanded); never graphql.
+     short-flag clusters such as -iX/-if are expanded; every value option,
+     short or long, consumes its value, so `--jq -XGET` is not a method; a
+     body flag next to an unknown long option blocks); never graphql;
+     `gh auth status --show-token`/`-t` blocks (prints a token).
+   - git long options also match as abbreviations (`branch --del`,
+     `config --uns`, `fetch --upload-pa`, `clone --conf`, `init --templ`);
+     program names match case-insensitively and with a trailing `/`.
    - curl: no write method, body (-d/-F/-T/--data*/--form*/--json/
      --upload-file), config (-K/--config), --variable, and `--expand-<opt>`
      is treated as `--<opt>`. Short-flag clusters are expanded.
@@ -138,7 +155,7 @@ NET_CODE = re.compile(
     r"Net::|LWP|HTTP::|IO::Socket|open-uri|Open3|\bsystem\b|\bspawn\b|"
     r"popen|\bexec\b|`|%x|\bcurl_|fsockopen|proc_open|shell_exec|passthru|"
     r"\bhttps?\b(?!://)|node:|\bdata:|file_get_contents|stream_context|"
-    r"\bfopen\b|\bBun\.|\bDeno\.|\bimport\s+[\w{}*,\s]+?\s+from\s",
+    r"\b(exec|spawn)[lv]p?e?\b|\bforkpty\b|\bfopen\b|\bBun\.|\bDeno\.|\bimport\s+[\w{}*,\s]+?\s+from\s",
     re.I)
 MENTION = re.compile(r"\b(git|gh|curl|wget|python[0-9.]*|node|perl|ruby|php|"
                      r"bun|deno|lua|bash|sh|zsh|eval)\b")
@@ -543,20 +560,21 @@ def _lex(text, nested):
 
 
 def _base(w):
-    return w.rsplit("/", 1)[-1]
+    return w.rstrip("/").rsplit("/", 1)[-1]
 
 
-GIT_DASHED = re.compile(r"^git-([a-z][a-z0-9-]*)$")
+GIT_DASHED = re.compile(r"^git-([a-z][a-z0-9-]*)$", re.I)
 
 
 def _git_dashed(w):
     """`git-push` (e.g. /usr/lib/git-core/git-push) runs as `git push`."""
     m = GIT_DASHED.match(_base(w))
-    return m.group(1) if m and m.group(1) != "core" else None
+    sub = m.group(1).lower() if m else None
+    return sub if sub and sub != "core" else None
 
 
 def _name(w):
-    b = _base(w)
+    b = _base(w).lower()                # case-insensitive file systems
     if b in GUARDED:
         return b
     return "git" if _git_dashed(w) else None
@@ -643,6 +661,25 @@ def _shell_code(words, i):
     return None, False                  # a script file: not read (known limit)
 
 
+GIT_PREFIX_EXEMPT = {"--to", "--to-cover", "--exclude", "--conflict",
+                     "--contains", "--column", "--color", "--format", "--follow"}
+
+
+def _git_long_hit(opt, options):
+    """`opt` names one of `options` exactly or as an abbreviation (git accepts
+    unique prefixes of long options)."""
+    name = opt.split("=", 1)[0]
+    if not name.startswith("--") or name == "--":
+        return None
+    if name in options:
+        return name
+    if len(name) >= 3 and name not in GIT_PREFIX_EXEMPT:
+        for o in sorted(options):
+            if o.startswith("--") and o.startswith(name):
+                return o
+    return None
+
+
 def _check_git(toks, i):
     j = i + 1
     while j < len(toks) and toks[j].startswith("-"):
@@ -670,16 +707,16 @@ def _check_git(toks, i):
         raise Blocked("git " + sub + ("" if sub in GIT_BLOCKED
                                        else " (not on the read-only git allowlist)"))
     for p, r in enumerate(rest):
-        if sub == "clone" and (r in ("-c", "--config") or r.startswith("--config=")
+        if sub == "clone" and (r == "-c" or _git_long_hit(r, {"--config"})
                                or (r.startswith("-c") and not r.startswith("--"))):
-            val = (r.split("=", 1)[1] if r.startswith("--config=")
+            val = (r.split("=", 1)[1] if r.startswith("--") and "=" in r
                    else r[2:] if len(r) > 2 and r[1] == "c"
                    else rest[p + 1] if p + 1 < len(rest) else "")
             if val.split("=", 1)[0].lower() not in GIT_C_KEYS:
                 raise Blocked("git clone -c %s (only display/identity keys allowed)"
                               % val.split("=", 1)[0])
         opt = r.split("=", 1)[0]
-        if opt in GIT_EXEC_OPTS or (sub in ("clone", "fetch", "ls-remote")
+        if _git_long_hit(opt, GIT_EXEC_OPTS - {"--tool"}) or opt == "--tool" or (sub in ("clone", "fetch", "ls-remote")
                                     and opt == "-u") or (
                 sub == "grep" and opt.startswith("-O")):
             raise Blocked("git %s %s (runs a program)" % (sub, opt))
@@ -689,7 +726,8 @@ def _check_git(toks, i):
     if sub == "remote" and positional and positional[0] in GIT_REMOTE_WRITES:
         raise Blocked("git remote " + positional[0])
     if sub == "config":
-        if any(r in GIT_CONFIG_WRITES for r in rest):
+        if any(r in GIT_CONFIG_WRITES or _git_long_hit(r, GIT_CONFIG_WRITES)
+               for r in rest):
             raise Blocked("git config (write)")
         if not any(r in GIT_CONFIG_READS for r in rest) and len(positional) >= 2:
             raise Blocked("git config (write)")
@@ -697,7 +735,9 @@ def _check_git(toks, i):
         raise Blocked("git reflog " + positional[0])
     if sub == "branch":
         for r in rest:
-            if r in ("--delete", "--move", "--copy", "--force") or (
+            if _git_long_hit(r, {"--delete", "--move", "--copy", "--force",
+                                 "--set-upstream-to", "--unset-upstream",
+                                 "--edit-description"}) or (
                     r.startswith("-") and not r.startswith("--")
                     and set(r[1:]) & set("dDmMcCf")):
                 raise Blocked("git branch (delete/move/copy/force)")
@@ -716,6 +756,10 @@ def _check_gh(toks, i):
     if group == "api":
         _check_gh_api(rest[1:])
         return
+    if group == "auth" and any(a == "-t" or a.startswith("--show") or
+                               (a.startswith("-") and not a.startswith("--")
+                                and "t" in a[1:]) for a in rest[1:]):
+        raise Blocked("gh auth status --show-token (prints a token)")
     allowed = GH_ALLOW.get(group)
     if allowed is None:
         raise Blocked("gh " + group)
@@ -726,17 +770,31 @@ def _check_gh(toks, i):
         raise Blocked(("gh %s %s" % (group, action)).strip())
 
 
+GH_API_VALUE_LONG = {"--method", "--field", "--raw-field", "--header",
+                     "--preview", "--jq", "--template", "--input", "--cache",
+                     "--hostname"}
+GH_API_FLAG_LONG = {"--include", "--paginate", "--silent", "--slurp",
+                    "--verbose", "--help"}
+
+
 def _check_gh_api(args):
-    methods, body = [], None
+    """Every value option consumes its value (so `--jq -XGET` is a jq filter,
+    not a method). A body flag needs an explicit GET; an unknown long option
+    next to a body flag blocks (its value could hide the real method)."""
+    methods, body, unknown = [], None, None
     k = 0
     while k < len(args):
         a = args[k]
+        if a == "--":
+            break
         if a.startswith("--"):
             name, eq, val = a.partition("=")
+            if name in GH_API_VALUE_LONG and not eq:
+                k += 1
+                val = args[k] if k < len(args) else ""
+            elif name not in GH_API_VALUE_LONG and name not in GH_API_FLAG_LONG:
+                unknown = name
             if name == "--method":
-                if not eq:
-                    k += 1
-                    val = args[k] if k < len(args) else ""
                 methods.append(val)
             elif name in GH_API_BODY_LONG:
                 body = name
@@ -761,6 +819,9 @@ def _check_gh_api(args):
         raise Blocked("gh api -X " + bad[0])
     if body and not methods:
         raise Blocked("gh api with a body flag %s (defaults to POST)" % body)
+    if body and unknown:
+        raise Blocked("gh api with a body flag %s and unknown option %s"
+                      % (body, unknown))
 
 
 def _long_prefix(name, options, minimum):
@@ -954,10 +1015,104 @@ def _scan(text, depth, nested=False):
         _eval_cmd(cmd, depth, text)
 
 
+# --- coarse pre-filter (#446 R1): fail closed by construction ----------------
+_TOK_PRE = r"(?:^|(?<=[\s;&|()`=/{,!]))"
+_TOK_POST = r"(?=$|[\s;&|()<>`])"
+COARSE_TOKEN = re.compile(
+    _TOK_PRE + r"(git|gh|curl|wget|git-[A-Za-z0-9-]+|python[0-9.]*|pypy[0-9.]*|"
+    r"node|nodejs|perl[0-9.]*|ruby[0-9.]*|php[0-9.]*|bun|deno|lua[0-9.]*|luajit|"
+    r"sh|bash|dash|zsh|ksh|mksh|ash|busybox|eval|source|exec|xargs|parallel|env|"
+    r"flock|trap|timeout|nohup|sudo|doas|nice|ionice|stdbuf|setsid|watch|"
+    r"script|strace|ltrace|taskset|unbuffer|chronic|chroot|runuser|su|ssh|"
+    r"fakeroot|unshare|nsenter|builtin)" + _TOK_POST, re.I)
+COARSE_DOT = re.compile(r"(?:^|[;&|(\n])\s*\.(?=\s)")
+COARSE_FIND = re.compile(_TOK_PRE + r"find" + _TOK_POST + r".*\s-(exec|execdir|ok|okdir)\b",
+                         re.S)
+COARSE_RISKY = [
+    (re.compile(r"\$\("), "$( or $(( substitution"),
+    (re.compile(r"`"), "backtick"),
+    (re.compile(r"\$\{"), "${..} expansion"),
+    (re.compile(r"\$\["), "$[..] arithmetic"),
+    (re.compile(r"<<<"), "here-string"),
+    (re.compile(r"[<>]\("), "process substitution"),
+    (re.compile(r"\|&?\s*(sh|bash|dash|zsh|ksh|mksh|ash|busybox|source)\b"
+                r"|\|&?\s*\.(?=\s|$)"), "pipe into a shell"),
+    (re.compile(r"/dev/(stdin|fd/|tcp|udp)"), "/dev/stdin or /dev/fd"),
+    (re.compile(_TOK_PRE + r"(eval|trap|source)" + _TOK_POST), "eval/trap/source"),
+    (re.compile(_TOK_PRE + r"(sh|bash|dash|zsh|ksh|mksh|ash|busybox|flock)"
+                + _TOK_POST + r"[^;&|\n]*?\s[-+][A-Za-z]*c[A-Za-z]*" + _TOK_POST),
+     "-c after a shell or flock"),
+]
+HEREDOC_OP = re.compile(r"(?<!<)<<(?!<)-?[ \t]*([^\s;&|()<>]*)")
+CAT_QUOTED_HEREDOC = re.compile(
+    r"^[ \t]*(?:cat|tee(?:[ \t]+-a)?)[ \t]+(?:>>?[ \t]*)?[^\s;&|<>$`'\"\\(){}]+[ \t]+"
+    r"<<(-?)'([A-Za-z0-9_.-]+)'[ \t]*$"
+    r"|^[ \t]*cat[ \t]+<<(-?)'([A-Za-z0-9_.-]+)'[ \t]+>>?[ \t]*[^\s;&|<>$`'\"\\(){}]+[ \t]*$")
+
+
+def _strip_review_heredocs(text):
+    """Drop the body of `cat > file <<'EOF'` (one heredoc on its line, delimiter
+    fully single-quoted, so bash does not expand it): that body is data. Any
+    other heredoc body stays in the text the coarse filter looks at."""
+    lines = text.split("\n")
+    out, i = [], 0
+    while i < len(lines):
+        line = lines[i]
+        m = CAT_QUOTED_HEREDOC.match(line)
+        if m and len(HEREDOC_OP.findall(line)) == 1:
+            tabs = bool(m.group(1) or m.group(3))
+            delim = m.group(2) or m.group(4)
+            j = i + 1
+            while j < len(lines) and (lines[j].lstrip("\t") if tabs
+                                      else lines[j]) != delim:
+                j += 1
+            if j < len(lines):           # closed: keep the cat line only
+                out.append(line)
+                i = j + 1
+                continue
+        out.append(line)
+        i += 1
+    return "\n".join(out)
+
+
+def _coarse(command):
+    """Reason to block, or None. A command that names any guarded program
+    (after deleting quotes and backslashes, so g''it / g\\it / "git" count) and
+    contains any construct whose effect the parser could misjudge is blocked
+    outright; only the rest reaches the per-program rules."""
+    raw = _strip_review_heredocs(command)
+    norm = re.sub(r"\\\n", "", raw)
+    norm = re.sub(r"['\"\\]", "", norm)
+    tok = COARSE_TOKEN.search(norm)
+    if tok:
+        name = tok.group(1)
+    elif COARSE_DOT.search(norm):
+        name = "."
+    elif COARSE_FIND.search(norm):
+        name = "find -exec"
+    else:
+        return None
+    for rx, what in COARSE_RISKY:
+        if rx.search(raw):
+            return "%s together with %s (fail closed; use literal values)" % (name, what)
+    for m in HEREDOC_OP.finditer(raw):
+        if not re.fullmatch(r"'[^']*'", m.group(1)):
+            return ("%s together with an unquoted heredoc (quote the delimiter: "
+                    "<<'EOF')" % name)
+    try:
+        _lex(command, False)
+    except ParseError as exc:
+        return "%s and the command cannot be parsed (%s)" % (name, exc)
+    return None
+
+
 def violation(command):
     """Return a reason string if `command` could write, else None."""
     if re.search(r"/dev/(tcp|udp)/", command):
         return "bash /dev/tcp or /dev/udp network redirect"
+    why = _coarse(command)
+    if why:
+        return why
     try:
         _scan(command, 0)
     except Blocked as exc:

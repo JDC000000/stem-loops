@@ -10,11 +10,22 @@
 //          last expected change already paired (pairing is in order);
 //   TEXT   the observed text equals the expected change's displayed text.
 //
-// THE TEXT RULE, precisely. `expected[i].text` is the label the stage draws for that run in that mode:
-// leadSheetSymbol({ kind: classifyLabel(label), label }) from apps/web (ChordPhone.helpers.ts, the one
-// formatter both the phone stage and the wide playhead bar use; "G:maj7" -> "Gmaj7", "N" -> "N.C."),
-// applied to the run's label AFTER the mode's display layer: the raw segments in Detailed, the
-// production simplifier's runs in Simple. The caller computes it in the page with the bundled
+// THE WINDOW IS NEW (#378 item 1). The clock-only rule had no upper bound. Now a change shown more
+// than `windowMs` (default 2000 ms, 40x the 50 ms budget; --pair-window-ms on the measurement) after its
+// start is not paired: it is a miss plus an extra, so it leaves the paired render/heard stats and enters
+// only `heard_route_with_misses` through the miss-lag estimate. Re-pairing the committed run
+// (docs/perf/sync-latency-2026-11-23.results.json, its rawEvents) with 2000 ms and with no window gives
+// identical results in every song and mode: the largest paired lag there is 551 ms (render), well under
+// the window. Without a window, a text match could reach a same-named change many seconds back and turn
+// a stall into one huge "lag" sample instead of a miss.
+//
+// THE TEXT RULE, precisely. `expected[i].text` is what the stage draws for that run in that mode:
+// leadSheetSymbol({ kind, label }) from apps/web (ChordPhone.helpers.ts, the one formatter both the
+// phone stage and the wide playhead bar use; "G:maj7" -> "Gmaj7", "N" -> "N.C."), applied to the run
+// AFTER the mode's display layer: the raw segments in Detailed, the production simplifier's runs in
+// Simple. `kind` is the run's own: classifyLabel of the LOADED label (observationsToRuns), which the
+// simplifier carries through when it relabels a run. So a Simple run that was loaded as a chord and
+// relabelled 'X' draws "X", not "?" (offline, Simple, 51.5 s and 100.8 s in the 11-23 run). The caller computes it in the page with the bundled
 // production modules. The observed text is the `playhead-now-name` element's textContent (the phone
 // stage splits a slash chord over two block spans with no separator, so textContent is the whole
 // symbol). Both sides are compared after String() and trim(), otherwise exactly.
@@ -53,8 +64,10 @@ export function expectedStarts(runs) {
  *   rows             paired changes with their lags (ms);
  *   misses           expected changes nothing was paired with (reported, never dropped);
  *   spurious         indices of events paired with nothing (the "extras");
- *   textMismatches   the extras that had a clock candidate but whose text matched none in the window
- *                    (placeholder texts excluded: the end-of-song dash is not a mismatch);
+ *   textMismatches   the extras that had a clock candidate in the window but whose text matched none
+ *                    (placeholder texts excluded: the end-of-song dash is not a mismatch). An extra
+ *                    with NO candidate in the window (first chord at start, a change shown > windowMs
+ *                    late) is a plain extra, not a text mismatch;
  *   pairedBehindClock rows paired with an earlier change than the clock-only rule would have picked
  *                    (the #378 shape: a chord shown so late that the next change's start had passed).
  */

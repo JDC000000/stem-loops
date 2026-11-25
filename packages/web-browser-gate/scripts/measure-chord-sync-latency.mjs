@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // US 3.4 / V3-J3: chord-change display latency versus audio (budget: p95 <= 50 ms).
 //
-//   node scripts/measure-chord-sync-latency.mjs [--out results.json] [--slugs a,b,c] [--cpu 4] [--max-sec N]
+//   node scripts/measure-chord-sync-latency.mjs [--out results.json] [--slugs a,b,c] [--cpu 4] [--max-sec N] [--pair-window-ms 2000]
 //
 // NOT part of required CI. It plays three real songs' worth of real time
 // (about 10 minutes at 1x) in Chromium; it is a measurement, run by hand.
@@ -49,6 +49,8 @@ const WEB = resolve(process.env.CHORD_GATE_SRC ?? join(HERE, '../../../apps/web'
 const args = process.argv.slice(2);
 const opt = (k, d) => { const i = args.indexOf(`--${k}`); return i >= 0 ? args[i + 1] : d; };
 const OUT = opt('out', join(tmpdir(), 'chord-sync-latency.json'));
+// Pairing clock window (ms). NEW with #378 item 1 (the clock-only rule had none); see chord-sync-pairing.mjs.
+const PAIR_WINDOW = Number(opt('pair-window-ms', PAIR_WINDOW_MS));
 const SLUGS = opt('slugs', 'lucky-ticket,im-asking-you,offline').split(',');
 const CPU = Number(opt('cpu', 4));
 const MODES = opt('modes', 'simple,detailed').split(','); // first = headline
@@ -76,9 +78,12 @@ async function bundle() {
         import { leadSheetSymbol } from './src/components/ChordPhone.helpers.ts';
         import { classifyLabel } from './src/components/ChordOverlay.helpers.ts';
         import './src/app/globals.css';
-        window.__simplify = (runs, grid, anchors) => simplifyChords(runs, { grid, anchors });
-        // The text the stage draws for a run label (the one formatter; see chord-sync-pairing.mjs).
-        window.__display = (labels) => labels.map((label) => leadSheetSymbol({ kind: classifyLabel(label), label }));
+        // Runs carry the loader's kind (observationsToRuns: classifyLabel of the LOADED label). The simplifier
+        // spreads each run, so a run it relabels keeps that kind (a merged 'X' run can stay kind 'chord').
+        window.__withKind = (runs) => runs.map((r) => ({ ...r, kind: classifyLabel(r.label) }));
+        window.__simplify = (runs, grid, anchors) => simplifyChords(window.__withKind(runs), { grid, anchors });
+        // The text the stage draws for a run (the one formatter, with the run's own kind; see chord-sync-pairing.mjs).
+        window.__display = (runs) => runs.map((r) => leadSheetSymbol({ kind: r.kind, label: r.label }));
         const noop = () => {};
         const root = createRoot(document.getElementById('root'));
         window.__events = [];
@@ -182,7 +187,7 @@ const work = mkdtempSync(join(tmpdir(), 'chord-sync-'));
 const device = (({ defaultBrowserType, ...d }) => d)(devices['Pixel 7']);
 const browser = await chromium.launch({ headless: true, channel: process.env.CHROME_CHANNEL ?? 'chrome', args: ['--autoplay-policy=no-user-gesture-required'] });
 const result = { when: new Date().toISOString(), cpuThrottle: CPU, viewport: '390x844', profile: 'Pixel 7 (emulated, viewport 390x844)', browserVersion: browser.version(), budgetMs: BUDGET_MS, routeHopMs: ROUTE_HOP_MS,
-  pairing: { rule: 'clock+text (#378 item 1): expected start <= shown position, within windowMs, in order, AND observed text === leadSheetSymbol(label) of the mode\'s run', windowMs: PAIR_WINDOW_MS }, modes: {} };
+  pairing: { rule: 'clock+text (#378 item 1): expected start <= shown position, within windowMs, in order, AND observed text === leadSheetSymbol({ kind, label }) of the mode\'s run', windowMs: PAIR_WINDOW }, modes: {} };
 
 const loadAvg = () => readFileSync('/proc/loadavg', 'utf8').split(' ').slice(0, 3).map(Number);
 result.loadAvgAtStart = loadAvg();
@@ -237,8 +242,8 @@ for (const MODE of MODES) {
     const spans = D.segments.map((x) => ({ startSec: x.start_sec, endSec: x.end_sec, label: x.label }));
     const runs = MODE === 'simple'
       ? await page.evaluate(([sp, g, an]) => window.__simplify(sp, g, an), [spans, grid, sections.map((x) => x.startSec)])
-      : spans;
-    const texts = await page.evaluate((labels) => window.__display(labels), runs.map((r) => r.label));
+      : await page.evaluate((sp) => window.__withKind(sp), spans);
+    const texts = await page.evaluate((rs) => window.__display(rs), runs);
     const expected = expectedStarts(runs.map((r, i) => ({ ...r, text: texts[i] })));
     await page.evaluate(() => window.__observe());
     await page.evaluate(() => window.__play());
@@ -256,7 +261,7 @@ for (const MODE of MODES) {
     const maxPos = MAX_SEC > 0 ? MAX_SEC : Infinity;
     const evs = events.filter((e) => e.rawPos <= maxPos);
     const exp = expected.filter((x) => x.start <= maxPos - 1);
-    const a = pairChanges(exp, evs, { extraMs: ROUTE_HOP_MS });
+    const a = pairChanges(exp, evs, { extraMs: ROUTE_HOP_MS, windowMs: PAIR_WINDOW });
     textMismatches += a.textMismatches.length;
     const col = (k) => a.rows.map((r) => r[k]).filter((x) => x !== null);
     // A miss was never shown on its own; its lag is at least the time until the next change was shown.

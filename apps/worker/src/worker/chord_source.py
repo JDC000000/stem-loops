@@ -124,6 +124,17 @@ class ChordSubmitUncertain(Exception):
     """
 
 
+class ChordSubmitUnanswered(Exception):
+    """The single (never retried) billable submit got no answer: a transport error or
+    timeout before any HTTP response. A billed provider job may exist, so the per-job
+    ledger keeps its pre-POST sentinel and a rerun raises ``ChordSubmitUncertain``.
+
+    A provider raises a subclass that also derives from its own error type, so existing
+    ``except <ProviderError>`` handlers are unchanged. The pipeline uses this type only to
+    report a distinct ``chords_reason`` (B-8c); the tombstone is unchanged.
+    """
+
+
 class ChordJobLedger(Protocol):
     """Durable per-job record of a provider submission (the Replicate
     ``replicate_prediction_id`` pattern, for providers that bill per request).

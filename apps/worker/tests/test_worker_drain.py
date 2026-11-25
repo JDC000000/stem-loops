@@ -505,7 +505,6 @@ def test_server_leaves_the_process_signal_handlers_alone():
 _HARNESS = textwrap.dedent("""
     import asyncio, sys, time, types
     import uvicorn
-    from worker import consumer, main
 
     STOCK = sys.argv[1] == "stock"
     JOB_S = float(sys.argv[2])
@@ -513,6 +512,30 @@ _HARNESS = textwrap.dedent("""
     # (asyncio.to_thread). A drain cannot cancel it, only orphan it -- which is why main.py
     # exits with os._exit: a plain return would join that thread in asyncio.run's teardown.
     IN_THREAD = sys.argv[3] == "thread"
+    # "sentry": main.py's real `sentry_sdk.init(**sentry_options())` runs (SENTRY_DSN set, so
+    # the excepthook integration is live), but every envelope goes to a transport that writes
+    # `SENTRY_EVENT <level> <exception type>` to stdout instead of the network (#318).
+    if sys.argv[4] == "sentry":
+        import os
+        import sentry_sdk.transport
+        from worker import sentry_config
+
+        class _Capture(sentry_sdk.transport.Transport):
+            def capture_envelope(self, envelope):
+                for item in envelope.items:
+                    ev = item.get_event()
+                    if ev is None:
+                        continue
+                    exc = ((ev.get("exception") or {}).get("values") or [{}])[-1]
+                    os.write(1, f"SENTRY_EVENT {ev.get('level')} {exc.get('type')}\\n".encode())
+
+        _options = sentry_config.sentry_options
+        sentry_config.sentry_options = lambda: {**_options(), "transport": _Capture}
+        os.environ["SENTRY_DSN"] = "https://public@sentry.invalid/1"
+    # "bypass": the job itself raises KeyboardInterrupt with no signal and no drain -- the
+    # interrupt that must still reach Sentry.
+    BYPASS = sys.argv[1] == "bypass"
+    from worker import consumer, main  # after the Sentry setup: main.py inits at import
     if STOCK:
         # main.serve exactly as it was before QA-63.
         async def _old_serve():
@@ -562,6 +585,8 @@ _HARNESS = textwrap.dedent("""
             await asyncio.to_thread(time.sleep, JOB_S)
         else:
             await asyncio.sleep(JOB_S)
+        if BYPASS:
+            raise KeyboardInterrupt
         print("JOB_FINISHED", flush=True)
 
     consumer.brake_state = brake
@@ -582,7 +607,7 @@ _HARNESS = textwrap.dedent("""
 """)
 
 
-def _run_harness(sig, *, mode="drain", job_s=1.0, drain_s="270", in_thread=False):
+def _run_harness(sig, *, mode="drain", job_s=1.0, drain_s="270", in_thread=False, sentry=False):
     env = {
         **os.environ,
         "WORKER_DRAIN_SECONDS": drain_s,
@@ -592,7 +617,15 @@ def _run_harness(sig, *, mode="drain", job_s=1.0, drain_s="270", in_thread=False
     env.pop("SENTRY_DSN", None)
     env.pop("DATABASE_URL", None)
     proc = subprocess.Popen(
-        [sys.executable, "-c", _HARNESS, mode, str(job_s), "thread" if in_thread else "loop"],
+        [
+            sys.executable,
+            "-c",
+            _HARNESS,
+            mode,
+            str(job_s),
+            "thread" if in_thread else "loop",
+            "sentry" if sentry else "nosentry",
+        ],
         cwd=WORKER_DIR,
         env=env,
         stdout=subprocess.PIPE,
@@ -610,8 +643,9 @@ def _run_harness(sig, *, mode="drain", job_s=1.0, drain_s="270", in_thread=False
         proc.kill()
         out, err = proc.communicate()
         pytest.fail(f"expected JOB_STARTED, got {line!r}\n{out}\n{err}")
-    time.sleep(0.2)  # the signal lands mid-job, as a deploy's does
-    proc.send_signal(sig)
+    if sig is not None:
+        time.sleep(0.2)  # the signal lands mid-job, as a deploy's does
+        proc.send_signal(sig)
     try:
         out, err = proc.communicate(timeout=60)
     except subprocess.TimeoutExpired:
@@ -652,3 +686,40 @@ def test_harness_sees_the_bug_with_stock_uvicorn():
     assert code != 0
     assert "JOB_FINISHED" not in out
     assert "KeyboardInterrupt" in err
+
+
+# --------------------------------------------------------------------------- Sentry (#318)
+# STEM-LOOPS-2: before QA-63 (#309) every deploy's SIGINT left uvicorn re-raising a
+# KeyboardInterrupt, which Sentry's excepthook integration reported as an unhandled error.
+# These run the harness with main.py's real Sentry init and a capturing transport.
+
+
+@pytest.mark.parametrize("sig", [signal.SIGINT, signal.SIGTERM], ids=["SIGINT", "SIGTERM"])
+@pytest.mark.parametrize("long_job", [False, True], ids=["job-finishes", "job-released"])
+def test_clean_drain_sends_no_sentry_event_and_exits_zero(sig, long_job):
+    if long_job:
+        code, out, err = _run_harness(sig, job_s=60.0, drain_s="0.5", in_thread=True, sentry=True)
+    else:
+        code, out, err = _run_harness(sig, job_s=1.0, sentry=True)
+    assert "worker_exit_drained" in err, err
+    assert "SENTRY_EVENT" not in out, out
+    # Exit status unchanged since #309: 0 (Fly restarts the Machine on deploy regardless).
+    assert code == 0, (code, out, err)
+
+
+def test_keyboard_interrupt_that_bypasses_the_drain_still_reaches_sentry():
+    """No signal, no drain: the job raises KeyboardInterrupt itself. It must still be reported
+    (unhandled, error level) and the process must still die by it -- Python's default for an
+    unhandled KeyboardInterrupt is to re-kill itself with SIGINT (-2 here, 130 in a shell)."""
+    code, out, err = _run_harness(None, mode="bypass", job_s=0.2, sentry=True)
+    assert "SENTRY_EVENT error KeyboardInterrupt" in out, (out, err)
+    assert "worker_exit_drained" not in err
+    assert code == -signal.SIGINT, (code, out, err)
+
+
+def test_sentry_harness_sees_the_old_deploy_event():
+    """Control: the pre-QA-63 serve under SIGINT (a deploy before #309) must produce exactly
+    the STEM-LOOPS-2 event. If this stops seeing it, the no-event test above proves nothing."""
+    code, out, err = _run_harness(signal.SIGINT, mode="stock", job_s=5.0, sentry=True)
+    assert "SENTRY_EVENT error KeyboardInterrupt" in out, (out, err)
+    assert code == -signal.SIGINT, (code, out, err)

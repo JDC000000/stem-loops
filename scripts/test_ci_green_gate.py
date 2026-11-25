@@ -279,6 +279,22 @@ class Evaluate(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertTrue(self.ok(all_green(), deploy_runs=[wr(path=path)]))
 
+    def test_wrong_path_entry_excludes_nothing(self):
+        # fable P6: a non-deploy.yml run (here: ci.yml's own suite) must not have its
+        # check suite excluded; the only problem is the path itself.
+        probs = self.ok(all_green(), deploy_runs=DEPLOY_RUNS + [
+            wr(4242, CI_SUITE, ".github/workflows/ci.yml")])
+        self.assertEqual(len(probs), 1, probs)
+        self.assertIn("ci.yml", probs[0])
+
+    def test_non_integer_suite_is_reported(self):
+        # fable P7: reported by name, not silently skipped.
+        for suite in (None, "9001", True, 1.5):
+            with self.subTest(suite=suite):
+                probs = self.ok(all_green(), deploy_runs=DEPLOY_RUNS + [wr(4243, suite)])
+                self.assertEqual(len(probs), 1, probs)
+                self.assertIn("no integer check_suite_id", probs[0])
+
     def test_deploy_runs_bad_suite_fails(self):
         for suite in (None, "9001", True):
             with self.subTest(suite=suite):
@@ -415,6 +431,17 @@ class Main(unittest.TestCase):
             gate.main(["--sha", SHA, "--runs", "x", "--compare", "y", "--deploy-runs", "z",
                        "--run-id", "1"], runner_env())
 
+    def test_drift_flag_only_as_first_argument(self):
+        # fable N15: `--drift` anywhere else must not switch the gate to warn-only mode.
+        for argv in (["--sha", SHA, "--drift", "x"], ["--sha", SHA, "--ref", REF, "--drift"]):
+            with self.subTest(argv=argv):
+                buf = io.StringIO()
+                with self.assertRaises(SystemExit) as cm, redirect_stdout(buf), \
+                        __import__("contextlib").redirect_stderr(io.StringIO()):
+                    gate.main(argv, runner_env())
+                self.assertNotEqual(cm.exception.code, 0)
+                self.assertNotIn("ruleset-drift", buf.getvalue())
+
     def test_main_missing_file_fails(self):
         buf = io.StringIO()
         with redirect_stdout(buf):
@@ -550,6 +577,50 @@ EXPECTED_DRIFT = [
     'echo "::warning title=ruleset drift::cannot read v3/main branch rules with this token; drift not checked"',
     "fi",
     "exit 0",
+]
+
+EXPECTED_DEPLOY_WEB = [
+    "name: Deploy Web to Vercel",
+    "runs-on: ubuntu-latest",
+    "needs: ci-green-gate",
+    "if: ${{ inputs.gate_only != true && (inputs.target == 'all' || inputs.target == 'web') }}",
+    "environment: production",
+    "permissions:",
+    "contents: read",
+    "steps:",
+    "- uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4",
+    "with:",
+    "persist-credentials: false",
+    "- uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4",
+    "with:",
+    "node-version: '20'",
+    "- uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4 -- version from package.json packageManager",
+    "- name: Install deps",
+    "run: pnpm install --frozen-lockfile",
+    "- name: Deploy to Vercel",
+    'run: cd apps/web && npx vercel deploy --prod --token="$VERCEL_TOKEN"',
+    "env:",
+    "VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}",
+    "VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}",
+    "VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}",
+]
+EXPECTED_DEPLOY_WORKER = [
+    "name: Deploy Worker to Fly.io",
+    "runs-on: ubuntu-latest",
+    "needs: ci-green-gate",
+    "if: ${{ inputs.gate_only != true && (inputs.target == 'all' || inputs.target == 'worker') }}",
+    "environment: production",
+    "permissions:",
+    "contents: read",
+    "steps:",
+    "- uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4",
+    "with:",
+    "persist-credentials: false",
+    "- uses: superfly/flyctl-actions/setup-flyctl@fc53c09e1bc3be6f54706524e3b82c4f462f77be  # 1.5",
+    "- name: Deploy to Fly.io",
+    "run: cd apps/worker && flyctl deploy --remote-only --ha=false",
+    "env:",
+    "FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}",
 ]
 
 _IF_TOKEN = re.compile(
@@ -813,6 +884,71 @@ class DeployWorkflowWiring(unittest.TestCase):
     def test_rerun_rule_documented(self):
         self.assertIn("NEVER `gh run rerun`", self.text)
         self.assertIn("dispatch a NEW run", self.text)
+
+    # --- S22 R2: pin the SHAPE of every job (PR445 R1 fable N1/N2/N21/N26/N27, sonnet N11/N12) ---
+
+    @staticmethod
+    def _code_lines(body):
+        """Non-blank, non-comment lines of a job body, right-stripped (inline `# vN` kept)."""
+        return [l.rstrip() for l in body.splitlines() if l.strip() and not l.strip().startswith("#")]
+
+    def _steps_of(self, job):
+        body = "\n".join(self._code_lines(self.jobs[job]))
+        parts = re.split(r"\n      - ", "\n" + body.split("\n    steps:\n", 1)[1])
+        return ["      - " + p for p in parts if p.strip()]
+
+    @staticmethod
+    def _step_keys(step):
+        first = re.match(r"      - ([\w-]+):", step).group(1)
+        return [first] + re.findall(r"^        ([\w-]+):", step, re.M)
+
+    def test_gate_and_drift_job_keys_exact(self):
+        # No container:/services:/defaults:/env:/if:/strategy:/continue-on-error: and a
+        # GitHub-hosted runner: the pinned scripts run with the runner's own python3/gh.
+        for j in NON_DEPLOY_JOBS:
+            with self.subTest(job=j):
+                keys = re.findall(r"^    ([\w-]+):", self.jobs[j], re.M)
+                self.assertEqual(keys, ["name", "runs-on", "timeout-minutes", "permissions", "steps"])
+                self.assertRegex(self.jobs[j], r"\n    runs-on: ubuntu-latest\n")
+                self.assertRegex(self.jobs[j], r"\n    timeout-minutes: 5\n")
+                for bad in ("container", "services", "defaults", "shell", "working-directory"):
+                    self.assertNotRegex("\n".join(self._code_lines(self.jobs[j])), rf"\b{bad}:")
+
+    def test_no_workflow_level_defaults_or_env(self):
+        # top-level keys are pinned exactly in test_trigger_is_workflow_dispatch_only;
+        # assert the dangerous ones by name as well.
+        for bad in ("defaults", "env", "concurrency"):
+            self.assertNotRegex(self.text, rf"(?m)^{bad}:")
+        self.assertNotRegex(self.text, r"(?m)^\s+shell:")
+        self.assertNotRegex(self.text, r"(?m)^\s+defaults:")
+
+    def test_gate_and_drift_step_keys_exact(self):
+        # No shell:/working-directory:/if:/continue-on-error:/id: on any step.
+        want = {
+            "ci-green-gate": [["uses", "with"], ["name", "env", "run"], ["name", "env", "run"]],
+            "ruleset-drift": [["uses", "with"], ["name", "env", "run"]],
+        }
+        for j, shape in want.items():
+            with self.subTest(job=j):
+                steps = self._steps_of(j)
+                self.assertEqual([self._step_keys(s) for s in steps], shape)
+                co = steps[0].splitlines()
+                self.assertEqual(
+                    [l.strip() for l in co],
+                    ["- uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4",
+                     "with:", "persist-credentials: false"],
+                )
+
+    def test_deploy_jobs_pinned_exactly(self):
+        # Every line of both deploy jobs (comments aside): step list, uses, with, run, env.
+        # Any change (extra step, other deploy command, --image, shell:, ref:) fails here.
+        want = {
+            "deploy-web": EXPECTED_DEPLOY_WEB,
+            "deploy-worker": EXPECTED_DEPLOY_WORKER,
+        }
+        for j, lines in want.items():
+            with self.subTest(job=j):
+                self.assertEqual([l.strip() for l in self._code_lines(self.jobs[j])], lines)
 
     def test_uses_pinned_to_full_sha(self):
         for m in re.finditer(r"uses:\s*([^\s#]+)", self.text):

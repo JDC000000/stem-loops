@@ -526,11 +526,17 @@ class RulesetDrift(unittest.TestCase):
 
 
 def _jobs_block(text):
-    """Split deploy.yml into {job_id: body} (top-level `jobs:` children at 2-space indent)."""
+    """Split deploy.yml into {job_id: body} (top-level `jobs:` children at 2-space indent).
+
+    A column-0 `#` comment does not end the block (PR445 R2 fable R5/R21: stopping there
+    hid every job after it); only a column-0 non-comment line (a new top-level key) does.
+    """
     m = re.search(r"^jobs:\n", text, re.M)
     assert m, "no jobs: key"
     jobs, cur = {}, None
     for line in text[m.end():].splitlines():
+        if line.startswith("#"):
+            continue
         if re.match(r"^\S", line):
             break
         jm = re.match(r"^  ([A-Za-z0-9_-]+):\s*$", line)
@@ -540,6 +546,205 @@ def _jobs_block(text):
         elif cur:
             jobs[cur].append(line)
     return {k: "\n".join(v) for k, v in jobs.items()}
+
+
+class YamlSubsetError(ValueError):
+    pass
+
+
+def _yaml_scalar(s):
+    """A plain or quoted scalar; an inline ` #` comment after it is dropped."""
+    s = s.strip()
+    if s[:1] in ("'", '"'):
+        q = s[0]
+        m = re.match(r"'((?:[^']|'')*)'" if q == "'" else r'"((?:[^"\\]|\\.)*)"', s)
+        if not m or s[m.end():].strip()[:1] not in ("", "#"):
+            raise YamlSubsetError(f"bad quoted scalar {s!r}")
+        return m.group(1).replace("''", "'") if q == "'" else m.group(1).replace('\\"', '"')
+    if s[:1] in ("&", "*", "!", "%", "@", "`", "|", ">", "{", "[") or s.startswith("<<"):
+        raise YamlSubsetError(f"unsupported scalar {s!r}")
+    return re.split(r"\s#", s, maxsplit=1)[0].rstrip()
+
+
+_YAML_KEY = re.compile(
+    r"""^(?:(?P<q>"(?:[^"\\]|\\.)*"|'(?:[^']|'')*')|(?P<p>[^\s'"#{}\[\],&*!|>%@`-][^:#]*?|-[^\s:#][^:#]*?))"""
+    r"""(?P<sp>\s*):(?:\s+(?P<v>.*)|$)"""
+)
+
+
+def yaml_subset_load(text):
+    """Stdlib loader for the block-YAML subset deploy.yml uses (CI's script tests are stdlib-only).
+
+    Keys are normalised the way a YAML parser (and Actions) sees them: `"needs":`, `'if':`
+    and `needs :` all become `needs`, so a structural check cannot be dodged by spelling
+    (PR445 R2 fable R1-R4/R7/R16-R18). Comments are dropped wherever they sit, column 0
+    included. Anything outside the subset (anchors, aliases, tags, non-empty flow maps,
+    tabs, duplicate keys, documents) raises YamlSubsetError instead of being guessed at.
+    Returns (tree, spellings): spellings lists every key whose source text was not the
+    bare key itself (quoted, or whitespace before the colon).
+    """
+    raw = text.splitlines()
+    spellings = []
+
+    def ind(line):
+        return len(line) - len(line.lstrip(" "))
+
+    def nxt(i):
+        while i < len(raw):
+            s = raw[i].strip()
+            if s and not s.startswith("#"):
+                if "\t" in raw[i][: ind(raw[i]) + 1]:
+                    raise YamlSubsetError(f"tab indent at line {i + 1}")
+                if s in ("---", "...") or s.startswith("%"):
+                    raise YamlSubsetError(f"document marker at line {i + 1}")
+                return i
+            i += 1
+        return i
+
+    def block_scalar(i, parent, header):
+        if not re.fullmatch(r"[|>][+-]?", header):
+            raise YamlSubsetError(f"unsupported block scalar header {header!r}")
+        out, n = [], None
+        while i < len(raw) and (not raw[i].strip() or ind(raw[i]) > parent):
+            if raw[i].strip():
+                n = ind(raw[i]) if n is None else n
+                if ind(raw[i]) < n:
+                    raise YamlSubsetError(f"bad block scalar indent at line {i + 1}")
+            out.append(raw[i][n:] if n is not None and raw[i].strip() else "")
+            i += 1
+        while out and not out[-1]:
+            out.pop()
+        return ("\n" if header[0] == "|" else " ").join(out) + "\n", i
+
+    def value(rest, i, indent):
+        """The value after `key:` / `- ` on line i-1; i is the next physical line."""
+        rest = rest.strip() if rest else ""
+        if rest and not rest.startswith("#"):
+            if rest[0] in "|>":
+                return block_scalar(i, indent, re.split(r"\s", rest, maxsplit=1)[0])
+            if re.fullmatch(r"\{\}\s*(#.*)?", rest):
+                return {}, i
+            if rest[0] == "[":
+                m = re.fullmatch(r"\[([^\[\]{}]*)\]\s*(#.*)?", rest)
+                if not m:
+                    raise YamlSubsetError(f"unsupported flow sequence {rest!r}")
+                return [_yaml_scalar(x) for x in m.group(1).split(",") if x.strip()], i
+            return _yaml_scalar(rest), i
+        j = nxt(i)
+        if j < len(raw) and ind(raw[j]) > indent:
+            return node(j, ind(raw[j]))
+        if j < len(raw) and ind(raw[j]) == indent and raw[j].lstrip().startswith("- "):
+            return seq(j, indent)
+        return None, i
+
+    def node(i, indent):
+        return seq(i, indent) if re.match(r"-(\s|$)", raw[i].lstrip()) else mapping(i, indent)
+
+    def mapping(i, indent, first=None):
+        out = {}
+        while True:
+            j = nxt(i) if first is None else i
+            if j >= len(raw) or (first is None and ind(raw[j]) < indent):
+                return out, j
+            line = first if first is not None else raw[j]
+            first = None
+            if ind(line) != indent:
+                raise YamlSubsetError(f"bad indent at line {j + 1}: {line!r}")
+            body = line[indent:]
+            if re.match(r"-(\s|$)", body):
+                return out, j  # a compact sequence belongs to the parent key
+            m = _YAML_KEY.match(body)
+            if not m:
+                raise YamlSubsetError(f"not a mapping entry at line {j + 1}: {line!r}")
+            key = _yaml_scalar(m.group("q")) if m.group("q") else m.group("p").strip()
+            if m.group("q") or m.group("sp"):
+                spellings.append((j + 1, body.split(":", 1)[0] if not m.group("q") else m.group("q")))
+            if key in out:
+                raise YamlSubsetError(f"duplicate key {key!r} at line {j + 1}")
+            out[key], i = value(m.group("v"), j + 1, indent)
+
+    def seq(i, indent):
+        out = []
+        while True:
+            j = nxt(i)
+            if j >= len(raw) or ind(raw[j]) < indent:
+                return out, j
+            if ind(raw[j]) != indent:
+                raise YamlSubsetError(f"bad indent at line {j + 1}")
+            body = raw[j][indent:]
+            if not re.match(r"-(\s|$)", body):
+                return out, j
+            rest = body[1:]
+            item_indent = indent + 1 + (len(rest) - len(rest.lstrip(" ")))
+            rest = rest.strip()
+            if rest and not rest.startswith("#") and _YAML_KEY.match(rest):
+                # `- key: v`: a mapping whose first entry sits on the dash line
+                item, i = mapping(j, item_indent, first=" " * item_indent + rest)
+            else:
+                item, i = value(rest, j + 1, indent)
+            out.append(item)
+
+    i = nxt(0)
+    tree, i = mapping(i, 0) if i < len(raw) else ({}, i)
+    if nxt(i) < len(raw):
+        raise YamlSubsetError(f"unparsed content at line {nxt(i) + 1}: {raw[nxt(i)]!r}")
+    return tree, spellings
+
+
+STATUS_FUNCS = re.compile(r"\b(always|failure|cancelled|success)\s*\(|\bneeds\.")
+
+
+def deploy_structure_violations(text):
+    """Structural (parsed, spelling-independent) rules for deploy.yml; [] means it holds.
+
+    Independent of every textual regex in DeployWorkflowWiring, so a quoted or spaced
+    key or a column-0 comment inside `jobs:` cannot hide a broken deploy job.
+    """
+    try:
+        tree, spellings = yaml_subset_load(text)
+    except YamlSubsetError as e:
+        return [f"unparseable: {e}"]
+    v = [f"non-bare key spelling at line {n}: {s!r}" for n, s in spellings]
+    if list(tree) != ["name", "on", "permissions", "jobs"]:
+        v.append(f"top-level keys {list(tree)}")
+    if tree.get("permissions") != {}:
+        v.append("workflow permissions not {}")
+    jobs = tree.get("jobs") or {}
+    if not isinstance(jobs, dict) or sorted(jobs) != sorted(NON_DEPLOY_JOBS + DEPLOY_JOBS):
+        v.append(f"job set {sorted(jobs) if isinstance(jobs, dict) else jobs!r}")
+        jobs = jobs if isinstance(jobs, dict) else {}
+    for name, job in jobs.items():
+        if not isinstance(job, dict):
+            v.append(f"{name}: not a mapping")
+            continue
+        flat = json.dumps(job)
+        secrets = set(re.findall(r"secrets\.([A-Z0-9_]+)", flat))
+        if name in NON_DEPLOY_JOBS:
+            if list(job) != ["name", "runs-on", "timeout-minutes", "permissions", "steps"]:
+                v.append(f"{name}: job keys {list(job)}")
+            if secrets or "secrets" in flat:
+                v.append(f"{name}: uses secrets")
+            for k, step in enumerate(job.get("steps") or []):
+                bad = sorted(set(step) - {"uses", "with", "name", "env", "run"}) if isinstance(step, dict) else ["?"]
+                if bad:
+                    v.append(f"{name}: step {k} keys {bad}")
+            continue
+        # every other job is a deploy job, whatever its name
+        needs = job.get("needs")
+        needs = [needs] if isinstance(needs, str) else needs
+        if needs != ["ci-green-gate"]:
+            v.append(f"{name}: needs {job.get('needs')!r}, want ci-green-gate")
+        cond = job.get("if")
+        if not isinstance(cond, str) or STATUS_FUNCS.search(cond):
+            v.append(f"{name}: if {cond!r} (missing, or a status function/needs.* overrides the gate)")
+        if job.get("environment") != "production":
+            v.append(f"{name}: environment {job.get('environment')!r}, want production")
+        if secrets - DEPLOY_SECRETS.get(name, set()) or "secrets[" in flat or "toJSON(secrets" in flat:
+            v.append(f"{name}: secrets {sorted(secrets)}")
+        for k in ("continue-on-error", "container", "services", "defaults", "env", "strategy"):
+            if k in job:
+                v.append(f"{name}: job key {k}")
+    return v
 
 
 NON_DEPLOY_JOBS = ("ci-green-gate", "ruleset-drift")
@@ -957,6 +1162,139 @@ class DeployWorkflowWiring(unittest.TestCase):
                 continue
             with self.subTest(uses=ref):
                 self.assertRegex(ref, r"@[0-9a-f]{40}$")
+
+
+# --- PR445 R2 follow-up (A2 step 5 prep): quoted/spaced keys + column-0 comments ---
+
+_WEB_IF = "    if: ${{ inputs.gate_only != true && (inputs.target == 'all' || inputs.target == 'web') }}\n"
+_WORKER_ENV = "    environment: production\n    permissions:\n      contents: read\n    steps:\n" \
+              "      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4\n" \
+              "        with:\n          persist-credentials: false\n      - uses: superfly"
+_CHECK_STEP = "      - name: Require main CI green on the deployed SHA\n"
+_SNEAKY_JOB = ("  deploy-sneaky:\n    runs-on: ubuntu-latest\n    env:\n"
+               "      FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}\n    steps:\n"
+               "      - run: flyctl deploy --remote-only\n")
+
+# (label, old, new, expected violation substring); old=None appends `new` to the file.
+STRUCTURE_MUTANTS = [
+    ("needs quoted + retargeted", "    needs: ci-green-gate\n", '    "needs": ruleset-drift\n', "needs"),
+    ("needs dropped", "    needs: ci-green-gate\n", "", "needs None"),
+    ("needs list without gate", "    needs: ci-green-gate\n", "    needs: [ruleset-drift]\n", "needs"),
+    ("if quoted always()", _WEB_IF, "    'if': ${{ always() }}\n", "status function"),
+    ("if bare failure()", _WEB_IF, "    if: ${{ failure() || inputs.target == 'web' }}\n", "status function"),
+    ("if quoted !cancelled()", _WEB_IF, "    \"if\": ${{ !cancelled() }}\n", "status function"),
+    ("environment quoted staging", _WORKER_ENV, _WORKER_ENV.replace("    environment: production",
+                                                                    '    "environment": staging'), "environment"),
+    ("environment dropped", _WORKER_ENV, _WORKER_ENV.replace("    environment: production\n", ""), "environment None"),
+    ("environment spaced key", "    environment: production\n", "    environment : production\n", "spelling"),
+    ("gate step quoted if: false", _CHECK_STEP, _CHECK_STEP + '        "if": false\n', "step 2 keys ['if']"),
+    ("gate step quoted shell", _CHECK_STEP, _CHECK_STEP + '        "shell": echo {0}\n', "step 2 keys ['shell']"),
+    ("gate step spaced shell", _CHECK_STEP, _CHECK_STEP + "        shell : echo {0}\n", "step 2 keys ['shell']"),
+    ("gate quoted container", "    timeout-minutes: 5\n", '    timeout-minutes: 5\n    "container": alpine:3\n',
+     "job keys"),
+    ("gate quoted env BASH_ENV", "    timeout-minutes: 5\n",
+     "    timeout-minutes: 5\n    'env':\n      BASH_ENV: scripts/x.sh\n", "job keys"),
+    ("column-0 comment, then ungated job", None, "# column-0 comment inside jobs:\n" + _SNEAKY_JOB, "deploy-sneaky"),
+    ("blank + bare column-0 #, then ungated job", None, "\n#\n" + _SNEAKY_JOB, "deploy-sneaky"),
+    ("flow-style job", None, "  deploy-flow: {runs-on: ubuntu-latest}\n", "unparseable"),
+    ("anchor/alias", "  deploy-worker:\n", "  deploy-worker: &w\n", "unparseable"),
+    ("duplicate if key", _WEB_IF, _WEB_IF + "    if: ${{ always() }}\n", "duplicate"),
+]
+
+
+class DeployWorkflowStructure(unittest.TestCase):
+    """Spelling-independent checks: a parsed view of deploy.yml, plus column-0 comments."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.text = DEPLOY_YML.read_text(encoding="utf-8")
+
+    def test_real_file_has_no_structure_violations(self):
+        self.assertEqual(deploy_structure_violations(self.text), [])
+
+    def test_parsed_view_matches_textual_split(self):
+        # The two views must agree on the real file, so neither can drift silently.
+        tree, spellings = yaml_subset_load(self.text)
+        self.assertEqual(spellings, [])
+        self.assertEqual(list(tree["jobs"]), list(_jobs_block(self.text)))
+        self.assertEqual(list(tree["on"]["workflow_dispatch"]["inputs"]), ["target", "gate_only"])
+        for j, tgt in (("deploy-web", "web"), ("deploy-worker", "worker")):
+            with self.subTest(job=j):
+                job = tree["jobs"][j]
+                self.assertEqual(job["needs"], "ci-green-gate")
+                self.assertEqual(job["environment"], "production")
+                self.assertEqual(job["if"], "${{ inputs.gate_only != true && "
+                                            f"(inputs.target == 'all' || inputs.target == '{tgt}') }}}}")
+        steps = tree["jobs"]["ci-green-gate"]["steps"]
+        self.assertEqual([list(s) for s in steps], [["uses", "with"], ["name", "env", "run"], ["name", "env", "run"]])
+        self.assertEqual([l.strip() for l in steps[2]["run"].splitlines() if l.strip()], EXPECTED_CHECK)
+        self.assertEqual([l.strip() for l in steps[1]["run"].splitlines() if l.strip()], EXPECTED_FETCH)
+
+    def test_quoted_and_spaced_keys_parse_as_bare_keys(self):
+        tree, spellings = yaml_subset_load(
+            "jobs:\n  d:\n    \"needs\": ci-green-gate\n    'if': ${{ always() }}\n"
+            "    environment : production\n    steps:\n      - \"run\": x\n        'it''s': y\n")
+        d = tree["jobs"]["d"]
+        self.assertEqual(d, {"needs": "ci-green-gate", "if": "${{ always() }}", "environment": "production",
+                             "steps": [{"run": "x", "it's": "y"}]})
+        self.assertEqual([s for _, s in spellings], ['"needs"', "'if'", "environment ", '"run"', "'it''s'"])
+
+    def test_textual_probe_misses_quoted_step_if(self):
+        # Pins WHY the parsed check exists: on a quoted-key copy the bare-key regexes of
+        # DeployWorkflowWiring see no `if:` at all, while the parsed view does.
+        mutated = self.text.replace(_CHECK_STEP, _CHECK_STEP + '        "if": false\n', 1)
+        gate_body = _jobs_block(mutated)["ci-green-gate"]
+        self.assertNotIn("\n        if:", gate_body)  # the textual probe is blind to it ...
+        self.assertTrue(any("['if']" in x for x in deploy_structure_violations(mutated)))  # ... this is not
+
+    def test_each_structure_mutant_is_caught(self):
+        for label, old, new, want in STRUCTURE_MUTANTS:
+            with self.subTest(mutant=label):
+                if old is None:
+                    mutated = self.text + new
+                else:
+                    self.assertIn(old, self.text)
+                    mutated = self.text.replace(old, new, 1)
+                self.assertNotEqual(mutated, self.text)
+                v = deploy_structure_violations(mutated)
+                self.assertTrue(any(want in x for x in v), (want, v))
+
+    def test_jobs_block_does_not_stop_at_column0_comment(self):
+        text = ("name: x\njobs:\n  a:\n    runs-on: u\n# column-0 comment between jobs\n  b:\n"
+                "    runs-on: u\n#\n\n  c:\n    needs: a\n# trailing\n")
+        self.assertEqual(list(_jobs_block(text)), ["a", "b", "c"])
+        self.assertEqual(_jobs_block(text)["c"].strip(), "needs: a")
+        self.assertEqual(list(yaml_subset_load(text)[0]["jobs"]), ["a", "b", "c"])
+
+    def test_jobs_block_still_stops_at_next_top_level_key(self):
+        text = "jobs:\n  a:\n    runs-on: u\n# c\nenv:\n  X: 1\n"
+        self.assertEqual(list(_jobs_block(text)), ["a"])
+        self.assertEqual(list(yaml_subset_load(text)[0]), ["jobs", "env"])
+
+    def test_column0_comment_then_extra_job_reaches_every_job_check(self):
+        mutated = self.text + "# column-0 comment\n" + _SNEAKY_JOB
+        jobs = _jobs_block(mutated)
+        self.assertIn("deploy-sneaky", jobs)
+        self.assertNotEqual(sorted(jobs), sorted(NON_DEPLOY_JOBS + DEPLOY_JOBS))  # test_job_set_is_exact fails
+        self.assertIn("FLY_API_TOKEN", jobs["deploy-sneaky"])  # test_secrets_only_in_deploy_jobs fails
+
+    def test_parser_rejects_constructs_outside_the_subset(self):
+        for label, text in (
+            ("anchor", "a: &x 1\n"), ("alias", "a: *x\n"), ("tag", "a: !!str 1\n"),
+            ("merge key", "a:\n  <<: *x\n"), ("flow map", "a: {b: 1}\n"), ("nested flow", "a: [[1]]\n"),
+            ("duplicate", "a: 1\na: 2\n"), ("tab indent", "a:\n\tb: 1\n"), ("document", "a: 1\n---\nb: 2\n"),
+            ("bad indent", "a:\n    b: 1\n  c: 2\n"), ("plain multiline", "a:\n  just text\n"),
+            ("block header", "a: |2\n  x\n"),
+        ):
+            with self.subTest(case=label), self.assertRaises(YamlSubsetError):
+                yaml_subset_load(text)
+
+    def test_parser_basics(self):
+        tree, _ = yaml_subset_load(
+            "a: 1  # c\nb:\n  - x\n  - 'y # z'\nc:\n- k: v\n  k2: [p, q]\n- plain\n"
+            "d: |\n  l1\n\n  # not a comment\n  l2\ne: {}\nf:\n")
+        self.assertEqual(tree, {"a": "1", "b": ["x", "y # z"], "c": [{"k": "v", "k2": ["p", "q"]}, "plain"],
+                                "d": "l1\n\n# not a comment\nl2\n", "e": {}, "f": None})
 
 
 if __name__ == "__main__":

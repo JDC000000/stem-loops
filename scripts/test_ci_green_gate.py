@@ -33,6 +33,19 @@ OLD_DEPLOY_SUITE = 9000  # an earlier dispatch of deploy.yml on the same SHA
 RUN_ID = 777
 OLD_RUN_ID = 776
 DEPLOY_PATH = ".github/workflows/deploy.yml"
+REF = "refs/heads/v3/main"
+
+
+def runner_env(sha=SHA, ref=REF, run_id=RUN_ID):
+    """The runner's own GITHUB_* values for a matching run."""
+    return {"GITHUB_SHA": sha, "GITHUB_REF": ref, "GITHUB_RUN_ID": str(run_id)}
+
+
+def ev(sha, runs_text, compare_text, deploy_runs_text, run_id, ref=REF, env=None):
+    """gate.evaluate for a run whose runner env matches its arguments (unless env given)."""
+    if env is None:
+        env = runner_env(sha, ref, run_id)
+    return gate.evaluate(sha, runs_text, compare_text, deploy_runs_text, run_id, ref, env)
 
 
 def run(name, status="completed", conclusion="success", sha=SHA, app_id=15368, rid=1, suite=CI_SUITE):
@@ -81,7 +94,7 @@ def cmp(status="identical", base=SHA):
 
 class Evaluate(unittest.TestCase):
     def ok(self, runs, compare=None, sha=SHA, deploy_runs=None, run_id=RUN_ID):
-        return gate.evaluate(
+        return ev(
             sha,
             ndjson(runs),
             compare if compare is not None else cmp(),
@@ -274,7 +287,7 @@ class Evaluate(unittest.TestCase):
     def test_deploy_runs_garbage_fails(self):
         for text in ("{bad", "[1]", '"x"'):
             with self.subTest(text=text):
-                self.assertTrue(gate.evaluate(SHA, ndjson(all_green()), cmp(), text, RUN_ID))
+                self.assertTrue(ev(SHA, ndjson(all_green()), cmp(), text, RUN_ID))
 
     def test_bad_run_id_fails(self):
         for rid in (None, 0, -1, "777", True):
@@ -302,22 +315,62 @@ class Evaluate(unittest.TestCase):
     def test_runs_garbage_fails(self):
         for text in ("{not json", "[1, 2]", '{"check_runs": 5}'):
             with self.subTest(text=text):
-                self.assertTrue(gate.evaluate(SHA, text, cmp(), ndjson(DEPLOY_RUNS), RUN_ID))
+                self.assertTrue(ev(SHA, text, cmp(), ndjson(DEPLOY_RUNS), RUN_ID))
 
     def test_runs_array_and_envelope_forms(self):
         runs = all_green()
         dr = ndjson(DEPLOY_RUNS)
-        self.assertEqual(gate.evaluate(SHA, json.dumps(runs), cmp(), dr, RUN_ID), [])
-        self.assertEqual(gate.evaluate(SHA, json.dumps({"check_runs": runs}), cmp(), dr, RUN_ID), [])
+        self.assertEqual(ev(SHA, json.dumps(runs), cmp(), dr, RUN_ID), [])
+        self.assertEqual(ev(SHA, json.dumps({"check_runs": runs}), cmp(), dr, RUN_ID), [])
 
     def test_bad_sha_fails(self):
         for sha in ("", "v3/main", SHA[:39], SHA.upper(), SHA + "0", None):
             with self.subTest(sha=sha):
-                self.assertTrue(gate.evaluate(sha, ndjson(all_green()), cmp(), ndjson(DEPLOY_RUNS), RUN_ID))
+                self.assertTrue(ev(sha, ndjson(all_green()), cmp(), ndjson(DEPLOY_RUNS), RUN_ID))
+
+    # --- run identity: ref must be v3/main; --sha/--ref/--run-id must equal the runner env ---
+    def test_other_refs_fail(self):
+        for ref in ("refs/heads/main", "refs/heads/feat/x", "refs/tags/stem-loops-com-2026-11-02",
+                    "refs/pull/1/merge", "v3/main", "refs/heads/v3/main/x", "", None):
+            with self.subTest(ref=ref):
+                probs = ev(SHA, ndjson(all_green()), cmp(), ndjson(DEPLOY_RUNS), RUN_ID, ref=ref,
+                           env=runner_env(ref=ref if isinstance(ref, str) else ""))
+                self.assertTrue(any("is not refs/heads/v3/main" in p for p in probs), probs)
+
+    def test_runner_env_must_be_present(self):
+        for var in ("GITHUB_SHA", "GITHUB_REF", "GITHUB_RUN_ID"):
+            for bad in (None, ""):
+                with self.subTest(var=var, bad=bad):
+                    env = runner_env()
+                    if bad is None:
+                        del env[var]
+                    else:
+                        env[var] = bad
+                    probs = ev(SHA, ndjson(all_green()), cmp(), ndjson(DEPLOY_RUNS), RUN_ID, env=env)
+                    self.assertEqual(len(probs), 1, probs)
+                    self.assertIn(var, probs[0])
+        self.assertTrue(ev(SHA, ndjson(all_green()), cmp(), ndjson(DEPLOY_RUNS), RUN_ID, env={}))
+
+    def test_gated_sha_must_equal_runner_sha(self):
+        # A gate fed an older green SHA than the one this run checks out and deploys fails.
+        probs = ev(SHA, ndjson(all_green()), cmp(), ndjson(DEPLOY_RUNS), RUN_ID,
+                   env=runner_env(sha=OTHER))
+        self.assertEqual(len(probs), 1, probs)
+        self.assertIn("GITHUB_SHA", probs[0])
+
+    def test_gated_ref_and_run_id_must_equal_runner(self):
+        probs = ev(SHA, ndjson(all_green()), cmp(), ndjson(DEPLOY_RUNS), RUN_ID,
+                   env=runner_env(ref="refs/heads/feat/x"))
+        self.assertEqual(len(probs), 1, probs)
+        self.assertIn("GITHUB_REF", probs[0])
+        probs = ev(SHA, ndjson(all_green()), cmp(), ndjson(DEPLOY_RUNS), RUN_ID,
+                   env=runner_env(run_id=OLD_RUN_ID))
+        self.assertEqual(len(probs), 1, probs)
+        self.assertIn("GITHUB_RUN_ID", probs[0])
 
 
 class Main(unittest.TestCase):
-    def _main(self, runs_text, compare_text, sha=SHA, run_id=str(RUN_ID)):
+    def _main(self, runs_text, compare_text, sha=SHA, run_id=str(RUN_ID), ref=REF, env=None):
         with tempfile.TemporaryDirectory() as d:
             rp, cp, dp = (os.path.join(d, n) for n in ("r.ndjson", "c.json", "d.ndjson"))
             Path(rp).write_text(runs_text, encoding="utf-8")
@@ -326,7 +379,9 @@ class Main(unittest.TestCase):
             buf = io.StringIO()
             with redirect_stdout(buf):
                 rc = gate.main(
-                    ["--sha", sha, "--runs", rp, "--compare", cp, "--deploy-runs", dp, "--run-id", run_id]
+                    ["--sha", sha, "--runs", rp, "--compare", cp, "--deploy-runs", dp,
+                     "--run-id", run_id, "--ref", ref],
+                    runner_env(sha, ref, run_id) if env is None else env,
                 )
             return rc, buf.getvalue()
 
@@ -344,14 +399,103 @@ class Main(unittest.TestCase):
         rc, out = self._main(ndjson(all_green()), cmp(), run_id="abc")
         self.assertEqual(rc, 1, out)
 
+    def test_main_other_ref_fails(self):
+        rc, out = self._main(ndjson(all_green()), cmp(), ref="refs/heads/feat/x")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("refs/heads/feat/x", out)
+
+    def test_main_without_runner_env_fails(self):
+        rc, out = self._main(ndjson(all_green()), cmp(), env={})
+        self.assertEqual(rc, 1, out)
+        self.assertIn("GITHUB_SHA is not set", out)
+
+    def test_main_ref_is_required(self):
+        with self.assertRaises(SystemExit), redirect_stdout(io.StringIO()), \
+                __import__("contextlib").redirect_stderr(io.StringIO()):
+            gate.main(["--sha", SHA, "--runs", "x", "--compare", "y", "--deploy-runs", "z",
+                       "--run-id", "1"], runner_env())
+
     def test_main_missing_file_fails(self):
         buf = io.StringIO()
         with redirect_stdout(buf):
             rc = gate.main(
                 ["--sha", SHA, "--runs", "/nonexistent/x", "--compare", "/nonexistent/y",
-                 "--deploy-runs", "/nonexistent/z", "--run-id", "1"]
+                 "--deploy-runs", "/nonexistent/z", "--run-id", "1", "--ref", REF],
+                runner_env(run_id=1),
             )
         self.assertEqual(rc, 1)
+
+
+def rules_ndjson(contexts, ruleset_id=26478884, extra_rules=()):
+    rules = [{"type": "deletion", "ruleset_id": ruleset_id},
+             {"type": "required_status_checks", "ruleset_source_type": "Repository",
+              "ruleset_source": "JDC000000/stem-loops", "ruleset_id": ruleset_id,
+              "parameters": {"strict_required_status_checks_policy": False,
+                             "required_status_checks": [
+                                 {"context": c, "integration_id": 15368} for c in contexts]}}]
+    rules.extend(extra_rules)
+    return ndjson(rules)
+
+
+class RulesetDrift(unittest.TestCase):
+    def _drift(self, text=None, path=None, argv=None):
+        with tempfile.TemporaryDirectory() as d:
+            if argv is None:
+                fp = path or os.path.join(d, "rules.ndjson")
+                if text is not None:
+                    Path(fp).write_text(text, encoding="utf-8")
+                argv = ["--drift", fp]
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                rc = gate.main(argv, {})
+            return rc, buf.getvalue()
+
+    def test_in_sync_no_warning(self):
+        rc, out = self._drift(rules_ndjson(gate.REQUIRED_CONTEXTS))
+        self.assertEqual(rc, 0)
+        self.assertNotIn("::warning", out)
+        self.assertIn("ruleset-drift: OK", out)
+        # order does not matter
+        self.assertEqual(gate.ruleset_drift(rules_ndjson(reversed(gate.REQUIRED_CONTEXTS))), [])
+
+    def test_added_context_warns(self):
+        rc, out = self._drift(rules_ndjson(gate.REQUIRED_CONTEXTS + ("New job",)))
+        self.assertEqual(rc, 0)
+        self.assertIn("::warning title=ruleset drift::", out)
+        self.assertIn("New job", out)
+        self.assertIn("under-checks", out)
+
+    def test_removed_or_renamed_context_warns(self):
+        ctx = list(gate.REQUIRED_CONTEXTS)
+        ctx[0] = "Lint (renamed)"
+        w = gate.ruleset_drift(rules_ndjson(ctx))
+        self.assertEqual(len(w), 2, w)
+        self.assertTrue(any("Lint (renamed)" in x for x in w))
+        self.assertTrue(any("'Lint'" in x and "no longer requires" in x for x in w))
+
+    def test_other_ruleset_ignored_and_absent_ruleset_warns(self):
+        w = gate.ruleset_drift(rules_ndjson(["Something else"], ruleset_id=1))
+        self.assertEqual(len(w), 1, w)
+        self.assertIn("no required_status_checks rule", w[0])
+        text = rules_ndjson(gate.REQUIRED_CONTEXTS) + rules_ndjson(["X"], ruleset_id=1)
+        self.assertEqual(gate.ruleset_drift(text), [])
+
+    def test_read_errors_never_fail(self):
+        for text in ("", "{bad", '{"message": "Not Found"}', "[1]",
+                     ndjson([{"type": "required_status_checks", "ruleset_id": 26478884,
+                              "parameters": {"required_status_checks": 5}}])):
+            with self.subTest(text=text):
+                rc, out = self._drift(text)
+                self.assertEqual(rc, 0, out)
+                self.assertIn("::warning", out)
+        rc, out = self._drift(path="/nonexistent/rules.ndjson")
+        self.assertEqual(rc, 0)
+        self.assertIn("::warning", out)
+        for argv in (["--drift"], ["--drift", "a", "b"]):
+            with self.subTest(argv=argv):
+                rc, out = self._drift(argv=argv)
+                self.assertEqual(rc, 0)
+                self.assertIn("::warning", out)
 
 
 def _jobs_block(text):
@@ -369,6 +513,70 @@ def _jobs_block(text):
         elif cur:
             jobs[cur].append(line)
     return {k: "\n".join(v) for k, v in jobs.items()}
+
+
+NON_DEPLOY_JOBS = ("ci-green-gate", "ruleset-drift")
+DEPLOY_JOBS = ("deploy-web", "deploy-worker")
+DEPLOY_SECRETS = {
+    "deploy-web": {"VERCEL_TOKEN", "VERCEL_ORG_ID", "VERCEL_PROJECT_ID"},
+    "deploy-worker": {"FLY_API_TOKEN"},
+}
+
+# The exact fetch block (R1 sonnet M9/M10, fable M9): a hardcoded compare result, a
+# dropped --paginate or a changed URL/jq is a test failure, not a silent gap.
+EXPECTED_FETCH = [
+    "set -euo pipefail",
+    'gh api --paginate "repos/$REPO/commits/$SHA/check-runs?filter=latest&per_page=100" \\',
+    "--jq '.check_runs[]' > \"$RUNNER_TEMP/check-runs.ndjson\"",
+    'gh api "repos/$REPO/compare/$SHA...v3/main" \\',
+    "--jq '{status: .status, merge_base: .merge_base_commit.sha}' > \"$RUNNER_TEMP/compare.json\"",
+    'gh api --paginate "repos/$REPO/actions/workflows/deploy.yml/runs?head_sha=$SHA&per_page=100" \\',
+    "--jq '.workflow_runs[] | {id: .id, check_suite_id: .check_suite_id, path: .path}' > \"$RUNNER_TEMP/deploy-runs.ndjson\"",
+    'gh api "repos/$REPO/actions/runs/$RUN_ID" \\',
+    "--jq '{id: .id, check_suite_id: .check_suite_id, path: .path}' >> \"$RUNNER_TEMP/deploy-runs.ndjson\"",
+]
+EXPECTED_CHECK = [
+    "set -euo pipefail",
+    'python3 -I -u scripts/ci_green_gate.py --sha "$SHA" --ref "$REF" --run-id "$RUN_ID" \\',
+    '--runs "$RUNNER_TEMP/check-runs.ndjson" --compare "$RUNNER_TEMP/compare.json" \\',
+    '--deploy-runs "$RUNNER_TEMP/deploy-runs.ndjson"',
+]
+EXPECTED_DRIFT = [
+    "set -uo pipefail",
+    """if gh api --paginate "repos/$REPO/rules/branches/v3/main" --jq '.[]' > "$RUNNER_TEMP/rules.ndjson"; then""",
+    'python3 -I -u scripts/ci_green_gate.py --drift "$RUNNER_TEMP/rules.ndjson" \\',
+    '|| echo "::warning title=ruleset drift::drift check exited non-zero (ignored)"',
+    "else",
+    'echo "::warning title=ruleset drift::cannot read v3/main branch rules with this token; drift not checked"',
+    "fi",
+    "exit 0",
+]
+
+_IF_TOKEN = re.compile(
+    r"\s*(?:(?P<op>&&|\|\||==|!=|!|\(|\))|(?P<str>'[^']*')|(?P<kw>true|false)"
+    r"|(?P<inp>inputs\.(?:target|gate_only)))"
+)
+
+
+def eval_if(expr, inputs):
+    """Evaluate a deploy job's `if:` (inputs only; anything else raises) like Actions does."""
+    m = re.fullmatch(r"\$\{\{(.*)\}\}", expr.strip())
+    body = m.group(1) if m else expr
+    out, pos = [], 0
+    while pos < len(body.rstrip()):
+        t = _IF_TOKEN.match(body, pos)
+        if not t:
+            raise ValueError(f"unsupported token in if: {body[pos:]!r}")
+        pos = t.end()
+        if t.group("op"):
+            out.append({"&&": " and ", "||": " or ", "!": " not "}.get(t.group("op"), t.group("op")))
+        elif t.group("str"):
+            out.append(repr(t.group("str")[1:-1]))
+        elif t.group("kw"):
+            out.append(t.group("kw").capitalize())
+        else:
+            out.append(repr(inputs[t.group("inp").split(".", 1)[1]]))
+    return bool(eval("".join(out), {"__builtins__": {}}, {}))  # noqa: S307 -- tokens whitelisted
 
 
 class DeployWorkflowWiring(unittest.TestCase):
@@ -389,7 +597,7 @@ class DeployWorkflowWiring(unittest.TestCase):
         self.assertIn("python3 -I -u", g)
 
     def test_every_deploy_job_needs_gate_and_has_no_status_override(self):
-        deploys = [j for j in self.jobs if j != "ci-green-gate"]
+        deploys = [j for j in self.jobs if j not in NON_DEPLOY_JOBS]
         self.assertGreaterEqual(len(deploys), 2)
         for j in deploys:
             with self.subTest(job=j):
@@ -434,16 +642,10 @@ class DeployWorkflowWiring(unittest.TestCase):
                 self.assertNotIn("set +e", body)
                 self.assertNotIn("exit 0", body)
         fb = self._run_block(fetch)
-        for needle in ("commits/$SHA/check-runs?filter=latest", "compare/$SHA...v3/main",
-                       "actions/workflows/deploy.yml/runs?head_sha=$SHA", "actions/runs/$RUN_ID"):
-            self.assertIn(needle, fb)
+        self.assertEqual([l.strip() for l in fb.splitlines() if l.strip()], EXPECTED_FETCH)
         cb = self._run_block(check)
         cl = [l.strip() for l in cb.splitlines() if l.strip()]
-        self.assertTrue(cl[1].startswith("python3 -I -u scripts/ci_green_gate.py "), cl)
-        # one command: every line after it is a backslash continuation of it
-        self.assertTrue(all(l.endswith("\\") for l in cl[1:-1]), cl)
-        for flag in ("--sha \"$SHA\"", "--run-id \"$RUN_ID\"", "--runs ", "--compare ", "--deploy-runs "):
-            self.assertIn(flag, cb)
+        self.assertEqual(cl, EXPECTED_CHECK)
         # every input file the check reads is one the fetch step wrote
         files = {
             flag: re.search(flag + r' "\$RUNNER_TEMP/([\w.-]+)"', cb)
@@ -454,6 +656,163 @@ class DeployWorkflowWiring(unittest.TestCase):
                 self.assertIsNotNone(m, (flag, cb))
                 self.assertRegex(fb, r'>>? "\$RUNNER_TEMP/' + re.escape(m.group(1)) + '"')
         self.assertEqual(len(steps), 3, steps)
+
+    # --- S22 hardening (GUARD-main R1 sonnet 88 / fable 88) ---
+
+    def _top_level(self):
+        return [m.group(1) for m in re.finditer(r"^([^\s#][^:]*):", self.text, re.M)]
+
+    def test_trigger_is_workflow_dispatch_only(self):
+        # sonnet M8 / fable M1: a push/schedule/workflow_run trigger would deploy undispatched.
+        self.assertEqual(self._top_level(), ["name", "on", "permissions", "jobs"])
+        on = re.search(r"^on:\n((?:[ #].*\n|\n)+)", self.text, re.M)
+        self.assertIsNotNone(on)
+        keys = re.findall(r"^  ([^\s#][^:]*):", on.group(1), re.M)
+        self.assertEqual(keys, ["workflow_dispatch"])
+        inputs = re.findall(r"^      ([^\s#][^:]*):", on.group(1), re.M)
+        self.assertEqual(inputs, ["target", "gate_only"])
+
+    def test_gate_only_input_is_boolean_default_false(self):
+        on = re.search(r"^on:\n((?:[ #].*\n|\n)+)", self.text, re.M).group(1)
+        g = re.search(r"\n      gate_only:\n((?:        .*\n)+)", on)
+        self.assertIsNotNone(g, on)
+        lines = sorted(l.strip() for l in g.group(1).splitlines())
+        self.assertIn("type: boolean", lines)
+        self.assertIn("default: false", lines)
+        self.assertIn("required: false", lines)
+
+    def test_workflow_default_permissions_empty(self):
+        self.assertRegex(self.text, r"\npermissions: \{\}\n")
+
+    def test_job_set_is_exact(self):
+        self.assertEqual(sorted(self.jobs), sorted(NON_DEPLOY_JOBS + DEPLOY_JOBS))
+
+    def test_deploy_jobs_use_production_environment(self):
+        # The real control against other-ref dispatch and re-runs of pre-gate runs:
+        # Environment `production`, deployment branch v3/main only, holding the secrets.
+        self.assertEqual(len(re.findall(r"environment:", self.text)), 2)
+        for j in DEPLOY_JOBS:
+            with self.subTest(job=j):
+                self.assertEqual(len(re.findall(r"\n    environment: production\n", self.jobs[j] + "\n")), 1)
+        for j in NON_DEPLOY_JOBS:
+            with self.subTest(job=j):
+                self.assertNotIn("environment", re.sub(r"#.*", "", self.jobs[j]))
+
+    def test_secrets_only_in_deploy_jobs(self):
+        for j in self.jobs:
+            with self.subTest(job=j):
+                used = set(re.findall(r"secrets\.([A-Z0-9_]+)", self.jobs[j]))
+                self.assertEqual(used, DEPLOY_SECRETS.get(j, set()))
+                self.assertNotIn("secrets[", self.jobs[j])
+                self.assertNotIn("toJSON(secrets", self.jobs[j])
+
+    def test_deploy_jobs_if_pinned(self):
+        for j, tgt in (("deploy-web", "web"), ("deploy-worker", "worker")):
+            with self.subTest(job=j):
+                ifs = re.findall(r"\n    if: (.*)", self.jobs[j])
+                self.assertEqual(ifs, ["${{ inputs.gate_only != true && "
+                                       f"(inputs.target == 'all' || inputs.target == '{tgt}') }}}}"])
+
+    def test_deploy_runs_only_when_gate_succeeded_and_not_gate_only(self):
+        # Model of Actions: an `if:` with no status function implies success(), i.e. every
+        # `needs:` job succeeded; a failed/skipped/cancelled gate skips the job.
+        for j, tgt in (("deploy-web", "web"), ("deploy-worker", "worker")):
+            body = self.jobs[j]
+            needs = re.findall(r"\n    needs: \[?([\w-]+)\]?\s*(?=\n)", body)
+            self.assertEqual(needs, ["ci-green-gate"])
+            self.assertNotRegex(body, r"success\(\)|always\(\)|failure\(\)|cancelled\(\)|\bneeds\.")
+            expr = re.search(r"\n    if: (.*)", body).group(1)
+            for gate_result in ("success", "failure", "skipped", "cancelled"):
+                for gate_only in (False, True):
+                    for target in ("all", "web", "worker"):
+                        with self.subTest(job=j, gate=gate_result, gate_only=gate_only, target=target):
+                            runs = gate_result == "success" and eval_if(
+                                expr, {"target": target, "gate_only": gate_only})
+                            want = (gate_result == "success" and not gate_only
+                                    and target in ("all", tgt))
+                            self.assertEqual(runs, want)
+
+    def test_eval_if_rejects_unknown_tokens(self):
+        for expr in ("${{ always() }}", "${{ github.ref == 'x' }}", "${{ inputs.other }}"):
+            with self.subTest(expr=expr), self.assertRaises((ValueError, KeyError)):
+                eval_if(expr, {"target": "all", "gate_only": False})
+
+    def test_gate_and_drift_jobs_have_no_if_or_needs(self):
+        for j in NON_DEPLOY_JOBS:
+            with self.subTest(job=j):
+                self.assertNotRegex(self.jobs[j], r"\n    (if|needs):")
+
+    def test_no_job_needs_ruleset_drift(self):
+        # Drift is advisory: nothing may wait on it (a revert redeploy must not be blocked).
+        code = "\n".join(re.sub(r"(^|\s)#.*", "", l) for l in self.text.splitlines())
+        self.assertEqual(re.findall(r".*ruleset-drift.*", code), ["  ruleset-drift:"])
+        self.assertNotRegex(code, r"needs:[^\n]*\n?\s*-?\s*\[?[^\n]*drift")
+
+    def test_drift_job_is_non_blocking_and_pinned(self):
+        d = self.jobs["ruleset-drift"]
+        perms = re.search(r"\n    permissions:\n((?:      .*\n?)+)", d)
+        self.assertEqual([l.strip() for l in perms.group(1).splitlines() if l.strip()], ["contents: read"])
+        self.assertNotIn("continue-on-error", d)  # non-blocking by construction, not by flag
+        runs = re.findall(r"\n        run: \|\n((?:          .*(?:\n|$)|\s*\n)+)", d)
+        self.assertEqual(len(runs), 1)
+        self.assertEqual([l.strip() for l in runs[0].splitlines() if l.strip()], EXPECTED_DRIFT)
+        self.assertIn("persist-credentials: false", d)
+
+    def test_gate_steps_judge_this_runs_sha_ref_and_run_id(self):
+        # fable M7: a gate fed a fixed old green SHA would judge a commit other than the
+        # one deployed. Pin the env of both gate steps exactly.
+        steps = self._gate_steps()
+        named = {re.search(r"name: (.*)", s).group(1): s for s in steps if re.search(r"name: (.*)", s)}
+        want = {
+            "Fetch check-runs and v3/main ancestry for the deployed SHA": [
+                "GH_TOKEN: ${{ github.token }}", "REPO: ${{ github.repository }}",
+                "SHA: ${{ github.sha }}", "RUN_ID: ${{ github.run_id }}"],
+            "Require main CI green on the deployed SHA": [
+                "SHA: ${{ github.sha }}", "REF: ${{ github.ref }}", "RUN_ID: ${{ github.run_id }}"],
+        }
+        for name, env in want.items():
+            with self.subTest(step=name):
+                m = re.search(r"\n        env:\n((?:          .*\n)+)", "\n" + named[name])
+                self.assertIsNotNone(m)
+                self.assertEqual([l.strip() for l in m.group(1).splitlines()], env)
+
+    def test_no_env_sets_github_or_runner_vars(self):
+        # The gate cross-checks GITHUB_SHA/GITHUB_REF/GITHUB_RUN_ID; nothing may set them.
+        self.assertNotRegex(self.text, r"\n\s+(GITHUB|RUNNER)_[A-Z_]*:")
+        self.assertNotRegex(self.text, r"\n\s+env:\s*\$\{\{")
+
+    def test_deploy_checkouts_build_the_dispatched_sha(self):
+        # fable M8: `ref:`/`repository:` on a deploy checkout would build a commit the
+        # gate never judged.
+        for j in DEPLOY_JOBS:
+            body = self.jobs[j]
+            steps = re.split(r"\n      - ", "\n" + body.split("\n    steps:\n", 1)[1])
+            co = [s for s in steps if s.lstrip().startswith("uses: actions/checkout@")]
+            with self.subTest(job=j):
+                self.assertEqual(len(co), 1, steps)
+                with_keys = re.findall(r"^          ([\w-]+):", co[0], re.M)
+                self.assertEqual(with_keys, ["persist-credentials"])
+                self.assertIn("persist-credentials: false", co[0])
+                self.assertNotRegex(body, r"\n\s+(ref|repository|path):")
+                self.assertNotRegex(body, r"git (checkout|switch|fetch|reset|pull)")
+
+    def test_deploy_jobs_least_privilege(self):
+        for j in DEPLOY_JOBS:
+            with self.subTest(job=j):
+                perms = re.search(r"\n    permissions:\n((?:      .*\n?)+)", self.jobs[j])
+                self.assertIsNotNone(perms)
+                self.assertEqual([l.strip() for l in perms.group(1).splitlines() if l.strip()],
+                                 ["contents: read"])
+
+    def test_no_expressions_inside_any_run(self):
+        # COMMON-RULES: no `${{ }}` inside run: (one-line and block forms, every job).
+        for m in re.finditer(r"\n(\s+)(?:- )?run: (.*)((?:\n\1  .*|\n\s*(?=\n))*)", self.text):
+            with self.subTest(run=m.group(2)[:60]):
+                self.assertNotIn("${{", m.group(2) + m.group(3))
+
+    def test_rerun_rule_documented(self):
+        self.assertIn("NEVER `gh run rerun`", self.text)
+        self.assertIn("dispatch a NEW run", self.text)
 
     def test_uses_pinned_to_full_sha(self):
         for m in re.finditer(r"uses:\s*([^\s#]+)", self.text):

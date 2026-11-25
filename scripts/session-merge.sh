@@ -17,7 +17,8 @@
 #   (live until its "until", or 40 min after posting if none; 120 min if the "until" cannot be parsed — fail closed) unless that
 #   session posted a later RELEASE. Freeze: any session's PR with an apps/ file, after FREEZE_AT, unless BLOCKER= is set.
 # Unread-note guard: before claiming (and again before the gate), every #414 comment of the last two pages whose first line starts with
-#   NOTE, PROTOCOL or QUEUE, posted at/after the cutoff, not by this session (first-line token 2 = own tag) and not covered by an
+#   NOTE, PROTOCOL or QUEUE, posted at/after the cutoff, not by this session (first-line token 2 is EXACTLY the own tag:
+#   write notes as "NOTE <author-tag> …"; "NOTE 23B: …" is not exempt for 23B) and not covered by an
 #   "ACK <own tag> <id>[,<id>…]" line → exit 13, printing id + first line. Read the note, then `session-merge.sh ack <id…>`.
 # Exit: 0 merged AND main CI all green (ack: posted) · 2 usage · 3 window busy / blocked by protocol or freeze · 4 un-draft refused ·
 #   5 update-branch · 6 PR CI not green · 7 DRY_RUN fail or gate fetch failed · 8 merge failed · 9 main CI RED after merge (STOP ALL
@@ -45,6 +46,7 @@ usage(){ echo "usage: SESSION_TAG=23A|23B $0 <pr> <reviewed_sha_full> <review-1.
 ME=$SESSION_TAG; SIDE=${ME: -1}
 BASE=${BASE:-/home/claude/s23}; L=$BASE/git-net.lock; C=/home/claude/stem-loops; GATE=$BASE/or4-merge.sh; JR=${JON_ROW:-95}
 TMP=$(mktemp -d) || exit 2
+trap 'rm -rf "$TMP"' EXIT   # replaced by cleanup() below, which also removes $TMP
 log(){ echo "[$(date -u +%T)] $*"; }
 now(){ date -u +%s; }
 epoch(){ date -u -d "$1" +%s 2>/dev/null; }
@@ -97,7 +99,7 @@ unread(){ local acked cand; pages || return 2
       | $all[] | select(.created_at >= (if $cut=="" then $start else $cut end))
       | ((.body//"")|gsub("\r";"")|split("\n")[0]) as $l | ($l|sub("^[\\s*_>#`~|-]+";"")) as $s
       | select($s|test("^(NOTE|PROTOCOL|QUEUE)\\b";"i"))
-      | select((($s|split(" ")|map(select(.!=""))|.[1]) // ""|gsub("[^0-9A-Za-z]";"")) != $me)
+      | select((($s|split(" ")|map(select(.!=""))|.[1]) // "") != $me)   # own note only if token 2 is exactly our tag
       | "\(.id)\t\($l)"' "$TMP/pa.json" "$TMP/pb.json") || return 2
   cand=$(awk -F'\t' 'NR==FNR{if($0!="")a[$0]=1;next} $1!="" && !($1 in a)' <(printf '%s\n' "$acked") <(printf '%s\n' "$cand"))
   [ -n "$cand" ] || return 1; printf '%s\n' "$cand"; return 0; }
@@ -184,8 +186,9 @@ t=$(now); why=$(window_bad "$t" $((t+1))) && { fin "not merged (now: $why)"; exi
 rm -f "$GATE"; flock "$L" git -C $C fetch -q --depth=1 origin v3/main && git -C $C show origin/v3/main:scripts/or4-merge.sh > "$GATE" && [ -s "$GATE" ] || { fin "not merged (gate fetch failed)"; exit 7; }
 cd $C && git checkout -q --detach origin/v3/main || { fin "not merged (checkout)"; exit 7; }
 DR=$BASE/reviews/PR$P-DRYRUN.txt
-DRY_RUN=1 JON_ROW=$JR JON_PR=$P bash "$GATE" $P "$RV1" $RS "$RV2" > $DR 2>&1; cat $DR
-grep -q "DRY_RUN fail=0" $DR || { fin "not merged (DRY_RUN)"; exit 7; }
+DRY_RUN=1 JON_ROW=$JR JON_PR=$P bash "$GATE" $P "$RV1" $RS "$RV2" > $DR 2>&1; drc=$?; cat $DR
+# the gate's exact summary line (or4-merge.sh: echo "DRY_RUN fail=$fail (no merge)") AND its exit code 0
+{ [ "$drc" = 0 ] && grep -qxF "DRY_RUN fail=0 (no merge)" $DR; } || { fin "not merged (DRY_RUN rc=$drc)"; exit 7; }
 (echo '```'; cat $DR; echo '```') > "$TMP/dr$P.md"
 for f in "$RV1" "$RV2" "$TMP/dr$P.md"; do gh api -X POST repos/$R/issues/$P/comments -F body=@"$f" --jq .id >/dev/null || { fin "not merged (could not post $(basename "$f") on the PR)"; exit 7; }; done
 JON_ROW=$JR JON_PR=$P bash "$GATE" $P "$RV1" $RS "$RV2" 2>&1 | tail -3

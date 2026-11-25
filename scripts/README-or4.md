@@ -229,10 +229,13 @@ SESSION_TAG=23B scripts/session-merge.sh ack <comment-id>...                    
   Freeze: any session's PR with an `apps/` file after 2026-11-27T23:00Z unless `BLOCKER=<issue>`; a listing of 100+ files counts as apps (fail closed).
 - **Unread-note guard:** before claiming and again before the gate, every comment of #414's last two pages whose first line starts with
   `NOTE`, `PROTOCOL` or `QUEUE` (case-insensitive, after markdown markup), posted at/after the cutoff, not by this session (first-line
-  token 2 = own tag) and not covered by an `ACK <own tag> <id>[,<id>…]` line (any line of any comment) stops the run with **exit 13**,
+  token 2 is exactly the own tag: write notes as `NOTE <author-tag> …`, e.g. `NOTE 23B hold #500`; `NOTE 23B: …` is not exempt for 23B) and not covered by an `ACK <own tag> <id>[,<id>…]` line (any line of any comment) stops the run with **exit 13**,
   printing id + first line. Read it, then `ack` it. An ACK of another id, or another session's ACK, does not count.
   `ack` refuses (exit 2, nothing posted) any id that is not a NOTE/PROTOCOL/QUEUE comment of the last two pages. The trap's
   `INFO <tag> #P window abandoned …` post is neither a protocol line nor a note, so it needs no ACK.
+- **First adoption:** the first run exits 13 until every older NOTE/PROTOCOL/QUEUE line in the two-page window is ACKed. Either read and
+  `ack` them, or, once they are read, run with `ACK_SINCE=<ISO time of adoption>` (e.g. `ACK_SINCE=2026-11-25T23:00:00Z`) so only later notes count.
+- The dry run passes only if the gate exits 0 **and** prints the exact line `DRY_RUN fail=0 (no merge)`.
 - **Env:** `SESSION_TAG` (required, `^[0-9]{2}[AB]$`) · `BASE` (default `/home/claude/s23`) · `JON_ROW` (default 95) ·
   `ALLOW_WINDOW=<#414 comment id>` where the other session agreed (waives only the A/B block rule, never a DEPLOY slot, the freeze or a live claim) ·
   `BLOCKER=<issue>` · `ACK_SINCE=<ISO time>` (note cutoff; default = oldest comment in the two-page window).

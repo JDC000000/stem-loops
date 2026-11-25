@@ -54,18 +54,43 @@ if path.startswith(R + "issues/414/comments") and method == "GET":
     out(st["comments"][100 * (page - 1):100 * page])
 if path == R + "issues/414/comments" and method == "POST":
     cid = max([c["id"] for c in st["comments"]] + [1000]) + 1
-    ts = subprocess.run([os.environ["REAL_DATE"], "-u", "-d", "@" + os.environ["FAKE_NOW"], "+%Y-%m-%dT%H:%M:%SZ"],
+    ts = subprocess.run([os.environ["REAL_DATE"], "-u", "-d", "@" + open(os.environ["FAKE_CLOCK"]).read().strip(), "+%Y-%m-%dT%H:%M:%SZ"],
                         capture_output=True, text=True).stdout.strip()
     st["comments"].append({"id": cid, "created_at": ts, "body": fields["body"]})
     st.setdefault("posts", []).append(fields["body"])
     inj = st.pop("inject_on_post", None)
     if inj:
         st["comments"].append({"id": cid + 1, "created_at": ts, "body": inj})
+    if st.get("fail_release_post") and fields["body"].startswith("RELEASE"):
+        st["comments"].pop(); st["posts"].pop(); st.setdefault("release_attempts", []).append(fields["body"])
+        fail("HTTP 422: refused")
     if st.get("post_5xx_once"):
         st["post_5xx_once"] = False; fail("HTTP 502: Bad Gateway")
     out({"id": cid})
 if "/files" in path and "/pulls/" in path:
     out([{"filename": f} for f in st.get("files", [])])
+if st.get("tail"):
+    HEAD, MERGE = "a" * 40, "b" * 40
+    merged = os.path.exists(st_path + ".merged")
+    if path.endswith("/ccr/ready_for_review") and method == "POST": out({"draft": False})
+    if path == R + "pulls/500" and method == "GET":
+        out({"head": {"sha": HEAD}, "merged": merged, "merge_commit_sha": MERGE if merged else None})
+    if path.startswith(R + "compare/v3/main..."): out({"behind_by": 0})
+    if path == R + "issues/500/comments" and method == "POST":
+        st.setdefault("pr_posts", []).append(fields["body"]); out({"id": 1})
+    if "/check-runs" in path:
+        sha = path.split("/commits/")[1].split("/")[0]
+        adv = st.pop("advance_on_pr_ci", 0) if sha == HEAD else 0
+        if adv:
+            ck = os.environ["FAKE_CLOCK"]; t0 = int(open(ck).read()); open(ck, "w").write(str(t0 + adv))
+        inj = st.pop("inject_on_pr_ci", None) if sha == HEAD else None
+        if inj:
+            st["comments"].append({"id": 9000 + len(st["comments"]), "created_at": "2026-11-26T17:05:00Z", "body": inj})
+        kind = st.get("pr_ci", "green") if sha == HEAD else st.get("main_ci", "green")
+        runs = [{"status": "completed", "conclusion": "success"} for _ in range(12)]
+        if kind == "red": runs[3]["conclusion"] = "failure"
+        if kind == "unknown": runs[3] = {"status": "in_progress", "conclusion": None}
+        out({"check_runs": runs})
 if st.get("ready_ok"):
     if path.endswith("/ccr/ready_for_review") and method == "POST": out({"draft": False})
     if path == R + "pulls/500" and method == "GET": out({"head": {"sha": "a" * 40}})
@@ -76,7 +101,27 @@ fail("HTTP 422: stub refuses " + method + " " + path)
 
 DATE_STUB = '''#!/usr/bin/env bash
 for x in "$@"; do case "$x" in -d|-d*|--date*) exec "$REAL_DATE" "$@";; esac; done
-exec "$REAL_DATE" -d "@$FAKE_NOW" "$@"
+exec "$REAL_DATE" -d "@$(cat "$FAKE_CLOCK")" "$@"
+'''
+
+GIT_STUB = '''#!/usr/bin/env bash
+echo "$*" >> "$GH_STATE.git.log"
+case " $* " in
+  *" fetch "*) [ -e "$GH_STATE.fetchfail" ] && exit 128; exit 0;;
+  *" show "*) cat "$GH_STATE.gate.sh"; exit 0;;
+  *" checkout "*) exit 0;;
+esac
+exit 1
+'''
+
+FAKE_GATE = '''#!/usr/bin/env bash
+echo "DRY_RUN=${DRY_RUN:-} JON_ROW=$JON_ROW JON_PR=$JON_PR $*" >> "$GH_STATE.gate.log"
+if [ "${DRY_RUN:-0}" = 1 ]; then cat "$GH_STATE.dry"; exit "$(cat "$GH_STATE.dryrc")"; fi
+touch "$GH_STATE.merged"; echo "merged"
+'''
+
+# the wrapper does `cd /home/claude/stem-loops` before the gate; in tests that cd goes to a temp dir (sourced via BASH_ENV)
+CD_SHIM = '''cd(){ if [ "${1:-}" = /home/claude/stem-loops ]; then builtin cd "$TEST_CLONE"; else builtin cd "$@"; fi; }
 '''
 
 
@@ -100,7 +145,7 @@ class Harness(unittest.TestCase):
         self.tmp = tempfile.mkdtemp()
         b = os.path.join(self.tmp, "bin")
         os.mkdir(b)
-        for name, body in (("gh", GH_STUB), ("date", DATE_STUB), ("sleep", "#!/bin/sh\nexit 0\n")):
+        for name, body in (("gh", GH_STUB), ("date", DATE_STUB), ("sleep", "#!/bin/sh\nexit 0\n"), ("git", GIT_STUB)):
             p = os.path.join(b, name)
             with open(p, "w") as f:
                 f.write(body)
@@ -112,14 +157,36 @@ class Harness(unittest.TestCase):
             with open(p, "w") as f:
                 f.write(p)
         self.state = os.path.join(self.tmp, "state.json")
+        self.clock = os.path.join(self.tmp, "clock")
+        self.clone = os.path.join(self.tmp, "clone")
+        os.mkdir(self.clone)
+        self.bash_env = os.path.join(self.tmp, "bash_env")
+        with open(self.bash_env, "w") as f:
+            f.write(CD_SHIM)
+        with open(self.state + ".gate.sh", "w") as f:
+            f.write(FAKE_GATE)
+        self.set_dry("DRY_RUN fail=0 (no merge)\n", 0)
+
+    def set_dry(self, text, rc):
+        with open(self.state + ".dry", "w") as f:
+            f.write(text)
+        with open(self.state + ".dryrc", "w") as f:
+            f.write(str(rc))
+
+    def side(self, ext):
+        p = self.state + ext
+        return open(p).read().splitlines() if os.path.exists(p) else []
 
     def run_sm(self, tag, now, comments=(), files=("apps/web/x.ts",), args=None, extra=None, **st):
         state = {"comments": [dict(c) for c in comments], "files": list(files)}
         state.update(st)
         with open(self.state, "w") as f:
             json.dump(state, f)
+        with open(self.clock, "w") as f:
+            f.write(str(now))
         env = {k: v for k, v in os.environ.items() if k not in ("ALLOW_WINDOW", "BLOCKER", "ACK_SINCE", "JON_ROW")}
-        env.update(PATH=self.bin + os.pathsep + env["PATH"], GH_STATE=self.state, FAKE_NOW=str(now), REAL_DATE=REAL_DATE,
+        env.update(PATH=self.bin + os.pathsep + env["PATH"], GH_STATE=self.state, FAKE_CLOCK=self.clock, REAL_DATE=REAL_DATE,
+                   BASH_ENV=self.bash_env, TEST_CLONE=self.clone,
                    SESSION_TAG=tag, BASE=os.path.join(self.tmp, "base"))
         env.update(extra or {})
         argv = args if args is not None else ["500", SHA, self.rv1, self.rv2]
@@ -159,6 +226,18 @@ class Usage(Harness):
 
     def test_bad_ack_since(self):
         self.assertEqual(self.run_sm("23A", at("15:00"), extra={"ACK_SINCE": "not-a-date"}).returncode, 2)
+
+    def test_no_tmp_leak_on_early_exits(self):
+        td = os.path.join(self.tmp, "tmpdir")
+        os.mkdir(td)
+        cases = (["500", SHA, self.rv1, self.rv1], ["500", SHA[:7], self.rv1, self.rv2], ["x", SHA, self.rv1, self.rv2], ["500"],
+                 ["ack"], ["ack", "7x"], ["ack", "4242"])
+        for argv in cases:
+            with self.subTest(argv=argv):
+                self.assertEqual(self.run_sm("23A", at("15:00"), args=argv, extra={"TMPDIR": td}).returncode, 2)
+                self.assertEqual(os.listdir(td), [])
+        self.run_sm("23A", at("14:00"), extra={"TMPDIR": td})  # protocol refusal (exit 3)
+        self.assertEqual(os.listdir(td), [])
 
     def test_414_unreadable(self):
         p = self.run_sm("23A", at("15:00"), fail_414=True)
@@ -296,9 +375,16 @@ class UnreadNotes(Harness):
         self.assertRefused(self.run_sm("23A", at("16:10"), cm), rc=13)
 
     def test_own_note_not_required(self):
-        for body in ("NOTE 23A for the other side", "QUEUE 23A: #500 #501"):
+        for body in ("NOTE 23A for the other side", "QUEUE 23A #500 #501", "**NOTE** 23A hold"):
             with self.subTest(body=body):
                 self.assertClaimed(self.run_sm("23A", at("16:10"), [c(77, at("16:00"), body)]))
+
+    def test_own_tag_with_punctuation_not_exempt(self):
+        for body in ("NOTE 23B: please hold", "NOTE 23B, hold", "NOTE (23B) hold"):
+            with self.subTest(body=body):
+                p = self.run_sm("23B", at("17:10"), [c(77, at("17:00"), body)])
+                self.assertRefused(p, rc=13)
+                self.assertIn("77 " + body, p.stdout)
 
     def test_other_note_while_own_acked(self):
         cm = [c(77, at("16:00"), "NOTE 23B one"), c(79, at("16:01"), "QUEUE Jon two"), c(78, at("16:05"), "ACK 23A 77")]
@@ -403,6 +489,105 @@ class UndraftOrder(Harness):
         self.assertEqual(len(ub), 1, calls)
         self.assertLess(rd[0], ub[0])
         self.assertEqual(self.posts[-1], "RELEASE 23A #500 not merged (update-branch)")
+
+
+class Tail(Harness):
+    """End-to-end past the un-draft: B session at 17:00Z on 2026-11-26 (claim window 17:00-17:40Z)."""
+    NOW = at("17:00")
+    PR_TAIL = ["VERDICT body r1", "VERDICT body r2"]
+
+    def go(self, **st):
+        return self.run_sm("23B", self.NOW, tail=True, **st)
+
+    def test_happy_path(self):
+        p = self.go()
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertEqual(self.posts[0][:20], "CLAIM 23B #500 until")
+        self.assertEqual(self.posts[-1], "RELEASE 23B #500 merged bbbbbbb")
+        gl = self.side(".gate.log")
+        self.assertEqual(len(gl), 2, gl)
+        self.assertTrue(gl[0].startswith("DRY_RUN=1 JON_ROW=95 JON_PR=500 500 "), gl)
+        self.assertTrue(gl[1].startswith("DRY_RUN= JON_ROW=95 JON_PR=500 500 "), gl)  # exactly one real run
+        self.assertIn(SHA, gl[1])
+        pr = self.st.get("pr_posts", [])
+        self.assertEqual(len(pr), 3, pr)
+        self.assertEqual(pr[0], self.rv1)
+        self.assertEqual(pr[1], self.rv2)
+        self.assertEqual(pr[2], "```\nDRY_RUN fail=0 (no merge)\n```\n")
+        git = self.side(".git.log")
+        self.assertTrue(any(" fetch " in f" {x} " for x in git) and any("checkout" in x for x in git), git)
+
+    def test_unread_note_between_claim_and_gate(self):
+        p = self.go(inject_on_pr_ci="NOTE 23A hold merges")
+        self.assertEqual(p.returncode, 13, p.stdout + p.stderr)
+        self.assertIn("NOTE 23A hold merges", p.stdout)
+        self.assertEqual(self.posts[-1], "RELEASE 23B #500 not merged (unread #414 note)")
+        self.assertEqual(self.side(".git.log"), [])
+        self.assertEqual(self.side(".gate.log"), [])
+
+    def test_own_claim_expiring_at_pre_gate(self):
+        p = self.go(advance_on_pr_ci=39 * 60)  # now 17:39, claim until 17:40
+        self.assertEqual(p.returncode, 3, p.stdout + p.stderr)
+        self.assertEqual(self.posts[-1], "RELEASE 23B #500 not merged (own claim expiring; re-claim)")
+        self.assertEqual(self.side(".git.log"), [])
+
+    def test_deploy_slot_at_pre_gate(self):
+        # clock jumps into the 18:00Z DEPLOY slot (claim also expired): refused before any git call
+        p = self.go(advance_on_pr_ci=65 * 60)
+        self.assertEqual(p.returncode, 3, p.stdout + p.stderr)
+        self.assertTrue(self.posts[-1].startswith("RELEASE 23B #500 not merged ("), self.posts)
+        self.assertEqual(self.side(".git.log"), [])
+
+    def test_window_recheck_protocol_expired_at_pre_gate(self):
+        # claim at 00:30Z on 12-03 (valid to 01:00Z), until 01:10Z; at the pre-gate re-check it is 01:05Z: the claim is not
+        # expiring (01:08Z cut-off) but the protocol is: only the pre-gate window re-check refuses
+        p = self.run_sm("23B", ts("2026-12-03T00:30:00Z"), files=["docs/x.md"], tail=True, advance_on_pr_ci=35 * 60)
+        self.assertEqual(p.returncode, 3, p.stdout + p.stderr)
+        self.assertTrue(self.posts[-1].startswith("RELEASE 23B #500 not merged (now: PROTOCOL 2026-11-25 expired"), self.posts)
+        self.assertEqual(self.side(".git.log"), [])
+
+    def test_gate_fetch_fails(self):
+        open(self.state + ".fetchfail", "w").close()
+        p = self.go()
+        self.assertEqual(p.returncode, 7, p.stdout + p.stderr)
+        self.assertEqual(self.posts[-1], "RELEASE 23B #500 not merged (gate fetch failed)")
+        self.assertEqual(self.side(".gate.log"), [])
+
+    def test_dry_run_not_clean(self):
+        for text, rc in (("DRY_RUN fail=1 (no merge)\n", 1), ("DRY_RUN fail=1 (no merge)\n", 0), ("FAIL: x\nDRY_RUN\n", 0),
+                         ("DRY_RUN fail=0 (no merge)\n", 1), ("DRY_RUN fail=01 (no merge)\n", 0), ("x DRY_RUN fail=0 (no merge)\n", 0), ("", 0)):
+            with self.subTest(text=text, rc=rc):
+                for ext in (".merged", ".gate.log", ".git.log"):
+                    if os.path.exists(self.state + ext):
+                        os.remove(self.state + ext)
+                self.set_dry(text, rc)
+                p = self.go()
+                self.assertEqual(p.returncode, 7, p.stdout + p.stderr)
+                self.assertTrue(self.posts[-1].startswith("RELEASE 23B #500 not merged (DRY_RUN"), self.posts)
+                self.assertEqual(len(self.side(".gate.log")), 1)  # no real run
+                self.assertEqual(self.st.get("pr_posts", []), [])
+
+    def test_main_ci_red(self):
+        p = self.go(main_ci="red")
+        self.assertEqual(p.returncode, 9, p.stdout + p.stderr)
+        self.assertIn("MAIN RED", p.stdout)
+        self.assertEqual(self.posts[-1], "RELEASE 23B #500 merged bbbbbbb")
+
+    def test_main_ci_unknown(self):
+        p = self.go(main_ci="unknown")
+        self.assertEqual(p.returncode, 10, p.stdout + p.stderr)
+
+    def test_release_post_fails_after_merge(self):
+        p = self.go(fail_release_post=True)
+        self.assertEqual(p.returncode, 12, p.stdout + p.stderr)
+        self.assertIn("RELEASE POST FAILED", p.stdout)
+        self.assertIn("RELEASE 23B #500 merged bbbbbbb", self.st.get("release_attempts", []))
+        self.assertEqual(len(self.side(".gate.log")), 2)
+
+    def test_pr_ci_red(self):
+        p = self.go(pr_ci="red")
+        self.assertEqual(p.returncode, 6, p.stdout + p.stderr)
+        self.assertEqual(self.side(".git.log"), [])
 
 
 class Freeze(Harness):

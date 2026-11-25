@@ -132,7 +132,11 @@ export type PlanCta =
   | { kind: 'checkout'; primary: boolean }
   | { kind: 'current' }
   | { kind: 'manage' }
-  | { kind: 'change' };
+  | { kind: 'change' }
+  // B-8w "P" (Jon, 2026-11-25): checkout is off during the beta (lib/billing/checkout-switch.ts).
+  // A card that would offer a purchase (checkout, or "Get <plan>" through sign-in) shows
+  // non-purchasable copy instead: no button, no link.
+  | { kind: 'unavailable' };
 
 const PLAN_RANK: Readonly<Record<string, number>> = { free: 0, pro: 1, studio: 2 };
 /** The viewer's plan when it is one this page knows, else null (treated as unknown). */
@@ -145,13 +149,18 @@ export function featuredPlan(planCodes: readonly string[], signedIn: boolean, cu
   return null;
 }
 
-/** What the card for `code` offers this viewer. `current` is null when unknown. */
-export function planCta(code: string, signedIn: boolean, current: string | null, featured: string | null): PlanCta {
-  if (!signedIn) return code === 'free' ? { kind: 'start-free' } : { kind: 'sign-in', primary: code === featured };
+/** What the card for `code` offers this viewer. `current` is null when unknown.
+ *  `checkoutEnabled` is isCheckoutEnabled() from lib/billing/checkout-switch.ts, passed by the
+ *  page; anything but `true` (including a caller that omits it) means checkout is OFF, so no
+ *  card offers a purchase: 'checkout' and 'sign-in' become 'unavailable'. */
+export function planCta(code: string, signedIn: boolean, current: string | null, featured: string | null, checkoutEnabled: boolean): PlanCta {
+  const purchase = (primary: boolean, kind: 'checkout' | 'sign-in'): PlanCta =>
+    checkoutEnabled === true ? { kind, primary } : { kind: 'unavailable' };
+  if (!signedIn) return code === 'free' ? { kind: 'start-free' } : purchase(code === featured, 'sign-in');
   const plan = knownPlan(current);
   if (plan === null) return { kind: 'manage' };
   if (code === plan) return { kind: 'current' };
-  if (plan === 'free') return { kind: 'checkout', primary: code === featured };
+  if (plan === 'free') return purchase(code === featured, 'checkout');
   // A paying viewer: never a checkout (it would open a second subscription).
   return code === 'free' ? { kind: 'manage' } : { kind: 'change' };
 }

@@ -58,11 +58,19 @@ if path == R + "issues/414/comments" and method == "POST":
                         capture_output=True, text=True).stdout.strip()
     st["comments"].append({"id": cid, "created_at": ts, "body": fields["body"]})
     st.setdefault("posts", []).append(fields["body"])
+    inj = st.pop("inject_on_post", None)
+    if inj:
+        st["comments"].append({"id": cid + 1, "created_at": ts, "body": inj})
     if st.get("post_5xx_once"):
         st["post_5xx_once"] = False; fail("HTTP 502: Bad Gateway")
     out({"id": cid})
 if "/files" in path and "/pulls/" in path:
     out([{"filename": f} for f in st.get("files", [])])
+if st.get("ready_ok"):
+    if path.endswith("/ccr/ready_for_review") and method == "POST": out({"draft": False})
+    if path == R + "pulls/500" and method == "GET": out({"head": {"sha": "a" * 40}})
+    if path.startswith(R + "compare/v3/main..."): out({"behind_by": 1})
+    if path == R + "pulls/500/update-branch" and method == "PUT": out({"message": "Updating pull request branch."})
 fail("HTTP 422: stub refuses " + method + " " + path)
 '''
 
@@ -324,9 +332,13 @@ class UnreadNotes(Harness):
         self.assertClaimed(self.run_sm("23B", at("17:10"), cm + [c(78, at("16:30"), "ACK 23B 77")]), tag="23B")
 
 
+NOTES = [c(77, at("16:00"), "NOTE 23B one"), c(79, at("16:01"), "**QUEUE** Jon two"), c(80, at("16:02"), "CLAIM 23B #9 until 16:40Z"),
+         c(81, at("16:03"), "plain chatter\nNOTE on line 2")]
+
+
 class AckSubcommand(Harness):
     def test_posts_one_line(self):
-        p = self.run_sm("23A", at("16:10"), args=["ack", "77", "79", "77"])
+        p = self.run_sm("23A", at("16:10"), NOTES, args=["ack", "77", "79", "77"])
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
         self.assertEqual(self.posts, ["ACK 23A 77,79"])
 
@@ -337,14 +349,60 @@ class AckSubcommand(Harness):
                 self.assertEqual(self.posts, [])
 
     def test_5xx_read_back_no_double_post(self):
-        p = self.run_sm("23B", at("16:10"), args=["ack", "77"], post_5xx_once=True)
+        p = self.run_sm("23B", at("16:10"), NOTES, args=["ack", "77"], post_5xx_once=True)
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
         self.assertEqual(self.posts, ["ACK 23B 77"])
+
+    def test_real_id_ok_unknown_and_non_note_refused(self):
+        self.assertEqual(self.run_sm("23A", at("16:10"), NOTES, args=["ack", "79"]).returncode, 0)
+        self.assertEqual(self.posts, ["ACK 23A 79"])
+        for argv in (["ack", "4242"], ["ack", "80"], ["ack", "81"], ["ack", "77", "80"], ["ack", "77", "4242"]):
+            with self.subTest(argv=argv):
+                p = self.run_sm("23A", at("16:10"), NOTES, args=argv)
+                self.assertEqual(p.returncode, 2, p.stdout + p.stderr)
+                self.assertIn("nothing posted", p.stdout)
+                self.assertEqual(self.posts, [])
+
+    def test_id_outside_two_page_window_refused(self):
+        cm = [c(2000 + i, at("10:00") + i, f"chatter {i}") for i in range(250)]
+        cm[10] = c(77, at("10:00") + 10, "NOTE 23B on page 1")
+        self.assertEqual(self.run_sm("23A", at("16:10"), cm, args=["ack", "77"]).returncode, 2)
+        self.assertEqual(self.posts, [])
 
     def test_ack_then_claim(self):
         cm = [c(77, at("16:00"), "NOTE 23B please read")]
         self.run_sm("23A", at("16:05"), cm, args=["ack", "77"])
         self.assertClaimed(self.run_sm("23A", at("16:10"), self.st["comments"]))
+
+
+class AbandonInfo(Harness):
+    def test_race_posts_info_not_note(self):
+        # another session's claim appears right after ours: the trap posts INFO (not a RELEASE, not a NOTE)
+        p = self.run_sm("23B", at("17:00"), inject_on_post="CLAIM 23A #400 until 2026-11-26T17:40Z")
+        self.assertEqual(p.returncode, 3, p.stdout + p.stderr)
+        self.assertIn("race:", p.stdout)
+        self.assertEqual(self.posts[-1], "INFO 23B #500 window abandoned (another session's claim is live; this is not a RELEASE)")
+        self.assertFalse(any(x.startswith(("NOTE", "RELEASE")) for x in self.posts), self.posts)
+        later = [x for x in self.st["comments"] if not x["body"].startswith("CLAIM")]
+        self.assertClaimed(self.run_sm("23A", at("16:00"), later))
+
+    def test_info_line_needs_no_ack_and_cannot_be_acked(self):
+        cm = [c(77, at("16:00"), "INFO 23B #9 window abandoned (another session's claim is live; this is not a RELEASE)")]
+        self.assertClaimed(self.run_sm("23A", at("16:10"), cm))
+        self.assertEqual(self.run_sm("23A", at("16:10"), cm, args=["ack", "77"]).returncode, 2)
+
+
+class UndraftOrder(Harness):
+    def test_undraft_once_before_update_branch(self):
+        p = self.run_sm("23A", at("15:00"), ready_ok=True)
+        self.assertEqual(p.returncode, 5, p.stdout + p.stderr)
+        calls = [f"{m} {x}" for m, x in self.st["calls"]]
+        rd = [i for i, x in enumerate(calls) if x == "POST repos/JDC000000/stem-loops/pulls/500/ccr/ready_for_review"]
+        ub = [i for i, x in enumerate(calls) if x == "PUT repos/JDC000000/stem-loops/pulls/500/update-branch"]
+        self.assertEqual(len(rd), 1, calls)
+        self.assertEqual(len(ub), 1, calls)
+        self.assertLess(rd[0], ub[0])
+        self.assertEqual(self.posts[-1], "RELEASE 23A #500 not merged (update-branch)")
 
 
 class Freeze(Harness):

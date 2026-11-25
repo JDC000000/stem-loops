@@ -2,7 +2,8 @@
 # session-merge.sh v1.0 (2026-11-25, session 23A) — ONE gated merge for an A or a B session. Port of merge1-B.sh v2.5 (22B for 23B+,
 # sha256 fd91a6a5…c45c0a) with the #414 protocol made symmetric and an unread-note ACK guard. Run it in the FOREGROUND.
 # Usage: SESSION_TAG=23A|23B session-merge.sh <pr> <reviewed_sha_full> <review-1.md> <review-2.md>
-#        SESSION_TAG=23A|23B session-merge.sh ack <comment-id>…      (orchestrators only: posts ONE "ACK <tag> <id>,<id>…" line on #414)
+#        SESSION_TAG=23A|23B session-merge.sh ack <comment-id>…      (orchestrators only: posts ONE "ACK <tag> <id>,<id>…" line on #414;
+#          every id must be a NOTE/PROTOCOL/QUEUE comment of #414's last two pages, else exit 2 and nothing is posted)
 #   Two different review files are required (standing approval A1). It wraps the canonical gate (scripts/or4-merge.sh, re-fetched from
 #   v3/main right before DRY_RUN) and adds NO merge route and loosens no gate check.
 # Env: SESSION_TAG (required, ^[0-9]{2}[AB]$) · BASE (default /home/claude/s23) · JON_ROW (default 95 = M-SA D-6 row; set Jon's own row
@@ -23,6 +24,7 @@
 #   MERGES, AGENTS.md M-5) · 10 main CI unknown/timeout after merge (check by hand before the next claim) · 11 #414 unreadable or a
 #   #414 post failed · 12 merged but our RELEASE post failed (post it by hand) · 13 unread NOTE/PROTOCOL/QUEUE on #414 (ACK it first).
 # A trap releases our claim on any exit; kill -9 or a box restart cannot be trapped: after a restart read #414 and release by hand.
+# The trap's "INFO <tag> #P window abandoned" post is neither a protocol line nor an unread-note line (needs no ACK).
 # Never edit or replace this file while a run is in progress.
 set -uo pipefail
 
@@ -66,6 +68,11 @@ post414(){ local body=$1 i; for i in 1 2 3; do gh api -X POST repos/$R/issues/41
 if [ "${1:-}" = ack ]; then
   shift; [ $# -ge 1 ] || usage
   ids=(); for x in "$@"; do [[ "$x" =~ ^[0-9]+$ ]] || { echo "comment id must be numeric: $x"; exit 2; }; ids+=("$x"); done
+  # every id must be a comment of the two-page window whose first line starts with NOTE/PROTOCOL/QUEUE (same match as the guard)
+  pages || { log "cannot read #414"; rm -rf "$TMP"; exit 11; }
+  noteids=$(jq -rs '(.[0]+.[1])[] | select(((.body//"")|gsub("\r";"")|split("\n")[0]|sub("^[\\s*_>#`~|-]+";""))
+      |test("^(NOTE|PROTOCOL|QUEUE)\\b";"i")) | .id' "$TMP/pa.json" "$TMP/pb.json") || { log "cannot read #414"; rm -rf "$TMP"; exit 11; }
+  for x in "${ids[@]}"; do grep -qxF -- "$x" <<<"$noteids" || { echo "#414 comment $x is not a NOTE/PROTOCOL/QUEUE comment of the last two pages; nothing posted"; rm -rf "$TMP"; exit 2; }; done
   line="ACK $ME $(printf '%s\n' "${ids[@]}" | awk '!s[$0]++' | paste -sd,)"
   post414 "$line" || { log "ACK post failed"; rm -rf "$TMP"; exit 11; }
   log "posted: $line"; rm -rf "$TMP"; exit 0
@@ -134,7 +141,7 @@ protocol_block(){ local t; t=$(now); window_bad "$t" $((t+CLAIM_SECS)) && return
   frozen && { echo "apps/** freeze since $FREEZE_AT (set BLOCKER=<issue>)"; return 0; }; return 1; }
 CLAIMED=0; DONE=0; TAKEN=0
 cleanup(){ if [ "$CLAIMED" = 1 ] && [ "$DONE" = 0 ]; then
-    if [ "$TAKEN" = 1 ]; then post414 "NOTE $ME #$P window abandoned (another session's claim is live; this is not a RELEASE)"; else post414 "RELEASE $ME #$P not merged (aborted)"; fi; fi
+    if [ "$TAKEN" = 1 ]; then post414 "INFO $ME #$P window abandoned (another session's claim is live; this is not a RELEASE)"; else post414 "RELEASE $ME #$P not merged (aborted)"; fi; fi
   rm -rf "$TMP"; }
 trap cleanup EXIT
 RELFAIL=0

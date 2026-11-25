@@ -522,3 +522,125 @@ test('#387: stretchLatencySec() is the stretch latency a start at the playing ra
   const plain = await rig({ withStretch: false });
   assert.equal(plain.engine.stretchLatencySec(), 0, 'no stretch provider');
 });
+
+// ─── #423 (a): the stretch pipeline's drain vs the count-in's latency ───────
+//
+// The count-in (#387) predicts that music started by play() is heard
+// ENGINE_LEAD_SEC + stretchLatencySec() later (plus the route latency). But
+// startVoices may push `when` later while the previous stretched run is still
+// draining: when = max(now + START_LEAD, drainEnd - latency). stretchLatencySec()
+// knows nothing of the drain. And every count is preceded by a drain: the tap
+// "primes" the engine with play(); pause() (Player.tsx onPrime), which at 90% /
+// 75% opens a drain window of STOP_LAG + latency + margin. These tests pin
+// when that window can and cannot move the first heard note.
+
+import {
+  ENGINE_LEAD_SEC,
+  MAX_COUNT_IN_BPM,
+  MAX_LATENCY_SEC,
+  countInSec,
+  engineCountLatencySec,
+  timingOffsets,
+} from '../src/lib/play/count-in.ts';
+
+const EPS = 1e-9;
+
+/** What play() at ctx.currentTime scheduled: the shared `when` and where each gain opens (heard). */
+function lastRun(ctx, sinceLog) {
+  const ev = ctx.log.slice(sinceLog);
+  const starts = ev.filter((e) => e.type === 'start');
+  assert.equal(starts.length, 6, 'six voices started');
+  assert.equal(new Set(starts.map((s) => s.when)).size, 1, 'one `when` for all six');
+  // The gain re-opens (set 0, then ramp) at heard-at; a set at `now` is the hold of the fade-out.
+  const now = ctx.currentTime;
+  const opens = ev.filter((e) => e.type === 'set' && e.v === 0 && /^gain#/.test(e.param) && e.t > now);
+  assert.equal(opens.length, 6, 'six gains opened');
+  assert.equal(new Set(opens.map((o) => o.t)).size, 1, 'one heard-at for all six');
+  return { when: starts[0].when, heardAt: opens[0].t };
+}
+
+/** The count-in tap: engine.play(); engine.pause() at the same instant (Player.tsx onPrime). */
+function prime(engine, ctx) {
+  const before = ctx.sources.length;
+  engine.play();
+  engine.pause();
+  for (const s of ctx.sources.slice(before)) {
+    assert.ok(s.stops.length === 1 && s.stops[0] < s.started.when, 'primed voices stop before their start: nothing heard');
+  }
+}
+
+for (const rate of [0.9, 0.75]) {
+  test(`#423 (a) @${rate}: a play() right after the prime is NOT delayed by its drain: heard ENGINE_LEAD_SEC + stretchLatencySec() later`, async () => {
+    const { engine, ctx } = await rig();
+    await slowTo(engine, rate);
+    const L = engine.stretchLatencySec();
+    assert.equal(L, SOUNDTOUCH_LATENCY_SEC[rate]);
+    assert.ok(L > 0);
+    prime(engine, ctx);
+    // Same instant, the pipeline still holds the primed (silent) run: the
+    // worst case. Its drain (STOP_LAG + L + margin) ends before
+    // now + START_LEAD + L, so the start lead already covers it.
+    const t = ctx.currentTime;
+    const mark = ctx.log.length;
+    engine.play();
+    const { when, heardAt } = lastRun(ctx, mark);
+    assert.ok(Math.abs(when - (t + ENGINE_LEAD_SEC)) < EPS, `when = play + ENGINE_LEAD_SEC (got ${when - t})`);
+    assert.ok(Math.abs(heardAt - t - (ENGINE_LEAD_SEC + L)) < EPS, `heard = play + ENGINE_LEAD_SEC + stretchLatencySec() (got ${heardAt - t})`);
+    // The playhead is anchored at what is heard, so chords stay in sync.
+    ctx.currentTime = heardAt + 1;
+    assert.ok(Math.abs(engine.getSnapshot().positionSec - rate) < EPS);
+  });
+
+  test(`#423 (a) @${rate}: the drain is real: a rate change while it lasts can move the first note past what stretchLatencySec() predicts, never past the drain end`, async () => {
+    const other = rate === 0.9 ? 0.75 : 0.9;
+    for (const next of [other, 1]) {
+      const { engine, ctx } = await rig();
+      await slowTo(engine, rate);
+      const L0 = engine.stretchLatencySec();
+      engine.play();
+      ctx.currentTime += 2;
+      const p = ctx.currentTime;
+      engine.pause(); // the stretched run drains until p + STOP_LAG + L0 + margin
+      const drainEnd = p + 0.015 + L0 + 0.03;
+      await slowTo(engine, next);
+      const L1 = engine.stretchLatencySec();
+      const predicted = p + ENGINE_LEAD_SEC + L1; // what the count-in assumes
+      const mark = ctx.log.length;
+      engine.play(); // same instant, still draining
+      const { when, heardAt } = lastRun(ctx, mark);
+      assert.ok(Math.abs(heardAt - Math.max(predicted, drainEnd)) < EPS, `${rate} -> ${next}: heard at max(predicted, drain end) (got ${heardAt - p})`);
+      assert.ok(Math.abs(heardAt - when - L1) < EPS, `${rate} -> ${next}: heard = when + the NEW rate's latency`);
+      // Late only when the old latency exceeds the new by more than the start lead's slack (5 ms).
+      const late = L0 - L1 > ENGINE_LEAD_SEC - 0.045 + EPS;
+      assert.equal(heardAt > predicted + EPS, late, `${rate} -> ${next}: late=${late}`);
+      // Once the drain is over, the same rate change is heard exactly as predicted.
+      engine.pause();
+      ctx.currentTime += 1;
+      const t = ctx.currentTime;
+      const m2 = ctx.log.length;
+      engine.play();
+      const r2 = lastRun(ctx, m2);
+      assert.ok(Math.abs(r2.heardAt - (t + ENGINE_LEAD_SEC + L1)) < EPS, `${rate} -> ${next}: drained, heard as predicted`);
+    }
+  });
+
+  test(`#423 (a) @${rate}: the shortest believable count outlasts the prime's drain, so its downbeat play() is heard exactly when the count predicts`, async () => {
+    const { engine, ctx } = await rig();
+    await slowTo(engine, rate);
+    const L = engine.stretchLatencySec();
+    // Worst case for the count: fastest BPM and the largest engine latency it
+    // believes from the device (MAX_LATENCY_SEC) plus the stretch pipeline's.
+    const e = engineCountLatencySec({ outputLatency: MAX_LATENCY_SEC }, false, 0, L);
+    const { downbeat } = timingOffsets({ clickLatencySec: 0, engineLatencySec: e });
+    const gap = countInSec(MAX_COUNT_IN_BPM, rate) + downbeat; // prime -> downbeat play()
+    const drainWindow = 0.015 + L + 0.03; // STOP_LAG + latency + margin
+    assert.ok(gap > drainWindow, `count (${gap.toFixed(3)} s) outlasts the drain (${drainWindow.toFixed(3)} s)`);
+    prime(engine, ctx);
+    ctx.currentTime += gap;
+    const t = ctx.currentTime;
+    const mark = ctx.log.length;
+    engine.play();
+    const { heardAt } = lastRun(ctx, mark);
+    assert.ok(Math.abs(heardAt - t - (ENGINE_LEAD_SEC + engine.stretchLatencySec())) < EPS, 'heard where the count put the downbeat');
+  });
+}

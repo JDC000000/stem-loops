@@ -1,5 +1,19 @@
 #!/usr/bin/env bash
-# or4-merge.sh <pr> <review-file> <reviewed-sha> [<review-file-2>] — OR-4 gate v3.6 (S20): ONE gate for 19A and 19B.
+# or4-merge.sh <pr> <review-file> <reviewed-sha> [<review-file-2>] — OR-4 gate v3.6.2 (S21): ONE gate for 19A and 19B.
+# v3.6.2 (TIGHTENING ONLY; #413, R1 reviews of #411/#410): (1) MONEY_RE also covers apps/web/src/lib/library-server.ts, apps/web/src/app/jobs/[id]/page.tsx,
+#   apps/web/src/app/jobs/[id]/JobView.tsx, apps/web/src/lib/emails/dispatch.ts and apps/web/src/lib/emails/resend.ts; (2) VERDICT/SCORES line counting FAILS CLOSED:
+#   a line is COUNTED if, after any prefix of non-letters (indent, tab, NBSP, `>`, `**`, `#`, `|`, `- `, `1.`, `2)`, backticks, bytes >= 0x80), `[x]` boxes and short labels
+#   (1-3 letters + digits: R1, M2, F3, PR4), it has VERDICT followed by a colon (only non-alphanumerics between) or by PASS/FAIL (<= 1 word between), or SCORES followed by a colon,
+#   a number, or M-9/M-11 (<= 1 word between). Counted: `**VERDICT: FAIL**`, `> VERDICT - FAIL`, `1. VERDICT (final): FAIL`, `- [x] VERDICT PASS 99`, `R1 SCORES: M-9 1`, `| VERDICT | FAIL |`,
+#   fullwidth colon. NOT counted: `## Verdict`, `| M2 VERDICT count back |`, `- SCORES on line 2`, `verdict_unique`, `Final verdict: FAIL` (word not at line start).
+#   Lone CR, form feed, VT, NEL, U+2028 and U+2029 count as line breaks. Case-insensitive counting predates v3.6.1; v3.6.1 added only indentation.
+#   REVIEWERS: outside line 1 (and line 2 for money) no line may begin, after indentation / quote / list / table / heading markup, numbering, `[x]` or a short label, with VERDICT then
+#   a colon or PASS/FAIL, or SCORES then a colon, a number or M-9/M-11. Headings, table rows and prose that only mention the words are fine. The FAIL message names the counted line numbers.
+#   RESIDUAL (still hidden): zero-width characters or homoglyphs INSIDE the word, the bare word alone on a line, 2+ words before PASS/FAIL, underscore-joined forms, the word + space +
+#   prose (`VERDICT changed to FAIL`), the word not at line start, the word split over two lines, edited copies as a second review, marker score vs min(M-9, M-11).
+# v3.6.1 (TIGHTENING ONLY; #406, R2 reviews of #401): (1) MONEY_RE widened (library/remake, worker reaper+consumer, stem-urls/keys, account pages+deletion, lib/db.ts,
+#   job failure/retry, signed URLs, allowance/debit, rate limits, fetch gates, receipts ...); (2) any path with a non-ASCII byte is money; (3) VERDICT: and
+#   SCORES: lines are also counted when indented (case-insensitive counting predates v3.6.1), so a later reworded/indented one fails the one-line rule (line 1 / line 2 rules unchanged).
 # v3.6 (TIGHTENING ONLY; D-7, #396; no check removed or loosened): (1) MONEY class (MONEY_RE paths or a `[billing]` title, title parsed
 #   with jq; any parse/read error = money; MONEY=1 may only RAISE the class; the needs-jon-approval label makes a PR PROTECTED, not money;
 #   MONEY_RE is a floor, the orchestrator still classifies by reading the files; money implies protected): every review file needs marker
@@ -63,9 +77,11 @@ protected_decision() {
 }
 # v3.6 (D-7): MONEY_RE = money/auth/job-admission paths. Case-insensitive (grep -i). A FLOOR, not the classification: the orchestrator still
 # classifies by reading the files (MONEY=1 raises). Over-matches on purpose. Adds to, never replaces, PROTECTED_RE.
-MONEY_RE='billing|stripe|entitlement|(^|/)auth(/|\.|z)|(^|/)auth[-_.]|authz|oauth|login|password|jwt|credits?|sessions?|service[-_]?role|secret|(^|[/_.-])rls([/_.-]|$)|(^|[/_.-])roles?([/_.-]|$)|grants?|webhook|api/jobs|jobs?[-_]?(admission|creat)|create[-_a-z]*job|claim[-_]?jobs?|job[-_]?access|admission|upload|retention|cleanup|spend|replicate|klangio|worker/pipeline|(^|/)r2|pricing|price|promo|quota|paid|payment|paywall|checkout|subscription|refund|trial|plan[-_]|users/me|hcaptcha'
+MONEY_RE='billing|stripe|entitlement|(^|/)auth(/|\.|z)|(^|/)auth[-_.]|authz|oauth|login|password|jwt|credits?|sessions?|service[-_]?role|secret|(^|[/_.-])rls([/_.-]|$)|(^|[/_.-])roles?([/_.-]|$)|grants?|webhook|api/jobs|jobs?[-_]?(admission|creat)|create[-_a-z]*job|claim[-_]?jobs?|job[-_]?access|admission|upload|retention|cleanup|spend|replicate|klangio|worker/pipeline|(^|/)r2|pricing|price|promo|quota|paid|payment|paywall|checkout|subscription|refund|trial|plan[-_]|users/me|hcaptcha|api/library|remake|reaper|consumer|stem[-_]?(urls?|keys?)|signed[-_]?ur[li]|presign|(^|/)account([-_/.]|$)|(^|/)db[-_.]|job[-_]?failure|retry|delet(e|ion)|erase|allowance|debit|commercial|seed[-_]plans|fetch[-_]?gates?|rate[-_]?limit|(^|/)demo[-_]rate|client[-_]ip|chords[-_]claim|job[-_]page[-_]gate|download[-_]gate|receipt|(^|/)success/|job[-_]attempts|library[-_]server|(^|/)jobs/\[id\]/jobview\.tsx|(^|/)emails/resend\.ts|(^|/)emails/dispatch|(^|/)jobs/\[id\]/page\.tsx|(^|/)[0-9]+_jobs[._]'
 # money_paths: stdin = NUL-separated paths; prints (newline-separated) those matching MONEY_RE.
-money_paths() { grep -azEi "$MONEY_RE" | tr '\0' '\n'; }
+# v3.6.1: ANY path with a non-ASCII byte is money (LC_ALL=C has no Unicode case folding, so e.g. U+017F would hide "stripe" from the regex).
+NONASCII_RE=$'[\x80-\xff]'
+money_paths() { grep -azEi -e "$MONEY_RE" -e "$NONASCII_RE" | tr '\0' '\n'; }
 # money_meta <pr-json>: prints 1 if the title has [billing] (jq; the needs-jon-approval label is protected, NOT money), else 0. rc 1 on any parse problem.
 money_meta() {
   local o
@@ -74,9 +90,22 @@ money_meta() {
 }
 # marker_score <review-file>: the NN of the last valid "VERDICT: PASS NN HEAD sha" line, else nothing.
 marker_score() { grep -aE '^VERDICT: ' "$1" | tail -1 | grep -oE "^VERDICT: PASS (9[1-9]|100) HEAD [0-9a-f]{7,40}( |$)" | awk '{print $3}'; }
-# verdict_unique <review-file>: rc 0 iff the file has exactly ONE line starting VERDICT: (any case) and it is line 1 and a PASS marker line.
+# v3.6.2: a line is COUNTED when, after a prefix of non-letters (indent, quote/list/table/heading markup, numbering, bytes >= 0x80), `[x]` boxes and short labels like `R1 `/`M2 `,
+# it has the word VERDICT followed by (a) a colon (only non-alphanumerics between) or (b) PASS/FAIL as a whole word, at most one word between; for SCORES: (a) a colon, or a number
+# directly, or M-9 / M-11 (at most one word between). Headings, table rows and prose that merely mention the words (`| M2 VERDICT count |`, `verdict_unique`) are NOT counted.
+# LC_ALL=C: bytes >= 0x80 are non-letters. Fails closed. Residual: homoglyphs / zero-width INSIDE the word, bare word alone, 2+ words before PASS/FAIL, underscore-joined, word + prose.
+_MARK_PFX='^([^[:alpha:]]|\[[[:alpha:]]\]|[[:alpha:]]{1,3}[0-9]+)*'
+VERDICT_LINE_RE="${_MARK_PFX}verdict([^[:alnum:]:]*:|[^[:alnum:]_]+([[:alpha:]]+[^[:alnum:]_]+)?(pass|fail)([^[:alnum:]]|\$))"
+SCORES_LINE_RE="${_MARK_PFX}scores([^[:alnum:]:]*:|[^[:alnum:]_]+([0-9]|([[:alpha:]]+[^[:alnum:]_]+)?m[^[:alnum:]]?(9|11)([^0-9]|\$)))"
+# marker_line_count <file> <regex>: lone CR, FF, VT, NEL (C2 85), U+2028, U+2029 are line breaks too (a hidden line cannot hide behind them).
+marker_line_count() { tr '\r\f\v' '\n\n\n' <"$1" 2>/dev/null | sed 's/\xe2\x80\xa8/\n/g; s/\xe2\x80\xa9/\n/g; s/\xc2\x85/\n/g' | grep -aciE "$2"; }
+# marker_count_lines <file> <regex>: the counted line numbers (after line-break normalisation), for the FAIL message only.
+marker_count_lines() { tr '\r\f\v' '\n\n\n' <"$1" 2>/dev/null | sed 's/\xe2\x80\xa8/\n/g; s/\xe2\x80\xa9/\n/g; s/\xc2\x85/\n/g' | grep -aniE "$2" | cut -d: -f1 | tr '\n' ' '; }
+# marker_one <file> <regex>: rc 0 iff exactly ONE line counts both on the raw file and after line-break normalisation (never looser than either count).
+marker_one() { [ "$(grep -aciE "$2" "$1" 2>/dev/null)" = 1 ] && [ "$(marker_line_count "$1" "$2")" = 1 ]; }
+# verdict_unique <review-file>: rc 0 iff the file has exactly ONE counted VERDICT line (see VERDICT_LINE_RE) and it is line 1 and a PASS marker line.
 verdict_unique() {
-  [ "$(grep -aciE '^VERDICT:' "$1" 2>/dev/null)" = 1 ] || return 1
+  marker_one "$1" "$VERDICT_LINE_RE" || return 1
   sed -n 1p "$1" | grep -qE '^VERDICT: PASS (9[1-9]|100) HEAD [0-9a-f]{7,40}( |$)'
 }
 # money_review_ok <review-file>: rc 0 iff line 1 is the PASS marker (ending after the sha) with score 93-100, line 2 is exactly
@@ -85,7 +114,7 @@ money_review_ok() {
   local sc; sc=$(marker_score "$1")
   [[ "$sc" =~ ^(9[3-9]|100)$ ]] || return 1
   sed -n 1p "$1" | grep -qE '^VERDICT: PASS (9[3-9]|100) HEAD [0-9a-f]{7,40}$' || return 1
-  [ "$(grep -aciE '^SCORES:' "$1" 2>/dev/null)" = 1 ] || return 1
+  marker_one "$1" "$SCORES_LINE_RE" || return 1
   sed -n 2p "$1" | grep -qE '^SCORES: M-9 (9[3-9]|100) M-11 (9[3-9]|100)$'
 }
 # review_norm <file>: CRLF -> LF, trailing whitespace stripped, blank lines dropped (for the near-duplicate check).
@@ -105,11 +134,11 @@ review_pair_decision() {
     done
   fi
   for f in "$r1" ${r2:+"$r2"}; do
-    verdict_unique "$f" || { echo "FAIL: $f must have exactly one VERDICT: line and it must be line 1 (a PASS marker)"; rc=1; }
+    verdict_unique "$f" || { echo "FAIL: $f must have exactly one VERDICT marker line (counted as VERDICT_LINE_RE; no other line may begin with the word VERDICT + colon or PASS/FAIL) and it must be line 1 (a PASS marker); counted line(s): $(marker_count_lines "$f" "$VERDICT_LINE_RE")"; rc=1; }
   done
   if [ "$money" = 1 ]; then
     for f in "$r1" ${r2:+"$r2"}; do
-      money_review_ok "$f" || { echo "FAIL: money PR: $f needs line 1 'VERDICT: PASS <93-100> HEAD <sha>', marker score >= 93 and line 2 exactly 'SCORES: M-9 <93-100> M-11 <93-100>' as the only SCORES line"; rc=1; }
+      money_review_ok "$f" || { echo "FAIL: money PR: $f needs line 1 'VERDICT: PASS <93-100> HEAD <sha>', marker score >= 93 and line 2 exactly 'SCORES: M-9 <93-100> M-11 <93-100>' as the only SCORES line; counted SCORES line(s): $(marker_count_lines "$f" "$SCORES_LINE_RE")"; rc=1; }
     done
   fi
   return $rc

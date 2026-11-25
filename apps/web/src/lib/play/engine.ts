@@ -909,6 +909,15 @@ export class WebAudioPlayEngine implements PlayEngine {
     };
   }
 
+  /**
+   * The stretch pipeline's latency for a start at the rate now playing: what
+   * `startVoices` adds between `when` and `heardAt`. 0 at 100% (bypassed).
+   */
+  stretchLatencySec(): number {
+    if (this.disposed || this.rate === 1 || this.stretchers.size === 0) return 0;
+    return this.latencyAt(this.rate);
+  }
+
   /** The context's reported latencies, for chord-clock compensation; null without a context. */
   audioLatency(): { outputLatency?: number; baseLatency?: number } | null {
     const ctx = this.ctx as (AudioContext & { outputLatency?: number }) | null;

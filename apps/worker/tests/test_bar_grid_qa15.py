@@ -193,9 +193,10 @@ def test_grid_bar_index_round_trips_on_a_drifting_grid():
 # run in the same process on the same audio, boundaries and onset envelope. Hard-coded
 # floats are not a usable oracle here: the walk compares ``t <= b`` where ``t`` and ``b``
 # are the same bar reached by two float paths (anchor + 5*bar + 4*bar vs anchor + 9*bar),
-# so whether a phrase boundary on that bar counts is a last-ulp coin flip that depends on
-# the anchor's low bits — which differ between machines (CI took bar 9 where the capture
-# machine took bar 10 on the 102 BPM track). Same process => same bits => exact compare.
+# so whether a phrase boundary on that bar counts was a last-ulp coin flip that depended on
+# the anchor's low bits (CI took bar 9 where the capture machine took bar 10 on the 102 BPM
+# track). #398 fixed it with a 1 us tolerance; the oracle carries the same tie tolerance and
+# is otherwise the verbatim pre-fix walk. Same process => same bits => exact compare.
 # ---------------------------------------------------------------------------
 
 STEADY_CASES = [
@@ -239,7 +240,13 @@ def _pre_fix_placement(path: str, grid, bars: int) -> list[tuple[float, int]]:
     starts: list[float] = []
     t = old.anchor
     while t + loop_dur <= song_len + 0.01:
-        window = [b for b in bnd if t <= b < t + loop_dur and b + loop_dur <= song_len + 0.01]
+        # Only deviation from v3/main: the bar-tie edges (#398) carry a 1 us tolerance, so
+        # the oracle no longer depends on the anchor's low bits. Everything else is verbatim.
+        window = [
+            b
+            for b in bnd
+            if t - 1e-6 <= b < t + loop_dur - 1e-6 and b + loop_dur <= song_len + 0.01
+        ]
         s = window[0] if window else t
         starts.append(s)
         t = s + loop_dur
@@ -276,6 +283,32 @@ def test_steady_tempo_output_is_unchanged(tmp_path, case):
     for lp in loops:
         assert lp["end_sec"] - lp["start_sec"] == pytest.approx(true_len)
         assert lp["audio"].shape[-1] == round(true_len * SR)
+
+
+def test_steady_walk_boundary_tie_is_deterministic():
+    """#398/#397: a phrase boundary on the same bar as the walk cursor always counts.
+
+    ``t`` reaches bar 9 as anchor + 5*bar + 4*bar, the boundary as anchor + 9*bar; those
+    differ by an ulp or two that flips with the anchor's low bits. Over many 1e-9 anchor
+    nudges (different "machines") the placement must be identical and put the loop on the
+    boundary bar (inclusive start), not one bar later.
+    """
+    from worker.extractor.loop_extractor import _walk_steady
+
+    for bpm in (102.0, 97.0, 128.0, 83.0, 140.0):
+        bar = 4 * 60.0 / bpm
+        loop_dur = 4 * bar
+        base = 0.1234567
+        results = set()
+        for k in range(-40, 41):
+            a = base + k * 1e-9
+            bnd = [a + 5 * bar, a + 9 * bar, a + 13 * bar]
+            starts = _walk_steady(a, loop_dur, bnd, song_len=a + 40 * bar)
+            # bar index of each start, relative to the nudged anchor (robust to the ulps)
+            results.add(tuple(round((x - a) / bar) for x in starts))
+        assert len(results) == 1, f"{bpm} BPM: placement varies with the anchor's low bits"
+        (bars,) = results
+        assert bars[:4] == (0, 5, 9, 13)  # every on-grid boundary counts, incl. bar 9 and 13
 
 
 def test_first_beat_at_t0_is_bar_one():

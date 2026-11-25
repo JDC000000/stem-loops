@@ -1,7 +1,8 @@
 /**
  * Count-in (Phase C, C2; user story 4.8; Jon PC-1, 2026-11-23).
  *
- * An OPTIONAL one-bar click (4 beats at the song's BPM) before playback starts
+ * An OPTIONAL one-bar click (4 beats at the song's BPM x the playback rate, so a
+ * count before playing at 75% counts at 75% of the song tempo; #387) before playback starts
  * from a user action:
  *   - a tap on a section chip (jump + play),
  *   - a long-press loop start,
@@ -39,16 +40,41 @@ export const CLICK_LEAD_SEC = 0.03;
 export const ENGINE_LEAD_SEC = 0.05;
 /** Latencies above this are not believed (the project's route estimate is capped the same way). */
 export const MAX_LATENCY_SEC = 0.5;
+/**
+ * The engine side can carry two latencies at once: the device / route one and
+ * the time-stretch pipeline's (#383, ~0.12-0.13 s at 90% / 75%). Each is capped
+ * at MAX_LATENCY_SEC by `engineCountLatencySec`; their sum is capped here.
+ */
+export const MAX_ENGINE_LATENCY_SEC = 2 * MAX_LATENCY_SEC;
+/** Playback rates outside this range are not believed (the engine offers 1, 0.9, 0.75). */
+export const MIN_COUNT_RATE = 0.25;
+export const MAX_COUNT_RATE = 4;
 /** After this the output latencies are read again (the contexts have resumed by then). */
 export const SETTLE_MS = 150;
 
 export interface CountTiming {
   /** Click context: outputLatency (else baseLatency), seconds. */
   readonly clickLatencySec: number;
-  /** Engine route latency (the playhead compensation), seconds. */
+  /** Engine latency: route / device latency plus the time-stretch pipeline's, seconds. */
   readonly engineLatencySec: number;
 }
-const lat = (n: unknown): number => (typeof n === 'number' && Number.isFinite(n) && n > 0 ? Math.min(n, MAX_LATENCY_SEC) : 0);
+const capped = (n: unknown, max: number): number => (typeof n === 'number' && Number.isFinite(n) && n > 0 ? Math.min(n, max) : 0);
+const lat = (n: unknown): number => capped(n, MAX_LATENCY_SEC);
+
+/**
+ * An AudioContext's output latency: `outputLatency`, else (missing, 0 or garbage)
+ * `baseLatency`. The ONE fallback rule for both contexts (#387 I-2: the click
+ * context used `??`, so an outputLatency of 0, which Chromium reports until the
+ * context runs, hid its baseLatency; the engine side used `||`).
+ */
+export function contextLatencySec(src: { outputLatency?: number; baseLatency?: number } | null | undefined): number {
+  return lat(src?.outputLatency) || lat(src?.baseLatency);
+}
+
+/** A believable playback rate (number), else 1. */
+export function countRate(rate: unknown): number {
+  return typeof rate === 'number' && Number.isFinite(rate) && rate >= MIN_COUNT_RATE && rate <= MAX_COUNT_RATE ? rate : 1;
+}
 
 /**
  * The engine side's latency for the count. On the phone route (audio goes through
@@ -57,14 +83,20 @@ const lat = (n: unknown): number => (typeof n === 'number' && Number.isFinite(n)
  * SAME device latency the click context has, so it is that context's
  * outputLatency (else baseLatency); reading 0 there would make the music late by
  * the device latency (150-250 ms on Bluetooth).
+ *
+ * At a slow-down rate (#383) the music also goes through the time-stretch
+ * pipeline, which the engine compensates by starting the voices `stretchSec`
+ * earlier than they are heard (engine.ts startVoices: heardAt = when + latency).
+ * So the first note is heard that much later after play(): it is added here
+ * (#387), on every route.
  */
 export function engineCountLatencySec(
   src: { outputLatency?: number; baseLatency?: number } | null | undefined,
   routed: boolean,
   routeSec: number,
+  stretchSec = 0,
 ): number {
-  if (routed) return lat(routeSec);
-  return lat(src?.outputLatency) || lat(src?.baseLatency);
+  return (routed ? lat(routeSec) : contextLatencySec(src)) + lat(stretchSec);
 }
 
 /**
@@ -77,7 +109,7 @@ export function engineCountLatencySec(
 export function timingOffsets(t: CountTiming | null | undefined): { ui: number; downbeat: number } {
   if (!t) return { ui: 0, downbeat: 0 }; // no timing source: plain 4 x 60/BPM
   const c = lat(t.clickLatencySec);
-  const e = lat(t.engineLatencySec);
+  const e = capped(t.engineLatencySec, MAX_ENGINE_LATENCY_SEC);
   return { ui: CLICK_LEAD_SEC + c, downbeat: CLICK_LEAD_SEC + c - ENGINE_LEAD_SEC - e };
 }
 
@@ -88,19 +120,23 @@ export function countInBpm(bpm: unknown): number | null {
   return n >= MIN_COUNT_IN_BPM && n <= MAX_COUNT_IN_BPM ? n : null;
 }
 
-/** One beat, in seconds: 60 / BPM. */
-export function beatSec(bpm: number): number {
-  return 60 / bpm;
+/**
+ * One beat, in seconds: 60 / (BPM x rate). At a slow-down rate the song's beat is
+ * that much longer (75%: 1/0.75 = 1.33 x), and the count must match the tempo
+ * the user is about to hear, not the song's full tempo (#387 F5).
+ */
+export function beatSec(bpm: number, rate = 1): number {
+  return 60 / (bpm * countRate(rate));
 }
 
 /** The whole count-in, in seconds: 4 beats. */
-export function countInSec(bpm: number): number {
-  return COUNT_IN_BEATS * beatSec(bpm);
+export function countInSec(bpm: number, rate = 1): number {
+  return COUNT_IN_BEATS * beatSec(bpm, rate);
 }
 
-/** Click times (seconds from the start), one per beat: 0, 60/BPM, 2*60/BPM, 3*60/BPM. */
-export function clickOffsets(bpm: number): number[] {
-  return Array.from({ length: COUNT_IN_BEATS }, (_, i) => i * beatSec(bpm));
+/** Click times (seconds from the start), one per beat: 0, 1, 2, 3 beats of `beatSec(bpm, rate)`. */
+export function clickOffsets(bpm: number, rate = 1): number[] {
+  return Array.from({ length: COUNT_IN_BEATS }, (_, i) => i * beatSec(bpm, rate));
 }
 
 export function readCountIn(): boolean {
@@ -150,6 +186,8 @@ export interface CountInOptions {
   readonly timers?: Timers;
   /** Read at each start: the two output latencies (see `timingOffsets`). Absent = none. */
   readonly timing?: () => CountTiming | null | undefined;
+  /** Read at each start: the playback rate (1, 0.9, 0.75). Absent or unbelievable = 1. */
+  readonly rate?: () => number | null | undefined;
   /** An ACTIVE count was cancelled (by the user, a toggle, a replace or an unmount); never when it completes. */
   readonly onCancel?: () => void;
 }
@@ -201,7 +239,9 @@ export function createCountIn(options: CountInOptions): CountIn {
       cancel(); // a count already running is replaced, not stacked
       cancelledAt = -Infinity;
       active = true;
-      const offsets = clickOffsets(bpm);
+      const rate = countRate(options.rate?.());
+      const offsets = clickOffsets(bpm, rate);
+      const total = countInSec(bpm, rate);
       const t0 = timers.now();
       offsets.forEach((off, i) => options.clicks?.schedule(off, i === 0));
       options.onBeat(COUNT_IN_BEATS);
@@ -228,11 +268,11 @@ export function createCountIn(options: CountInOptions): CountIn {
             clear();
             options.onBeat(null);
             then();
-          }, Math.max(0, (countInSec(bpm) + downbeat) * 1000 - elapsed)),
+          }, Math.max(0, (total + downbeat) * 1000 - elapsed)),
         );
       };
       arm();
-      if (countInSec(bpm) * 1000 > 2 * SETTLE_MS) {
+      if (total * 1000 > 2 * SETTLE_MS) {
         ids.push(
           timers.setTimeout(() => {
             if (active) arm();
@@ -333,7 +373,7 @@ export function createClickSink(): ClickSink {
     },
     latencySec() {
       const c = ctx as (AudioContext & { outputLatency?: number }) | null;
-      return c ? lat(c.outputLatency ?? c.baseLatency) : 0;
+      return c ? contextLatencySec(c) : 0;
     },
   };
 }

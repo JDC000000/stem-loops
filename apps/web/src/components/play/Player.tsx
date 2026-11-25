@@ -677,9 +677,12 @@ export default function Player({
   }, []);
   const getEngineLatencySec = useCallback(
     () => {
-      const src = engineRef.current?.audioLatency?.();
+      const engine = engineRef.current;
+      const src = engine?.audioLatency?.();
       const routed = !!outputRef.current?.routed;
-      return engineCountLatencySec(src, routed, routeLatencySec(src, routed));
+      // #387: at 90% / 75% the music is also heard the stretch pipeline's
+      // latency after play(), so the downbeat call moves that much earlier.
+      return engineCountLatencySec(src, routed, routeLatencySec(src, routed), engine?.stretchLatencySec?.() ?? 0);
     },
     [],
   );

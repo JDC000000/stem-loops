@@ -233,8 +233,19 @@ class WiringTests(unittest.TestCase):
         self.assertNotRegex(step, r"(?m)^\s+if:")
         self.assertNotIn("continue-on-error", "\n".join(job))
         self.assertIn("set -euo pipefail", step)
-        self.assertIn("python -u -m unittest discover", step)
-        self.assertRegex(step, r"-ge (10[5-9]|1[1-9]\d|[2-9]\d\d|\d{4,}) \]")
+        self.assertIn("python -I -u -m unittest discover", step)
+        # #413: the whole pipeline must stay fail-closed. Kills `exit 1`->`exit 0` in any `|| { ... }` block (a green "Ran 0"),
+        # `tee ... || exit 0`, and `set +o pipefail`.
+        self.assertNotRegex(step, r"exit\s+0")
+        self.assertNotRegex(step, r"set\s+\+o")
+        self.assertNotRegex(step, r"(?m)^\s*set\s+\+")
+        self.assertRegex(step, r"(?m)^\s*set -euo pipefail$")
+        blocks = re.findall(r"\|\|\s*\{.*\}", step)
+        self.assertGreaterEqual(len(blocks), 4)
+        for b in blocks:
+            self.assertRegex(b, r"exit 1;\s*\}$", b)
+        self.assertRegex(step, r"unittest discover[^\n]*2>&1 \| tee \"\$RUNNER_TEMP/ut\.log\"\n")
+        self.assertRegex(step, r"-ge (120|1[2-9]\d|[2-9]\d\d|\d{4,}) \]")
         self.assertIn("expected failures|unexpected successes", step)
         self.assertIn('= "OK" ]', step)
         self.assertIn("= 1 ]", step)

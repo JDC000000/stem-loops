@@ -1,4 +1,4 @@
-# or4-merge.sh — orchestrator merge gate (OR-4 v3.6.1, §11 R6)
+# or4-merge.sh — orchestrator merge gate (OR-4 v3.6.2, §11 R6)
 
 **One gate for both sessions.** 19A (agentic/ops) and 19B (product) both merge through this script. v3.5 replaces 19A's v3.4
 (#382) and 19B's v3.4-R2 (#385, Jon approved the design 2026-11-23 23:29Z, "structurally solve" merge contention). Do not run a
@@ -13,7 +13,8 @@ loosening changes are HELD for Jon (AGENTS.md M-8). When in doubt whether a chan
 | v3.5 | main | strictest union of both (below) | + #384: git env scrub, `git replace` refs FAIL, `OR4_REPO` guard tested for rc and zero network calls |
 | v3.5.1 | main | unchanged from v3.5 | **tightening only** (#391, #393): strict `DRY_RUN`/`ALLOW_BEHIND`; PUT `sha=<head>` and pre-PUT main-moved tests; gate text names the `JON_ROW` ledger row |
 | v3.6 | main | unchanged | **tightening only** (D-7, #396): money class (marker >= 93 + `SCORES:` line 2); protected needs two review files; one `VERDICT:` line per review; `LC_ALL=C`; merge-tail fails closed |
-| **v3.6.1** | **this branch** | unchanged | **tightening only** (#406): wider `MONEY_RE` (250 -> 337 of 1352 tracked files); any non-ASCII path = money; `VERDICT:`/`SCORES:` counted case-insensitively and when indented |
+| v3.6.1 | main | unchanged | **tightening only** (#406): wider `MONEY_RE` (250 -> 337 of 1352 tracked files); any non-ASCII path = money; `VERDICT:`/`SCORES:` counted case-insensitively and when indented |
+| **v3.6.2** | **this branch** | unchanged | **tightening only** (#413): `MONEY_RE` += `library-server`, `emails/dispatch`, `jobs/[id]/page.tsx`; reworded markers (`**VERDICT: FAIL**`, `> VERDICT:`, NBSP) count as VERDICT/SCORES lines; mutant-killing tests |
 
 The orchestrator's merge gate. It squash-merges a PR **only** if every check below
 passes; otherwise it prints each `FAIL:` line and exits 1 without merging. It is
@@ -101,8 +102,23 @@ The script fetches into the main clone at `/home/claude/stem-loops`.
   `account/layout.tsx`, `packages/web-browser-gate/journeys/j13-retry.mjs`, test files for the same areas. Over-matching costs a second review, never a merge.
 - **Non-ASCII = money.** `LC_ALL=C` has no Unicode case folding (U+017F would hide `stripe`), so any changed path with a byte >= 0x80 is money (and therefore protected).
 - **Strict counting.** `VERDICT:` and `SCORES:` lines are counted case-insensitively **and** with leading whitespace (`^[[:space:]]*`). A later reworded-case or indented
-  `VERDICT: FAIL` / second `SCORES:` line now fails the one-line rule. The line-1 / line-2 requirements are unchanged. Still not caught: other rewordings (`**VERDICT**`, `> VERDICT:`,
-  `Final verdict:`), edited copies as a second review, marker score vs `min(M-9, M-11)`.
+  `VERDICT: FAIL` / second `SCORES:` line now fails the one-line rule. The line-1 / line-2 requirements are unchanged.
+
+## v3.6.2 (tightening only; #413, from the R1 reviews of #411 / #410)
+
+- `MONEY_RE` also covers `apps/web/src/lib/library-server.ts`, `apps/web/src/app/jobs/[id]/page.tsx`, `apps/web/src/lib/emails/dispatch.ts`.
+- `MONEY_RE` also covers `jobs/[id]/JobView.tsx` and `emails/resend.ts`.
+- Case-insensitive counting predates v3.6.1; v3.6.1 added only indentation. v3.6.2 counts a line when, after a prefix of non-letters (indent, tab, NBSP, `>`, `**`, `#`, `|`, `- `, `1.`, `2)`, backtick), `[x]` boxes and short labels (1-3 letters + digits: `R1`, `M2`, `F3`, `PR4`), it has `VERDICT` followed by a colon (only non-alphanumerics between) or by `PASS`/`FAIL` (at most one word between), or `SCORES` followed by a colon, a number, or `M-9`/`M-11` (at most one word between). Lone CR, form feed, VT, NEL, U+2028 and U+2029 count as line breaks. The FAIL message names the counted line numbers.
+
+  | Shape | Counted? |
+  |---|---|
+  | `**VERDICT: FAIL**`, `> VERDICT: FAIL`, NBSP/ZWSP + `VERDICT: FAIL`, `VERDICT : FAIL`, `VERDICT (final): FAIL`, fullwidth colon | yes |
+  | `1. VERDICT: FAIL`, `- [x] VERDICT: FAIL`, `R1 VERDICT: FAIL`, `\| VERDICT \| FAIL \|`, `VERDICT PASS 99`, `VERDICT - FAIL` | yes |
+  | `R1 SCORES: M-9 1 M-11 1`, `SCORES 40 40`, `SCORES M-9 1`, `**SCORES**: ...` | yes |
+  | `## Verdict`, `**Scores**`, `\| M2 VERDICT count back to ... \|`, `- SCORES on line 2, both 93-100`, `verdict_unique`, `The verdict was good`, `Final verdict: FAIL` | no |
+
+- **Reviewers: outside line 1 (and line 2 for money) no line may begin, after indentation / quote / list / table / heading markup, numbering, `[x]` or a short label such as `R1`, `M2`, `F3`, with `VERDICT` then a colon or `PASS`/`FAIL`, or with `SCORES` then a colon, a number or `M-9`/`M-11`.** Headings, table rows and prose that only mention the words are fine.
+- **Residual (still hidden):** zero-width characters or homoglyphs inside the word, the bare word alone on a line, two or more words before `PASS`/`FAIL`, underscore-joined forms, the word + space + prose (`VERDICT changed to FAIL`), the word not at line start (`Final verdict: FAIL`), the word split across two lines, edited copies as a second review, marker score vs `min(M-9, M-11)`.
 
 ## Behind guard and `ALLOW_BEHIND` (v3.5)
 

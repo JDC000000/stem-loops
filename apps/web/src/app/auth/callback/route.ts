@@ -11,9 +11,12 @@
 //                                renders it via LOGIN_ERROR_COPY
 //                                (lib/auth/login-errors.ts). Codes emitted:
 //       auth_link_expired     Supabase redirected here with `error_code=otp_expired`
+//                             on a non-signup link (recovery, or no `type`)
 //       auth_signup_link_failed  a SIGNUP-confirmation link (`type=signup`, set by
 //                             /api/auth/signup) whose `code` exchange was rejected
-//                             or threw. The account exists, so "request a new link"
+//                             or threw, or that arrived with `error_code=otp_expired`
+//                             (e.g. a second open of a used link, #460).
+//                             The account exists, so "request a new link"
 //                             is wrong for this user: the copy sends them to
 //                             password sign-in (and Forgot password as the fallback)
 //       auth_callback_failed  everything else: no `code`, or the exchange of a
@@ -64,7 +67,10 @@ export async function GET(request: NextRequest) {
     // or a stale link, copy-paste or bot. Redirect with a code the login page
     // has copy for, rather than a blank 400.
     if (searchParams.get('error_code') === 'otp_expired') {
-      return fail(EXPIRED);
+      // A sign-up link reported as expired is usually a second open of an
+      // already-used link (#460): the account exists and the login screen has
+      // no "request a new link" control, so use the sign-up copy instead.
+      return fail(isSignup ? SIGNUP_LINK_FAILED : EXPIRED);
     }
     return fail(FAILED);
   }

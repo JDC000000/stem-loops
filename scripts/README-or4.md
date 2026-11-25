@@ -13,8 +13,8 @@ loosening changes are HELD for Jon (AGENTS.md M-8). When in doubt whether a chan
 | v3.5 | main | strictest union of both (below) | + #384: git env scrub, `git replace` refs FAIL, `OR4_REPO` guard tested for rc and zero network calls |
 | v3.5.1 | main | unchanged from v3.5 | **tightening only** (#391, #393): strict `DRY_RUN`/`ALLOW_BEHIND`; PUT `sha=<head>` and pre-PUT main-moved tests; gate text names the `JON_ROW` ledger row |
 | v3.6 | main | unchanged | **tightening only** (D-7, #396): money class (marker >= 93 + `SCORES:` line 2); protected needs two review files; one `VERDICT:` line per review; `LC_ALL=C`; merge-tail fails closed |
-| v3.6.1 | main | unchanged | **tightening only** (#406): wider `MONEY_RE` (250 -> 337 of 1352 tracked files); any non-ASCII path = money; `VERDICT:`/`SCORES:` counted case-insensitively and when indented |
-| **v3.6.2** | **this branch** | unchanged | **tightening only** (#413): `MONEY_RE` += `library-server`, `emails/dispatch`, `jobs/[id]/page.tsx`; reworded markers (`**VERDICT: FAIL**`, `> VERDICT:`, NBSP) count as VERDICT/SCORES lines; mutant-killing tests |
+| v3.6.1 | main | unchanged | **tightening only** (#406): wider `MONEY_RE` (250 -> 337 of the 1352 files tracked at 596371c; re-measured for #430 at f9f92f3: 342 of 1388 match v3.6.2's `MONEY_RE`); any non-ASCII path = money; `VERDICT:`/`SCORES:` counted case-insensitively and when indented |
+| **v3.6.2** | **main** (#427; #430 residue) | unchanged | **tightening only** (#413): `MONEY_RE` += `library-server`, `emails/dispatch`, `jobs/[id]/page.tsx`; reworded markers (`**VERDICT: FAIL**`, `> VERDICT:`, NBSP) count as VERDICT/SCORES lines; mutant-killing tests; #430: `SCORES (final): 40` counts, CRLF line numbers |
 
 The orchestrator's merge gate. It squash-merges a PR **only** if every check below
 passes; otherwise it prints each `FAIL:` line and exits 1 without merging. It is
@@ -119,6 +119,17 @@ The script fetches into the main clone at `/home/claude/stem-loops`.
 
 - **Reviewers: outside line 1 (and line 2 for money) no line may begin, after indentation / quote / list / table / heading markup, numbering, `[x]` or a short label such as `R1`, `M2`, `F3`, with `VERDICT` then a colon or `PASS`/`FAIL`, or with `SCORES` then a colon, a number or `M-9`/`M-11`.** Headings, table rows and prose that only mention the words are fine.
 - **Residual (still hidden):** zero-width characters or homoglyphs inside the word, the bare word alone on a line, two or more words before `PASS`/`FAIL`, underscore-joined forms, the word + space + prose (`VERDICT changed to FAIL`), the word not at line start (`Final verdict: FAIL`), the word split across two lines, edited copies as a second review, marker score vs `min(M-9, M-11)`.
+
+### #430 residue (tightening only; still v3.6.2; from the 21A reviews of #427)
+
+- `SCORES` + **one** word (letter first: `final`, `(R2)`) + a colon + a number is now counted too: `SCORES (final): 40 40`, `SCORES final: 40`, `**SCORES (final)**: 40`.
+  Still not counted (prose): `Scores below 93 fail` (no colon), `Scores breakdown: see the table` (no number), `Scores per axis: 95` (two words), `SCORES_final: 40` (underscore-joined).
+- Pinned by tests, behaviour unchanged: `PASS`/`FAIL` must be a whole word (`Verdict passes muster`, `VERDICT failed to parse` are not counted; `VERDICT PASS.`, `VERDICT FAIL_x` are);
+  `VERDICT<form feed>: FAIL` fails the file because the raw count (2) differs from the normalised count (1) and `marker_one` needs both to be 1.
+- The FAIL message's counted line numbers: CRLF is folded to LF first, so a CRLF file is numbered as an editor shows it; a lone CR / FF / VT / NEL / U+2028 / U+2029
+  inside a line still starts a new number. Folding CRLF only removes empty lines, which are never counted, so the counts are unchanged.
+- Checked against every real review file on disk before review (the 20 review comments on #409, #410, #411, #426, #427, #428): counts identical to v3.6.2 on `v3/main`,
+  and no line in `git ls-files` at f9f92f3 is newly counted.
 
 ## Behind guard and `ALLOW_BEHIND` (v3.5)
 

@@ -506,3 +506,19 @@ test('R2-2: the lock screen gets the real speed, and the drift check uses it', (
   w2.update({ status: 'playing', positionSec: 1, durationSec: 100 });
   assert.equal(ms2.positions.at(-1).playbackRate, 1);
 });
+
+test('#387: stretchLatencySec() is the stretch latency a start at the playing rate adds (0 at 100%, without stretch, after dispose)', async () => {
+  const { engine } = await rig();
+  assert.equal(engine.stretchLatencySec(), 0, '100%: bypassed');
+  await slowTo(engine, 0.9);
+  assert.equal(engine.stretchLatencySec(), 0.131);
+  await slowTo(engine, 0.75);
+  assert.equal(engine.stretchLatencySec(), 0.121);
+  engine.setPlaybackRate(1);
+  assert.equal(engine.stretchLatencySec(), 0);
+  await slowTo(engine, 0.75);
+  engine.dispose();
+  assert.equal(engine.stretchLatencySec(), 0, 'disposed');
+  const plain = await rig({ withStretch: false });
+  assert.equal(plain.engine.stretchLatencySec(), 0, 'no stretch provider');
+});

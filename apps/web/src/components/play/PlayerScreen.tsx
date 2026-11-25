@@ -280,12 +280,17 @@ export function PlayerScreen(props: ScreenProps) {
   unprimeRef.current = onUnprime;
   const engineLatRef = useRef(getEngineLatencySec);
   engineLatRef.current = getEngineLatencySec;
+  // #387 F5: the count follows the slow-down rate (60 / (BPM x rate) per beat).
+  // The rate actually PLAYING (a pending change has not taken effect yet).
+  const rateRef = useRef(snapshot.playbackRate ?? 1);
+  rateRef.current = snapshot.playbackRate ?? 1;
   useEffect(() => {
     const c = createCountIn({
       bpm: bpmNum,
       onBeat: setCountBeat,
       clicks: sinkRef.current ?? undefined,
       timing: () => ({ clickLatencySec: sinkRef.current?.latencySec?.() ?? 0, engineLatencySec: engineLatRef.current?.() ?? 0 }),
+      rate: () => rateRef.current,
       onCancel: () => unprimeRef.current?.(),
     });
     countRef.current = c;

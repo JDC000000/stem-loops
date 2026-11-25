@@ -598,7 +598,7 @@ EXPECTED_DEPLOY_WEB = [
     "- name: Install deps",
     "run: pnpm install --frozen-lockfile",
     "- name: Deploy to Vercel",
-    'run: cd apps/web && npx vercel deploy --prod --token="$VERCEL_TOKEN"',
+    'run: npx vercel deploy --prod --token="$VERCEL_TOKEN"',
     "env:",
     "VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}",
     "VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}",

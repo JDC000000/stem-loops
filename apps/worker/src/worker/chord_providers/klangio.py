@@ -74,6 +74,7 @@ from ..chord_source import (
     ChordQuotaExceeded,
     ChordResult,
     ChordSegment,
+    ChordSubmitUnanswered,
     StemKind,
     is_valid_harte_label,
 )
@@ -241,6 +242,12 @@ def _safe_upstream_error(raw: Any, api_key: str) -> str:
 
 class ChordProviderError(Exception):
     """Non-retryable terminal error from the Klangio provider (not 402/429)."""
+
+
+class ChordSubmitNoAnswer(ChordProviderError, ChordSubmitUnanswered):
+    """A non-retried request (the billable submit POST) got no HTTP response at all
+    (transport error / timeout). Still a ``ChordProviderError``; the second base lets the
+    pipeline report it as ``submit_unanswered`` without importing this module (B-8c)."""
 
 
 # ------------------------------ quota accounting ------------------------------
@@ -663,7 +670,7 @@ def _request_with_retry(
         except (httpx.TransportError, httpx.TimeoutException) as exc:
             last_exc = exc
             if attempt >= max_retries:
-                raise ChordProviderError(
+                raise (ChordProviderError if retry else ChordSubmitNoAnswer)(
                     f"Klangio {method} {url} transport failure after "
                     f"{attempt + 1} attempt(s): {exc}"
                     + ("" if retry else " (not retried: a billed job may exist)")

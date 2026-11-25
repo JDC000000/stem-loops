@@ -894,8 +894,125 @@ class Gate361(unittest.TestCase):
 
     def test_header_names_v361(self):
         with open(SCRIPT) as f:
-            head = "".join(f.readlines()[:8])
+            head = "".join(f.readlines()[:24])
         self.assertIn("v3.6.1", head)
+
+
+class Gate362(unittest.TestCase):
+    """v3.6.2 (tightening only; #413): mutant-killers for v3.6.1, three more money paths, reworded VERDICT/SCORES lines fail closed."""
+    MONEY_PR = Gate36.MONEY_PR
+    run_gate = GateWiring.run_gate
+    PR = GateWiring.PR
+
+    def _money(self, pth):
+        return sh('printf "%s\\0" "$1" | money_paths | grep -q .', pth).returncode == 0
+
+    def test_money_words_each_alone(self):
+        # each path matches ONLY through the named word (kills "drop this word from MONEY_RE")
+        for word, pth in {"allowance": "docs/x/allowance.md", "debit": "docs/x/debit.md", "job_attempts": "docs/x/job_attempts.md"}.items():
+            with self.subTest(word=word):
+                self.assertTrue(self._money(pth), pth)
+        self.assertFalse(self._money("docs/x/plain.md"))
+
+    def test_tab_indented_scores_and_verdict_fail(self):
+        with tempfile.TemporaryDirectory() as t:
+            f = os.path.join(t, "r.md")
+            for body, rc in (("VERDICT: PASS 95 HEAD abcdef0\nSCORES: M-9 95 M-11 95\n\tSCORES: M-9 10 M-11 10\n", 1),
+                             ("VERDICT: PASS 95 HEAD abcdef0\nSCORES: M-9 95 M-11 95\n\t\tscores: M-9 10 M-11 10\n", 1)):
+                put(f, body)
+                self.assertEqual(sh('money_review_ok "$1"', f).returncode, rc, body)
+            put(f, "VERDICT: PASS 95 HEAD abcdef0\n\tVERDICT: FAIL 1\n")
+            self.assertEqual(sh('verdict_unique "$1"', f).returncode, 1)
+
+    def test_new_money_paths(self):
+        for pth in ("apps/web/src/lib/library-server.ts", "apps/web/src/app/jobs/[id]/page.tsx", "apps/web/src/lib/emails/dispatch.ts"):
+            with self.subTest(p=pth):
+                self.assertTrue(self._money(pth), pth)
+        for pth in ("apps/web/src/app/jobs/page.tsx", "apps/web/src/lib/emails/layout.ts", "apps/web/src/lib/library-view.ts"):
+            with self.subTest(p=pth):
+                self.assertFalse(self._money(pth), pth)
+
+    def test_reworded_markers_fail_closed(self):
+        nb = "\u00a0"
+        for name, line in {"bold FAIL": "**VERDICT: FAIL**", "bold inner": "**VERDICT**: FAIL", "blockquote": "> VERDICT: FAIL 20", "nested quote": "> > verdict: fail",
+                           "NBSP": nb + "VERDICT: FAIL", "NBSP+tab": nb + "\t" + nb + "Verdict: FAIL", "heading": "## VERDICT: FAIL", "backtick": "`VERDICT: FAIL`",
+                           "list": "- VERDICT: FAIL", "underscore": "__VERDICT: FAIL__"}.items():
+            with self.subTest(name=name):
+                with tempfile.TemporaryDirectory() as t:
+                    f = os.path.join(t, "r.md")
+                    put(f, "VERDICT: PASS 95 HEAD abcdef0\nbody\n" + line + "\n")
+                    self.assertEqual(sh('verdict_unique "$1"', f).returncode, 1, line)
+                r, _, _ = self.run_gate([], review="VERDICT: PASS 95 HEAD @H\nbody @H\n" + line + "\n")
+                self.assertIn("DRY_RUN fail=1", r.stdout, r.stdout)
+        for name, line in {"bold": "**SCORES: M-9 1 M-11 1**", "bold inner": "**SCORES**: M-9 1 M-11 1", "space colon": "SCORES : M-9 1 M-11 1", "quote": "> SCORES: M-9 1 M-11 1", "NBSP": nb + "SCORES: M-9 1 M-11 1"}.items():
+            with self.subTest(scores=name):
+                with tempfile.TemporaryDirectory() as t:
+                    f = os.path.join(t, "r.md")
+                    put(f, "VERDICT: PASS 95 HEAD abcdef0\nSCORES: M-9 95 M-11 95\n" + line + "\n")
+                    self.assertEqual(sh('money_review_ok "$1"', f).returncode, 1, line)
+        # controls: prose without the word-colon shape, and a valid file, still pass
+        with tempfile.TemporaryDirectory() as t:
+            f = os.path.join(t, "r.md")
+            put(f, "VERDICT: PASS 95 HEAD abcdef0\nSCORES: M-9 95 M-11 95\nThe verdict was good; scores were high.\n")
+            self.assertEqual(sh('verdict_unique "$1"', f).returncode, 0)
+            self.assertEqual(sh('money_review_ok "$1"', f).returncode, 0)
+
+    def _unique(self, body):
+        with tempfile.TemporaryDirectory() as t:
+            f = os.path.join(t, "r.md")
+            with open(f, "w", encoding="utf-8", newline="") as fh:
+                fh.write(body)
+            return sh('verdict_unique "$1"', f).returncode, sh('money_review_ok "$1"', f).returncode
+
+    def test_more_reworded_shapes_fail_closed(self):
+        P = "VERDICT: PASS 95 HEAD abcdef0\nSCORES: M-9 95 M-11 95\n"
+        shapes = {"numbered": "1. VERDICT: FAIL", "numbered paren": "2) VERDICT: FAIL", "checkbox": "- [x] VERDICT: FAIL", "label R1": "R1 VERDICT: FAIL",
+                  "label R1 colon": "R1: VERDICT: FAIL", "fullwidth colon": "VERDICT\uff1a FAIL", "dash": "VERDICT - FAIL", "em dash": "VERDICT \u2014 FAIL",
+                  "parenthetical": "VERDICT (final): FAIL", "no colon": "VERDICT FAIL", "table cell": "| VERDICT | FAIL |", "no-colon pass": "VERDICT PASS 99", "ZWSP prefix": "\u200bVERDICT: FAIL",
+                  "BOM prefix": "\ufeffverdict: fail", "lone CR": "x\rVERDICT: FAIL", "form feed": "x\fVERDICT: FAIL", "vertical tab": "x\vVERDICT: FAIL",
+                  "U+2028": "x\u2028VERDICT: FAIL", "U+2029": "x\u2029VERDICT: FAIL", "NEL": "x\u0085VERDICT: FAIL"}
+        for name, line in shapes.items():
+            with self.subTest(verdict=name):
+                self.assertEqual(self._unique(P + "body\n" + line + "\n")[0], 1, name)
+            with self.subTest(scores=name):
+                self.assertEqual(self._unique(P + "body\n" + line.replace("VERDICT", "SCORES").replace("verdict", "scores").replace("FAIL", "M-9 1 M-11 1").replace("PASS 99", "40 40") + "\n")[1], 1, name)
+        # through the whole gate too
+        r, _, _ = GateWiring.run_gate(self, [], review="VERDICT: PASS 95 HEAD @H\nbody @H\n1. VERDICT - FAIL\n")
+        self.assertIn("DRY_RUN fail=1", r.stdout, r.stdout)
+
+    def test_genuine_files_and_prose_still_pass(self):
+        P = "VERDICT: PASS 95 HEAD abcdef0\nSCORES: M-9 95 M-11 95\n"
+        for body in (P, P + "The verdict was good; scores were high.\nFinal verdict: PASS\nSee the scoreboard and verdicts.\n", P + "Reviewed 3 files.\n- R1 notes: fine\n"):
+            with self.subTest(body=body):
+                self.assertEqual(self._unique(body), (0, 0))
+        self.assertEqual(self._unique("VERDICT: PASS 95 HEAD abcdef0\nbody\n")[0], 0)
+        # v3.6.2 R3 narrowing: lines that merely BEGIN with the word (headings, table rows, identifiers) are not counted; real rows from the #411/#412/#413 reviews
+        for line in ("## Verdict", "**Scores**", "| M2 VERDICT count back to `^VERDICT:` (no indent) | yes (5 failed) |", "| M5 VERDICT count case-sensitive | yes (5 failed) |",
+                     "| M3 SCORES count back to `^SCORES:` | yes (4 failed) |", "| SCORES must be line 2 | SCORES on line 3 | FAIL: claim true |",
+                     "- SCORES on line 2, both 93-100, marker 93-100 (`money_review_ok`). OK.", "- SCORES line 2, n 93-100, only SCORES line: gate lines 82-89, 112.",
+                     "| **M11 scores regex without the gap class before the colon** | **survives** |", "`verdict_unique` passes; VERDICT_LINE_RE is wider", "verdict_unique PASS"):
+            with self.subTest(benign=line):
+                self.assertEqual(self._unique(P + "body\n" + line + "\n"), (0, 0), line)
+
+    def test_jobview_and_resend_are_money(self):
+        for pth in ("apps/web/src/app/jobs/[id]/JobView.tsx", "apps/web/src/lib/emails/resend.ts"):
+            with self.subTest(p=pth):
+                self.assertTrue(self._money(pth), pth)
+        for pth in ("apps/web/src/app/jobs/[id]/layout.tsx", "apps/web/src/lib/emails/layout.ts", "apps/web/src/app/jobs/JobViewer.tsx"):
+            with self.subTest(p=pth):
+                self.assertFalse(self._money(pth), pth)
+
+    def test_fail_message_names_counted_lines(self):
+        r, _, _ = GateWiring.run_gate(self, [], review="VERDICT: PASS 95 HEAD @H\nbody @H\nx\n> VERDICT: FAIL\n")
+        self.assertIn("DRY_RUN fail=1", r.stdout, r.stdout)
+        self.assertIn("counted line(s): 1 4", r.stdout)
+
+    def test_header_names_v362(self):
+        with open(SCRIPT) as f:
+            head = "".join(f.readlines()[:20])
+        self.assertIn("v3.6.2", head)
+        self.assertIn("RESIDUAL", head)
+        self.assertIn("REVIEWERS: outside line 1", head)
 
 
 class R2Harness(unittest.TestCase):

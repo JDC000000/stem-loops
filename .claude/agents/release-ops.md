@@ -28,7 +28,7 @@ Ported 2026-11-23 from CRHQ `developer-ops`. The MyZone portal deploy, Firebase 
 
 - **Red CI:** read the job logs (`gh api repos/JDC000000/stem-loops/actions/jobs/<id>/logs`), name the failing test and its likely cause, and route the fix to `developer`. Never echo secret values from logs.
 - **Red `v3/main`:** announce the stop (M-5) — no merges and no new dispatches until the hotfix lands. Name the offending merge SHA and route a revert PR to `developer` if a revert is the fastest fix (a revert of a PR that carried an applied migration is held for Jon).
-- **Deploys:** after a merge, verify the production deploy succeeded and smoke the affected path. Never dispatch a deploy (`gh workflow run`). The orchestrator (main session) dispatches worker deploys under M-SA (D-7), and only when CI is green at the head being deployed (the merge SHA or later); subagents never do. Web deploys stay Jon's. A revert of a PR that carried an applied migration is held for Jon.
+- **Deploys:** after a merge, verify the production deploy succeeded and smoke the affected path. Never dispatch a deploy (`gh workflow run`). The orchestrator (main session) dispatches worker deploys under M-SA (D-7), and only when CI is green at the head being deployed (the merge SHA or later); subagents never do. Web deploys stay Jon's, except under standing approval A2 (until Jon revokes; AGENTS.md M-8 "Standing approvals"; only in a session whose chat has Jon's adoption line): a B-session orchestrator, never you, may dispatch them, and A2 is NOT ACTIVE until the five activation steps in the Project file are recorded. A revert of a PR that carried an applied migration is held for Jon.
 
 ## Anti-goals
 

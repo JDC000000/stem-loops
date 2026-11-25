@@ -1,7 +1,7 @@
 ---
 name: parallel-work-rules
-version: v3.6.2
-date: 2026-11-24
+version: v3.6.3
+date: 2026-11-25
 author: session 19A orchestrator (Claude Opus 5.5); v3.6 and v3.6.1 edits by session 20A, v3.6.2 by session 21A
 source: repo copy of Project claude/handover-19/PARALLEL-WORK-RULES-v3.5-2026-11-24.md, plus D-7 (SA-2 v1.2.1: Project claude/handover-19/19B/MERGE-AUTHORITY-SA2-v1.2.1-2026-11-24.md)
 supersedes: v3.4.2 (Project) and v3.4.3 (repo claude/parallel-work-rules.md, PR #388)
@@ -9,13 +9,13 @@ precedence: Jon's explicit decisions (ledger `JON` rows) > AGENTS.md > this file
 why: JON D-6, 2026-11-23 19:50 Vancouver (LEDGER-19A row 95) and JON D-7, 2026-11-23 ~20:45 Vancouver (LEDGER-19A row 110, "M-SA scope + SA-2 money rules"). D-6 verbatim: "Update your merge rules. Do a review of all the times you've asked me this session to merge and update the rules so you can self-approve. Update all documentation, stop asking me to merge. Update the rules. Learn from this session." Evidence: claude/handover-19/MERGE-ASK-REVIEW-19A-2026-11-24.md.
 ---
 
-# Parallel work rules v3.6.2
+# Parallel work rules v3.6.3
 
 **Standing rules from Jon**
 - JON 2026-11-23 11:03: always run the most parallel work these rules allow; end every cycle with one line on how Jon could unlock more.
 - **JON D-6 2026-11-23 19:50: the orchestrator self-approves merges. Never ask Jon to approve a merge.**
 - **JON D-7, 2026-11-23 ~20:45 Vancouver, LEDGER-19A row 110: "M-SA scope + SA-2 money rules" (one rule for both sessions; folds 19B's SA-2 v1.2.1).** Conditions 6–7, the worker deploy and the FYI line below come from SA-2.
-- **JON standing approvals A1/A2/A3/A5, LEDGER-22A row 27, to 2026-12-19** (canonical: Project `claude/handover-22/JON-STANDING-APPROVALS-2026-11-25.md`; repo copy: AGENTS.md M-8 "Standing approvals"): in a session where Jon typed the adoption line, the Jon-only deploy, prod-read and own-PR merge sentences below are excepted by A1/A2/A3 (A2 NOT ACTIVE until the five activation steps in the Project file are recorded); the rules below apply again after 12-19.
+- **JON standing approvals, LEDGER-22A rows 27–28 and 37–41, no end date (until Jon revokes)** (canonical: Project `claude/handover-22/JON-STANDING-APPROVALS-2026-11-25.md`; repo copy and full conditions: AGENTS.md M-8 "Standing approvals"). Main session only; subagents gain nothing; only in a session where Jon typed the adoption line in its own chat. They except only these sentences below: **A1** own-PR claim #414, update-branch, re-run of a CI job that failed on a GitHub/runner error, un-draft and gated merge without a per-PR line (HELD items, condition 5 / migration PRs and migration reverts unchanged; on a refusal, send Jon the named line, wait for him to type it, retry once, never re-route); **A2** B sessions only, worker and web `deploy.yml` dispatch, NOT ACTIVE until the five activation steps in the Project file are recorded (Fly secrets, scaling, volumes and `fly.toml` stay Jon's regardless); **A3** bare SELECT on prod/staging (≤ 20 per session) and env/secret names, not values; no writes or migrations; **A5** `send_later` self-reminders only. Everything else below applies unchanged.
 
 ## 1 · Merging (rewritten in v3.5; D-7 folded in v3.6; gate v3.6 wording in v3.6.1)
 
@@ -52,7 +52,7 @@ why: JON D-6, 2026-11-23 19:50 Vancouver (LEDGER-19A row 95) and JON D-7, 2026-1
 7. **Check the proof yourself:** PR exists, diff non-empty, CI on the head SHA, gate evidence re-read from GitHub. Review markers are checked verbatim; never convert a malformed score (lesson: `PASS 9/10`).
 8. **Review:** author ≠ reviewer model; PASS > 90 (money class: the ≥ 93 bar of §1 condition 6, D-7); max 3 rounds per PR, then stop and report. Residue the PR admits → an issue. Reviewers get the previous round's harness; authors pre-run it.
 9. **No label-based auto-merge, ever** (D-2; §11 R1 stopped after 4 failed reviews). Rebase only with `PUT …/update-branch` (D-3).
-10. **Concurrency:** ≥ 5 agents when there is work, cap 10; background CI waits, no polling check-ins. Don't loop update-branch while another session merges: use `ALLOW_BEHIND=1` where eligible, else update once right before merge.
+10. **Concurrency:** ≥ 5 agents when there is work, cap 10; background CI waits, no polling check-ins (A5 `send_later` self-reminders excepted, adopting sessions only). Don't loop update-branch while another session merges: use `ALLOW_BEHIND=1` where eligible, else update once right before merge.
 11. **Jon's attention:** one batched brief per cycle, only for decisions that are really his (hard-rule items in M-SA 5, product calls, refusals). Never re-ask what is approved. **Never ask for a merge.**
 12. **Stop rules:** second failure of the same task → stop and report; near usage limit → no new agents; heavy context → write the handover.
 13. **Measure every cycle** in the Project ledger: agents, models, merges, review rounds/scores, refusals, Jon asks (target: 0 merge asks), unlock line. Session notes never go into the repo.
@@ -70,6 +70,7 @@ why: JON D-6, 2026-11-23 19:50 Vancouver (LEDGER-19A row 95) and JON D-7, 2026-1
 | L7 | A test override (OR4_REPO) nearly became a bypass | test hooks must fail closed outside test mode |
 
 ## Changelog
+- **v3.6.3 (2026-11-25, docs only; #444, JON LEDGER-22A rows 27–28, 37–41):** pointer bullet to Jon's standing approvals (A1, A2, A3, A5; repo copy in AGENTS.md M-8), scoped to the sentences it excepts; §2.10 polling note excepts A5 self-reminders. No rule removed.
 - **v3.6.2 + #430 (2026-11-25, docs only, alignment):** gate references say v3.6.2 (condition 3 requires ≥ v3.6.2; §2 "one merge gate"); condition 6 says the #406 example paths are now in `MONEY_RE` (still a floor); the enforced list describes v3.6.2's counted VERDICT/SCORES shapes; the process list names only the shapes v3.6.2 still misses.
 - **v3.6.2 (2026-11-24, docs only, tightening/alignment; #412, R1 rounds 1-2):** the v3.6.1 entry's "gate v3.6 is on `main`" is corrected to `v3/main`. Round 2: orchestrator.md shows the 4th arg as `[<review-2>]`, required for protected/money, adds line-1 marker score ≥ 93 and bars `JON_ROW=95` only for a PR implementing a JON row; "single review at 91" only outside the protected class; release-ops: a title can only raise the class; "red `v3/main`"; "Do not self-merge" names the HELD PR. a revert of a PR that carried an applied migration is held for Jon in the red-main revert path too (not only health-fail); orchestrator agent file aligned to gate v3.6 (4-arg form, `MONEY=1`, never 95 for rules PRs); release-ops 'non-protected' excludes money class and `[billing]` titles; enforced list restores protected needs numeric `JON_ROW` + matching `JON_PR`; process list adds ledger-verify of a rules-PR row and that the gate accepts one review at 91 for a money PR its regex misses; 'Do not self-merge' reworded; `main` is `v3/main`; non-ASCII path sets `MONEY=1`.
 - **v3.6.1 (2026-11-24, docs only, tightening/alignment; #404, #406):** gate v3.6 is on `v3/main`. Condition 6: `MONEY_RE` is a floor, the orchestrator still classifies and sets `MONEY=1` when in doubt, non-ASCII path = money. Gate-vs-process table updated (gate now enforces two review files for protected/money, one VERDICT on line 1, SCORES line 2 ≥ 93, money ⇒ protected; still process: model ≠ author, real independence, money classification beyond the regex, real-PG log check, Residue). Gate invocation shows the 4th positional arg. Round-2 items from #400: worker deploys dispatched by the orchestrator under M-SA, never a subagent; a JON-row rules PR uses that row, never 95, and contains only what the row names; class D Beta arm cites the JON row and the orchestrator verifies it; deploy only when CI is green at the head being deployed; `why:` cites D-7; revert of a PR that carried an applied migration is held for Jon; §2.8 points to the money bar.

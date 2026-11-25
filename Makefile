@@ -102,9 +102,10 @@ lint-py:
 lint-web:
 	pnpm --filter web lint
 
-# Deploy web to Vercel
+# Deploy web to Vercel. Run from the REPO ROOT: the Vercel project's Root
+# Directory is apps/web, so cd-ing there first breaks the deploy (#451, #452).
 deploy-web:
-	cd apps/web && npx vercel deploy --prod
+	npx vercel deploy --prod
 
 # Deploy worker to Fly.io
 deploy-worker:

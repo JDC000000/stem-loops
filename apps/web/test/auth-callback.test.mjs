@@ -285,8 +285,9 @@ test('a failed link of unknown type is not assumed to be a signup link', async (
 test('no code / otp_expired keep their codes and now carry next too', async () => {
   const mod = await loadRoute();
   const next = encodeURIComponent('/jobs/abc-123');
+  // #460: a signup link with otp_expired gets the signup copy, not "request a new one".
   const expired = await mod.GET(makeReq(`https://stem-loops.com/auth/callback?type=signup&error_code=otp_expired&next=${next}`));
-  assert.equal(loc(expired), `${LOGIN}?error=auth_link_expired&return_to=%2Fjobs%2Fabc-123`);
+  assert.equal(loc(expired), `${LOGIN}?error=auth_signup_link_failed&return_to=%2Fjobs%2Fabc-123`);
   const nocode = await mod.GET(makeReq(`https://stem-loops.com/auth/callback?type=signup&next=${next}`));
   assert.equal(loc(nocode), `${LOGIN}?error=auth_callback_failed&return_to=%2Fjobs%2Fabc-123`);
   assert.equal(globalThis.__exchangeCalls.length, 0);
@@ -296,4 +297,40 @@ test('a successful signup exchange still lands on next', async () => {
   const mod = await loadRoute({ exchangeResult: { error: null } });
   const res = await mod.GET(makeReq('https://stem-loops.com/auth/callback?type=signup&code=c1&next=' + encodeURIComponent('/jobs/abc-123')));
   assert.equal(loc(res), 'https://stem-loops.com/jobs/abc-123');
+});
+
+// ── #460: otp_expired on the query-string error path consults type=signup ──────────────────────
+// A second open of an already-used sign-up link arrives as error_code=otp_expired with no code.
+// The account exists and the login screen has no "request a new link" control, so a signup link
+// gets auth_signup_link_failed; recovery / magic-link / untyped links keep auth_link_expired.
+const OTP = 'https://stem-loops.com/auth/callback?error=access_denied&error_code=otp_expired';
+
+test('#460 signup + otp_expired -> auth_signup_link_failed, no exchange', async () => {
+  const mod = await loadRoute();
+  const res = await mod.GET(makeReq(`${OTP}&type=signup`));
+  assert.equal(res.status, 307);
+  assert.equal(loc(res), `${LOGIN}?error=auth_signup_link_failed`);
+  assert.equal(globalThis.__exchangeCalls.length, 0);
+});
+
+test('#460 recovery + otp_expired -> auth_link_expired (unchanged)', async () => {
+  const mod = await loadRoute();
+  const res = await mod.GET(makeReq(`${OTP}&type=recovery`));
+  assert.equal(loc(res), `${LOGIN}?error=auth_link_expired`);
+  const withNext = await mod.GET(makeReq(`${OTP}&type=recovery&next=${encodeURIComponent('/account/reset-password')}`));
+  assert.equal(loc(withNext), `${LOGIN}?error=auth_link_expired&return_to=%2Faccount%2Freset-password`);
+});
+
+test('#460 no type / magiclink / near-miss types + otp_expired -> auth_link_expired (unchanged)', async () => {
+  const mod = await loadRoute();
+  for (const q of ['', '&type=magiclink', '&type=Signup', '&type=signup%20', '&type=']) {
+    const res = await mod.GET(makeReq(OTP + q));
+    assert.equal(loc(res), `${LOGIN}?error=auth_link_expired`, JSON.stringify(q));
+  }
+});
+
+test('#460 signup without otp_expired and without code still -> auth_callback_failed', async () => {
+  const mod = await loadRoute();
+  const res = await mod.GET(makeReq('https://stem-loops.com/auth/callback?type=signup&error_code=bad_jwt'));
+  assert.equal(loc(res), `${LOGIN}?error=auth_callback_failed`);
 });

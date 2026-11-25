@@ -73,6 +73,18 @@ export function faqEntries(chords: boolean = chordsLineShown()): Record<string, 
       </p>
     ),
   },
+  // #379 item 3 (Jon, S22): pickup songs are a known limit. Bar 1 is placed on the first strong
+  // beat found, with no downbeat model, so a song that opens with a pickup can number its bars early.
+  pickup: {
+    id: 'faq-pickup',
+    q: 'Why does bar 1 start early on some songs?',
+    a: (
+      <p>
+        Songs that start with a pickup (a few notes before the first full bar) may show bar 1 a beat or two early; the
+        chords still follow the music.
+      </p>
+    ),
+  },
   time: {
     id: 'faq-time',
     q: 'How long does it take?',
@@ -155,12 +167,13 @@ export function homeFaq(chords: boolean = chordsLineShown()): readonly FaqEntry[
 
 /** /help, grouped. Every entry appears exactly once. */
 // DB-17: with the chords switch off, "How good are the chords?" leaves /help as well — the
-// question itself presents a chord track as part of what a new song gets.
+// question itself presents a chord track as part of what a new song gets. The pickup answer
+// (#379 item 3) talks about the chords too, so it leaves with it.
 export function helpSections(chords: boolean = chordsLineShown()): readonly { heading: string; entries: readonly FaqEntry[] }[] {
   const FAQ = faqEntries(chords);
   return [
     { heading: 'Getting started', entries: [FAQ.get, FAQ.account, FAQ.youtube, FAQ.browsers, FAQ.time] },
-    { heading: 'Playing along', entries: chords ? [FAQ.chords, FAQ.split, FAQ.tempo] : [FAQ.split, FAQ.tempo] },
+    { heading: 'Playing along', entries: chords ? [FAQ.chords, FAQ.pickup, FAQ.split, FAQ.tempo] : [FAQ.split, FAQ.tempo] },
     { heading: 'Your songs', entries: [FAQ.files, FAQ.rights] },
   ];
 }

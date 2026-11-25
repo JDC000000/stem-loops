@@ -146,6 +146,17 @@ test('/help carries every question, the home five included, each exactly once', 
   assert.match(HELP.html, /<h1>Help<\/h1>/);
 });
 
+test('#379 item 3: /help notes the pickup-song limit, under Playing along, in plain words', () => {
+  const LINE = 'Songs that start with a pickup (a few notes before the first full bar) may show bar 1 a beat or two early; the chords still follow the music.';
+  assert.ok(flatten(HELP.html).includes(LINE), '/help is missing the pickup line');
+  assert.doesNotMatch(HELP.textSpaced, /anacrusis/i, 'no jargon on /help');
+  // Under "Playing along": after that heading and before the next one.
+  const playing = HELP.html.split(/<h2[^>]*>/).find((part) => part.startsWith('Playing along'));
+  assert.ok(playing && /<details id="faq-pickup">/.test(playing), 'the pickup answer is not under Playing along');
+  assert.doesNotMatch(homeFaq(), /faq-pickup/, 'the pickup answer is /help only');
+  // With CHORDS_CLAIMS=off it leaves with the chords: pinned by chords-switch-surfaces.test.mjs (C-12 /help).
+});
+
 test('/help is public, indexable and in the sitemap; the footer links it', () => {
   const p = pageFor('/help');
   assert.ok(p && p.published, '/help is in the registry and published');

@@ -1,4 +1,4 @@
-"""Offline tests for scripts/or4-merge.sh (gate v3.6.1 = v3.6 + wider MONEY_RE, non-ASCII path = money, strict VERDICT/SCORES counting; v3.6 = v3.5.1 + money class / two protected reviews / merge-tail hardening; v3.5.1 = v3.4 ∪ 19B v3.4-R2 ∪ #384): protected-path regex, behind guard
+"""Offline tests for scripts/or4-merge.sh (gate v3.6.2 + #430 residue = v3.6.1 + reworded/prefixed VERDICT/SCORES shapes counted; gate v3.6.1 = v3.6 + wider MONEY_RE, non-ASCII path = money, strict VERDICT/SCORES counting; v3.6 = v3.5.1 + money class / two protected reviews / merge-tail hardening; v3.5.1 = v3.4 ∪ 19B v3.4-R2 ∪ #384): protected-path regex, behind guard
 (ALLOW_BEHIND, protected, <=5, overlap, hot/coupled, main deletions/renames), snapshot pin, pre-PUT main re-check, git env/replace
 hardening, OR4_REPO guard, verdict-marker parsing.
 
@@ -1013,6 +1013,72 @@ class Gate362(unittest.TestCase):
         self.assertIn("v3.6.2", head)
         self.assertIn("RESIDUAL", head)
         self.assertIn("REVIEWERS: outside line 1", head)
+
+
+class Gate362Residue(unittest.TestCase):
+    """#430 residue of the #427 reviews (tightening only): SCORES + one word + colon + number, the PASS/FAIL word boundary,
+    a form feed between the word and the colon (raw vs normalised count), CRLF line numbering in the FAIL message."""
+    P = "VERDICT: PASS 95 HEAD abcdef0\nSCORES: M-9 95 M-11 95\n"
+    _unique = Gate362._unique
+
+    def _lines(self, body, which="VERDICT_LINE_RE"):
+        with tempfile.TemporaryDirectory() as t:
+            f = os.path.join(t, "r.md")
+            with open(f, "w", encoding="utf-8", newline="") as fh:
+                fh.write(body)
+            return sh('marker_count_lines "$1" "$' + which + '"', f).stdout
+
+    def test_scores_one_word_colon_number_counts(self):
+        for line in ("SCORES (final): 40 40", "SCORES final: 40", "scores (R2): 10", "**SCORES (final)**: 40 40", "> SCORES final:40", "R1 SCORES (final): 40"):
+            with self.subTest(line=line):
+                self.assertEqual(self._unique(self.P + "body\n" + line + "\n")[1], 1, line)
+
+    def test_scores_prose_still_benign(self):
+        # word + number without a colon, or word + colon without a number, or two words: not counted (prose / headings)
+        for line in ("Scores below 93 fail the money bar.", "Scores breakdown: see the table.", "Scores per axis: 95", "SCORES_final: 40", "Scores (final)"):
+            with self.subTest(line=line):
+                self.assertEqual(self._unique(self.P + "body\n" + line + "\n"), (0, 0), line)
+
+    def test_pass_fail_word_boundary_prose(self):
+        # PASS/FAIL must be a whole word: these prose lines are NOT counted ...
+        for line in ("Verdict passes muster on every axis.", "VERDICT failed to parse in the old gate.", "Verdict passing is not enough.",
+                     "verdict fails closed", "VERDICT passthrough", "Verdict, in short, passes", "VERDICT failure modes below"):
+            with self.subTest(benign=line):
+                self.assertEqual(self._unique(self.P + "body\n" + line + "\n")[0], 0, line)
+        # ... and the whole word followed by punctuation, end of line or an underscore IS counted
+        for line in ("VERDICT PASS.", "VERDICT FAIL)", "Verdict pass", "VERDICT final FAIL!", "VERDICT FAIL_x", "VERDICT -- fail, 40"):
+            with self.subTest(counted=line):
+                self.assertEqual(self._unique(self.P + "body\n" + line + "\n")[0], 1, line)
+
+    def test_form_feed_between_word_and_colon(self):
+        # raw grep sees "VERDICT\f: FAIL" as one counted line; normalisation splits it into "VERDICT" + ": FAIL" (neither counted).
+        # marker_one needs BOTH counts to be 1, so the raw count (2) fails the file: kills "marker_one uses only the normalised count".
+        for word, rest, idx in (("VERDICT", ": FAIL", 0), ("verdict", ": fail 10", 0), ("SCORES", ": M-9 1 M-11 1", 1), ("SCORES", ": 40", 1)):
+            with self.subTest(word=word, rest=rest):
+                body = self.P + "body\n" + word + "\f" + rest + "\n"
+                self.assertEqual(self._unique(body)[idx], 1, repr(body))
+                with tempfile.TemporaryDirectory() as t:
+                    f = os.path.join(t, "r.md")
+                    with open(f, "w", encoding="utf-8", newline="") as fh:
+                        fh.write(body)
+                    rx = "VERDICT_LINE_RE" if idx == 0 else "SCORES_LINE_RE"
+                    self.assertEqual(sh('marker_one "$1" "$' + rx + '"', f).returncode, 1)
+                    self.assertEqual(sh('grep -aciE "$' + rx + '" "$1"', f).stdout.strip(), "2")
+                    self.assertEqual(sh('marker_line_count "$1" "$' + rx + '"', f).stdout.strip(), "1")
+
+    def test_crlf_line_numbers_match_editor(self):
+        crlf = "VERDICT: PASS 95 HEAD abcdef0\r\nbody\r\nmore\r\n> VERDICT: FAIL\r\n"
+        self.assertEqual(self._lines(crlf).split(), ["1", "4"])
+        self.assertEqual(self._unique(crlf)[0], 1)
+        # a lone CR still starts a new line (and a new number)
+        self.assertEqual(self._lines("VERDICT: PASS 95 HEAD abcdef0\nx\rVERDICT: FAIL\n").split(), ["1", "3"])
+        # CRLF valid money file still passes (CRLF -> LF only drops empty lines, never a counted one)
+        self.assertEqual(self._unique("VERDICT: PASS 95 HEAD abcdef0\r\nSCORES: M-9 95 M-11 95\r\nbody\r\n"), (1, 1))
+
+    def test_header_names_430_residue(self):
+        with open(SCRIPT) as f:
+            head = "".join(f.readlines()[:22])
+        self.assertIn("#430 residue", head)
 
 
 class R2Harness(unittest.TestCase):

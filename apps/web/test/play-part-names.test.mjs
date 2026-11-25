@@ -235,6 +235,21 @@ test('#386: the player toast is top-anchored under the header, clear of the pill
   assert.match(toast, /bottom: calc\(140px/, 'the shared toast (set-list pages) is unchanged');
 });
 
+// ── #422: the toast does not absorb taps on the notice / Retry beneath it ──
+test('#422: the player toast passes taps through (pointer-events: none) and has no controls of its own', () => {
+  // Comments blanked first, so prose that names the property cannot satisfy the gate.
+  const css = readFileSync(join(WEB, 'src/components/play/Player.module.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+  const rules = [...css.matchAll(/\.root \.toast \{([^}]*)\}/g)];
+  assert.equal(rules.length, 1, 'exactly one .root .toast rule');
+  assert.match(rules[0][1], /(?:^|[;\s])pointer-events:\s*none;/, '.root .toast sets pointer-events: none');
+  // pointer-events: none is only safe while the toast holds plain text: a button or link inside
+  // it would be untappable.
+  const src = readFileSync(join(WEB, 'src/components/play/PlayerScreen.tsx'), 'utf8');
+  const body = src.match(/data-testid="set-toast">([\s\S]*?)<\/p>/);
+  assert.ok(body, 'the toast <p> is found');
+  assert.doesNotMatch(body[1], /<(?:button|a|Link)\b|onClick/, 'the toast contains no interactive element');
+});
+
 // ── F1: the "+N more" cue is re-measured when a name changes ────────────────
 test('strip (DOM): renaming a part re-measures overflow, so the "+N more" cue appears without any scroll or resize', async () => {
   const { mod, React } = await loadStrip();

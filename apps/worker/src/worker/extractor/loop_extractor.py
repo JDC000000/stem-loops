@@ -87,14 +87,7 @@ def extract_loops(
     if grid.follows_beats:
         placed = _place_following(grid, bnd, loop_length_bars, song_len)
     else:
-        starts: list[float] = []
-        t = grid.anchor  # first musical downbeat; before it is silence/lead-in
-        while t + loop_dur <= song_len + 0.01:
-            window = [b for b in bnd if t <= b < t + loop_dur and b + loop_dur <= song_len + 0.01]
-            s = window[0] if window else t
-            starts.append(s)
-            t = s + loop_dur
-        starts = _cap(starts)
+        starts = _cap(_walk_steady(grid.anchor, loop_dur, bnd, song_len))
         # Snap each (grid) start to the beat detected inside its own window, so a slightly
         # drifting performance still gets on-beat starts. Bounded to ±0.1 beat by the grid.
         placed = []
@@ -125,6 +118,35 @@ def extract_loops(
                     "audio": chunk,
                     "sr": sr,
                 }
+
+
+# Float-tie tolerance (seconds) for the steady loop walk. ``t`` (accumulated by adding
+# loop_dur) and a phrase boundary ``b`` (anchor + k*bar) can be the same bar reached by two
+# float paths, so they differ by a few ulps that vary with the anchor's low bits (i.e. per
+# machine). 1 microsecond is orders below one sample (~22.7 us) and any musical distance.
+TIE_EPS_S = 1e-6
+
+
+def _walk_steady(anchor: float, loop_dur: float, bnd: list[float], song_len: float) -> list[float]:
+    """Steady-tempo walk: non-overlapping loop_dur starts, preferring a phrase boundary
+    inside the upcoming window ``[t, t + loop_dur)``, else the bar grid at ``t``.
+
+    Both window edges are compared with TIE_EPS_S so a boundary on the same bar as ``t``
+    counts (inclusive start) and one on the next window's bar does not (exclusive end),
+    whatever the last-ulp rounding of the two float paths.
+    """
+    starts: list[float] = []
+    t = anchor  # first musical downbeat; before it is silence/lead-in
+    while t + loop_dur <= song_len + 0.01:
+        window = [
+            b
+            for b in bnd
+            if t - TIE_EPS_S <= b < t + loop_dur - TIE_EPS_S and b + loop_dur <= song_len + 0.01
+        ]
+        s = window[0] if window else t
+        starts.append(s)
+        t = s + loop_dur
+    return starts
 
 
 def _cap(starts: list[float]) -> list[float]:

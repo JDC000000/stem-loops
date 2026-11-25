@@ -977,7 +977,7 @@ export function PlayerScreen(props: ScreenProps) {
         onMessage={setSetToast}
       />
       {setToast ? (
-        <p className={setStyles.toast} role="status" data-testid="set-toast">
+        <p className={`${setStyles.toast} ${styles.toast}`} role="status" data-testid="set-toast">
           {setToast}
         </p>
       ) : null}

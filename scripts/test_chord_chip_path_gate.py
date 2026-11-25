@@ -232,6 +232,26 @@ class WiringTests(unittest.TestCase):
         self.assertNotIn("continue-on-error", step)
         self.assertNotRegex(step, r"(?m)^\s+if:")
         self.assertNotIn("continue-on-error", "\n".join(job))
+        self.assertIn("set -euo pipefail", step)
+        self.assertIn("python -I -u -m unittest discover", step)
+        # #413: the whole pipeline must stay fail-closed. Kills `exit 1`->`exit 0` in any `|| { ... }` block (a green "Ran 0"),
+        # `tee ... || exit 0`, and `set +o pipefail`.
+        self.assertNotRegex(step, r"exit\s+0")
+        self.assertNotRegex(step, r"set\s+\+o")
+        self.assertNotRegex(step, r"(?m)^\s*set\s+\+")
+        self.assertRegex(step, r"(?m)^\s*set -euo pipefail$")
+        blocks = re.findall(r"\|\|\s*\{.*\}", step)
+        self.assertGreaterEqual(len(blocks), 4)
+        for b in blocks:
+            self.assertRegex(b, r"exit 1;\s*\}$", b)
+        self.assertRegex(step, r"unittest discover[^\n]*2>&1 \| tee \"\$RUNNER_TEMP/ut\.log\"\n")
+        self.assertRegex(step, r"-ge (120|1[2-9]\d|[2-9]\d\d|\d{4,}) \]")
+        self.assertIn("expected failures|unexpected successes", step)
+        self.assertIn('= "OK" ]', step)
+        self.assertIn("= 1 ]", step)
+        self.assertNotRegex(step, r"set \+[a-z]*e|\|\|\s*(:|true\b|echo\b)")
+        self.assertIn("-s scripts -p 'test_*.py'", step)
+        self.assertNotRegex("\n".join(job), r"(?m)^    if:")
 
     def test_sweep_steps_keep_gate_condition(self):
         gate = next(i for i, l in enumerate(self.job) if l.strip() == "id: gate")
@@ -247,7 +267,9 @@ class WiringTests(unittest.TestCase):
         for st in steps:
             with self.subTest(step=st[0].strip()):
                 self.assertIn("        if: steps.gate.outputs.run == 'true'", st)
-        self.assertIn("EVENT_NAME: ${{ github.event_name }}", "\n".join(self.job))
+        self.assertIn("          EVENT_NAME: ${{ github.event_name }}", self.job)
+        self.assertNotRegex("\n".join(self.job), r"(?m)^    if:")
+        self.assertNotIn("continue-on-error", "\n".join(self.job))
 
 
 if __name__ == "__main__":

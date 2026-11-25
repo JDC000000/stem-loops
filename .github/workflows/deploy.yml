@@ -16,10 +16,12 @@ on:
 jobs:
   ci-green-gate:
     # Fail closed BEFORE any deploy step unless (1) the SHA being deployed
-    # (github.sha: the head of the dispatched ref) is on v3/main, and (2) every
+    # (github.sha: the head of the dispatched ref) is on v3/main, (2) every
     # required check of ruleset 26478884 has a GitHub Actions check-run on that
     # exact SHA that concluded success (in_progress, queued, skipped, neutral,
-    # missing ... all fail). Logic + tests: scripts/ci_green_gate.py,
+    # missing ... all fail), and (3) every other GitHub Actions check-run on the
+    # SHA is completed with success or skipped, except this deploy workflow's own
+    # runs (identified by check suite id). Logic + tests: scripts/ci_green_gate.py,
     # scripts/test_ci_green_gate.py. Every deploy job `needs:` this job and has no
     # always()/failure() in its `if:`, so a red gate skips the deploy.
     # Why: S20 #376 (19 min early) and S21 #420 (9 s after merge) deployed the
@@ -29,6 +31,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
+      actions: read   # list deploy.yml runs on the SHA, to exclude this workflow's own check suites
       checks: read
       contents: read
     steps:
@@ -40,19 +43,26 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           SHA: ${{ github.sha }}
+          RUN_ID: ${{ github.run_id }}
         run: |
           set -euo pipefail
           gh api --paginate "repos/$REPO/commits/$SHA/check-runs?filter=latest&per_page=100" \
             --jq '.check_runs[]' > "$RUNNER_TEMP/check-runs.ndjson"
           gh api "repos/$REPO/compare/$SHA...v3/main" \
             --jq '{status: .status, merge_base: .merge_base_commit.sha}' > "$RUNNER_TEMP/compare.json"
+          gh api --paginate "repos/$REPO/actions/workflows/deploy.yml/runs?head_sha=$SHA&per_page=100" \
+            --jq '.workflow_runs[] | {id: .id, check_suite_id: .check_suite_id, path: .path}' > "$RUNNER_TEMP/deploy-runs.ndjson"
+          gh api "repos/$REPO/actions/runs/$RUN_ID" \
+            --jq '{id: .id, check_suite_id: .check_suite_id, path: .path}' >> "$RUNNER_TEMP/deploy-runs.ndjson"
       - name: Require main CI green on the deployed SHA
         env:
           SHA: ${{ github.sha }}
+          RUN_ID: ${{ github.run_id }}
         run: |
           set -euo pipefail
-          python3 -I -u scripts/ci_green_gate.py --sha "$SHA" \
-            --runs "$RUNNER_TEMP/check-runs.ndjson" --compare "$RUNNER_TEMP/compare.json"
+          python3 -I -u scripts/ci_green_gate.py --sha "$SHA" --run-id "$RUN_ID" \
+            --runs "$RUNNER_TEMP/check-runs.ndjson" --compare "$RUNNER_TEMP/compare.json" \
+            --deploy-runs "$RUNNER_TEMP/deploy-runs.ndjson"
 
   deploy-web:
     name: Deploy Web to Vercel

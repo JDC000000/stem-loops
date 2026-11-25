@@ -36,6 +36,15 @@ SPEND SAFETY (Startup tier is real money: 500 incl., then $0.20/request):
   of silently incurring overage. Attempts are never refunded: a rejected or
   ambiguous request may still have consumed quota.
 
+K-1: a submit POST that provably sent nothing (connect error / connect timeout / pool
+timeout) releases the per-job ledger claim; any later transport error keeps it (no
+double bill). The quota slot is not refunded either way.
+
+K-2: a process-wide circuit breaker (``_SubmitBreaker``) skips submits, before the claim
+and the quota slot, after ``KLANGIO_BREAKER_FAILURES`` (default 3; 0 disables)
+consecutive unanswered submits, for ``KLANGIO_BREAKER_PAUSE_SEC`` (default 1800), then
+lets one trial through. Skipped submits raise ``ChordProviderPaused``.
+
 402 → ``ChordQuotaExceeded`` (terminal). 4xx (not 402, 429) → raised
 immediately — these are our bugs, retrying wastes quota.
 
@@ -71,6 +80,7 @@ import httpx
 
 from ..chord_source import (
     ChordJobLedger,
+    ChordProviderPaused,
     ChordQuotaExceeded,
     ChordResult,
     ChordSegment,
@@ -246,8 +256,200 @@ class ChordProviderError(Exception):
 
 class ChordSubmitNoAnswer(ChordProviderError, ChordSubmitUnanswered):
     """A non-retried request (the billable submit POST) got no HTTP response at all
-    (transport error / timeout). Still a ``ChordProviderError``; the second base lets the
-    pipeline report it as ``submit_unanswered`` without importing this module (B-8c)."""
+    (transport error / timeout) after it may have been sent. Still a ``ChordProviderError``;
+    the second base lets the pipeline report it as ``submit_unanswered`` without importing
+    this module (B-8c)."""
+
+
+class ChordSubmitNotSent(ChordProviderError):
+    """K-1: the non-retried submit POST failed before any request byte could leave this
+    process: ``httpx.ConnectError`` / ``ConnectTimeout`` (DNS, TCP or TLS handshake never
+    completed) or ``PoolTimeout`` (no connection was ever acquired). Nothing reached
+    Klangio, so nothing was billed and ``_submit`` releases the ledger claim.
+
+    Deliberately NOT ``WriteError`` / ``WriteTimeout``: httpx does not report how many body
+    bytes were written before those, so they cannot prove nothing was sent and stay
+    ``ChordSubmitNoAnswer`` (claim kept, no double bill)."""
+
+
+# K-1: transport errors raised before httpx sends any request byte. httpcore raises
+# ConnectError/ConnectTimeout only while opening the connection (DNS, TCP, TLS) and
+# PoolTimeout only while waiting for one; a failure while writing the request is a
+# WriteError/WriteTimeout and while waiting for the answer a ReadError/ReadTimeout.
+_NOT_SENT_ERRORS: tuple[type[Exception], ...] = (
+    httpx.ConnectError,
+    httpx.ConnectTimeout,
+    httpx.PoolTimeout,
+)
+
+
+# ------------------------------ K-2: submit circuit breaker ------------------------------
+# Process-wide (no DB, no migration): each worker process trips on its own. During a
+# Klangio outage every submit POST otherwise holds its job 30-120 s and spends one quota
+# slot. After N consecutive "sent, no answer" submits the breaker opens for M seconds and
+# further submits are skipped before the ledger claim and the quota reservation. After M
+# seconds exactly one trial submit is let through (half-open): an answer closes it, no
+# answer (or a trial that could not connect) re-opens it for another M seconds.
+BREAKER_FAILURES_DEFAULT = 3
+BREAKER_PAUSE_SEC_DEFAULT = 1800.0
+
+# Outcomes of one admitted submit, reported to ``_SubmitBreaker.settle``.
+OUTCOME_ANSWERED = "answered"  # any HTTP response (2xx, 4xx, 5xx, 402): Klangio is reachable
+OUTCOME_NO_ANSWER = "no_answer"  # ChordSubmitNoAnswer: sent (maybe), no response
+OUTCOME_NOT_SENT = "not_sent"  # ChordSubmitNotSent: could not connect
+OUTCOME_ABORTED = "aborted"  # no POST was made (claim / quota / drain / local error)
+
+_breaker_now = time.monotonic
+
+
+def _breaker_config() -> tuple[int, float]:
+    """``(failures, pause_sec)`` from env, read per call. ``failures == 0`` disables."""
+    failures = _env_int("KLANGIO_BREAKER_FAILURES", BREAKER_FAILURES_DEFAULT)
+    if failures < 0:
+        raise ChordProviderError(f"KLANGIO_BREAKER_FAILURES={failures} must be >= 0")
+    raw = os.environ.get("KLANGIO_BREAKER_PAUSE_SEC", "").strip()
+    try:
+        pause = float(raw) if raw else BREAKER_PAUSE_SEC_DEFAULT
+    except ValueError as exc:
+        raise ChordProviderError(f"KLANGIO_BREAKER_PAUSE_SEC={raw[:16]!r} is not a number") from exc
+    if not math.isfinite(pause) or pause < 0:
+        raise ChordProviderError(f"KLANGIO_BREAKER_PAUSE_SEC={raw[:16]!r} must be >= 0")
+    return failures, pause
+
+
+class _SubmitBreaker:
+    """Closed -> open -> half-open circuit breaker for the billable submit POST.
+
+    Thread-safe: the worker runs the chord hook in ``asyncio.to_thread`` and an orphaned
+    thread (job deadline) can overlap the next job's, so all state is under one lock.
+    Transition logs and the Sentry capture are emitted after the lock is released.
+    """
+
+    CLOSED = "closed"
+    OPEN = "open"
+    HALF_OPEN = "half_open"
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._reset_locked()
+
+    def _reset_locked(self) -> None:
+        self.state = self.CLOSED
+        self.consecutive_no_answer = 0
+        self.open_until = 0.0
+        self.trial_in_flight = False
+
+    def reset(self) -> None:
+        """Back to closed (tests; also what a process restart does)."""
+        with self._lock:
+            self._reset_locked()
+
+    def admit(self) -> bool:
+        """Return ``True`` if this submit is the half-open trial, ``False`` for a normal
+        submit. Raise ``ChordProviderPaused`` when the submit must be skipped."""
+        failures, _pause = _breaker_config()
+        if failures == 0:
+            return False  # disabled: never skip (state is ignored while disabled)
+        transition = None
+        with self._lock:
+            if self.state == self.CLOSED:
+                return False
+            now = _breaker_now()
+            if self.state == self.OPEN and now >= self.open_until:
+                self.state = self.HALF_OPEN
+                self.trial_in_flight = True
+                transition = self.HALF_OPEN
+            elif self.state == self.HALF_OPEN and not self.trial_in_flight:
+                # A previous trial was aborted before its POST: hand the slot on.
+                self.trial_in_flight = True
+            else:
+                remaining = max(0.0, self.open_until - now) if self.state == self.OPEN else None
+                state = self.state
+                transition = "skip"
+        if transition == self.HALF_OPEN:
+            log_structured("WARN", "chords_breaker_half_open", provider="klangio")
+            return True
+        if transition == "skip":
+            raise ChordProviderPaused(
+                f"Klangio submits paused by the circuit breaker (state={state}"
+                + (f", {remaining:.0f}s left" if remaining is not None else ", trial in flight")
+                + "); no request sent"
+            )
+        return True
+
+    def settle(self, outcome: str, *, trial: bool) -> None:
+        """Record the outcome of an admitted submit (``trial`` = what ``admit`` returned)."""
+        failures, pause = _breaker_config_safe()
+        transition = None
+        streak = 0
+        with self._lock:
+            if trial and self.state == self.HALF_OPEN:
+                self.trial_in_flight = False
+                if outcome == OUTCOME_ANSWERED:
+                    self._reset_locked()
+                    transition = self.CLOSED
+                elif outcome == OUTCOME_ABORTED:
+                    pass  # stays half-open; the next submit becomes the trial
+                else:  # no answer, or still cannot connect: pause again
+                    self.state = self.OPEN
+                    self.open_until = _breaker_now() + pause
+                    streak = self.consecutive_no_answer
+                    transition = self.OPEN
+            elif failures > 0 and self.state == self.CLOSED:
+                if outcome == OUTCOME_ANSWERED:
+                    self.consecutive_no_answer = 0
+                elif outcome == OUTCOME_NO_ANSWER:
+                    self.consecutive_no_answer += 1
+                    if self.consecutive_no_answer >= failures:
+                        self.state = self.OPEN
+                        self.open_until = _breaker_now() + pause
+                        streak = self.consecutive_no_answer
+                        transition = self.OPEN
+                # not_sent / aborted: neither proves nor disproves a hang; streak unchanged.
+            # A normal (non-trial) submit that finishes while open/half-open (it was admitted
+            # before the breaker opened) does not change the state.
+        if transition == self.OPEN:
+            log_structured(
+                "WARN",
+                "chords_breaker_open",
+                provider="klangio",
+                consecutive_no_answer=streak,
+                threshold=failures,
+                pause_sec=pause,
+                trigger=outcome,
+                from_trial=trial,
+            )
+            _sentry_capture_breaker_open(streak, failures, pause, from_trial=trial)
+        elif transition == self.CLOSED:
+            log_structured("WARN", "chords_breaker_closed", provider="klangio")
+
+
+def _breaker_config_safe() -> tuple[int, float]:
+    """``_breaker_config`` for ``settle``: a bad env var must not mask the POST's own
+    outcome (``admit`` already raised for it), so fall back to the defaults."""
+    try:
+        return _breaker_config()
+    except ChordProviderError:
+        return BREAKER_FAILURES_DEFAULT, BREAKER_PAUSE_SEC_DEFAULT
+
+
+def _sentry_capture_breaker_open(
+    streak: int, threshold: int, pause: float, *, from_trial: bool
+) -> None:
+    try:
+        import sentry_sdk  # noqa: PLC0415 — keep the provider importable without it
+
+        sentry_sdk.capture_message(
+            f"chords_breaker_open: Klangio submits paused for {pause:.0f}s after "
+            f"{'a failed half-open trial' if from_trial else f'{streak} unanswered submits'}"
+            f" (threshold {threshold})",
+            level="warning",
+        )
+    except Exception:  # noqa: BLE001 — observability must never fail the job
+        pass
+
+
+_BREAKER = _SubmitBreaker()
 
 
 # ------------------------------ quota accounting ------------------------------
@@ -493,6 +695,16 @@ def _body_fingerprint(body: bytes | str | None) -> str:
     )
 
 
+def _release_quietly(ledger: ChordJobLedger) -> None:
+    """K-1: ``ledger.release()`` after a provably-unsent POST. A failure to release keeps
+    the 'submitting' sentinel (the safe side: the job skips chords, never re-bills), so it
+    is logged and the original not-sent error propagates."""
+    try:
+        ledger.release()
+    except Exception as exc:  # noqa: BLE001
+        log_structured("ERROR", "klangio_claim_release_failed", error=str(exc)[:200])
+
+
 @dataclass
 class KlangioChordSource:
     """Klangio implementation of the ``ChordSource`` protocol.
@@ -571,27 +783,53 @@ class KlangioChordSource:
     ) -> str:
         # Read once up front (bytes, not an open handle).
         audio_bytes = audio_path.read_bytes()
-        # Marker BEFORE the POST (and before the quota slot): if we die anywhere between
-        # sending the request and recording its id, the next run sees the marker and
-        # refuses to POST again. It also serialises two workers racing on one job.
-        if ledger is not None:
-            ledger.claim()
-        # Count BEFORE sending: if the response is lost we may still have paid.
+        # K-2: circuit breaker FIRST, before the ledger claim and the quota slot: a skipped
+        # submit (ChordProviderPaused) leaves no claim, spends no quota and sends nothing.
+        trial = _BREAKER.admit()
+        outcome = OUTCOME_ABORTED
         try:
-            _reserve_quota(self.quota_store or _default_quota_store())
-        except BaseException:
-            # Nothing was sent, so nothing was paid: free the claim for a later retry.
+            # Marker BEFORE the POST (and before the quota slot): if we die anywhere between
+            # sending the request and recording its id, the next run sees the marker and
+            # refuses to POST again. It also serialises two workers racing on one job.
             if ledger is not None:
-                ledger.release()
-            raise
-        resp = _request_with_retry(
-            client,
-            method="POST",
-            url="/chord-recognition",
-            retry=False,  # no idempotency key exists: a retry could double-bill
-            params={"vocabulary": vocabulary},
-            files={"file": (audio_path.name, audio_bytes, _audio_mime(audio_path))},
-        )
+                ledger.claim()
+            # Count BEFORE sending: if the response is lost we may still have paid.
+            try:
+                _reserve_quota(self.quota_store or _default_quota_store())
+            except BaseException:
+                # Nothing was sent, so nothing was paid: free the claim for a later retry.
+                if ledger is not None:
+                    ledger.release()
+                raise
+            try:
+                resp = _request_with_retry(
+                    client,
+                    method="POST",
+                    url="/chord-recognition",
+                    retry=False,  # no idempotency key exists: a retry could double-bill
+                    params={"vocabulary": vocabulary},
+                    files={"file": (audio_path.name, audio_bytes, _audio_mime(audio_path))},
+                )
+            except ChordSubmitNotSent:
+                # K-1: the connection was never established, so no request byte left this
+                # process and nothing can have been billed: free the claim so a later run
+                # may submit. The quota slot reserved above is NOT refunded (as for every
+                # attempt; the counter errs towards refusing, never towards overage).
+                outcome = OUTCOME_NOT_SENT
+                if ledger is not None:
+                    _release_quietly(ledger)
+                raise
+            except ChordSubmitNoAnswer:
+                # Sent (or maybe sent), no answer: a billed job may exist. Keep 'submitting'.
+                outcome = OUTCOME_NO_ANSWER
+                raise
+            except (ChordProviderError, ChordQuotaExceeded):
+                # An HTTP status (4xx / 5xx / 402) is an answer: Klangio is reachable.
+                outcome = OUTCOME_ANSWERED
+                raise
+            outcome = OUTCOME_ANSWERED
+        finally:
+            _BREAKER.settle(outcome, trial=trial)
         body = _parse_json(resp)
         job_id = body.get("job_id") if isinstance(body, dict) else None
         if not job_id or not _JOB_ID_RE.match(str(job_id)):
@@ -670,10 +908,17 @@ def _request_with_retry(
         except (httpx.TransportError, httpx.TimeoutException) as exc:
             last_exc = exc
             if attempt >= max_retries:
-                raise (ChordProviderError if retry else ChordSubmitNoAnswer)(
+                if retry:
+                    err_cls: type[ChordProviderError] = ChordProviderError
+                    note = ""
+                elif isinstance(exc, _NOT_SENT_ERRORS):
+                    # K-1: failed before any request byte was written; nothing billed.
+                    err_cls, note = ChordSubmitNotSent, " (not retried: nothing was sent)"
+                else:
+                    err_cls, note = ChordSubmitNoAnswer, " (not retried: a billed job may exist)"
+                raise err_cls(
                     f"Klangio {method} {url} transport failure after "
-                    f"{attempt + 1} attempt(s): {exc}"
-                    + ("" if retry else " (not retried: a billed job may exist)")
+                    f"{attempt + 1} attempt(s): {exc}" + note
                 ) from exc
             _sleep_backoff(attempt)
             continue

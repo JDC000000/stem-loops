@@ -352,19 +352,22 @@ class _SubmitBreaker:
             return False  # disabled: never skip (state is ignored while disabled)
         transition = None
         with self._lock:
-            if self.state == self.CLOSED:
+            # One snapshot of the state, then the clock, then the decision: every read and
+            # write below belongs to one critical section (the lock is what makes the
+            # snapshot current; tests/test_klangio_resilience.py::test_k2_lock_* pin it).
+            state, in_flight, open_until = self.state, self.trial_in_flight, self.open_until
+            if state == self.CLOSED:
                 return False
             now = _breaker_now()
-            if self.state == self.OPEN and now >= self.open_until:
+            if state == self.OPEN and now >= open_until:
                 self.state = self.HALF_OPEN
                 self.trial_in_flight = True
                 transition = self.HALF_OPEN
-            elif self.state == self.HALF_OPEN and not self.trial_in_flight:
+            elif state == self.HALF_OPEN and not in_flight:
                 # A previous trial was aborted before its POST: hand the slot on.
                 self.trial_in_flight = True
             else:
-                remaining = max(0.0, self.open_until - now) if self.state == self.OPEN else None
-                state = self.state
+                remaining = max(0.0, open_until - now) if state == self.OPEN else None
                 transition = "skip"
         if transition == self.HALF_OPEN:
             log_structured("WARN", "chords_breaker_half_open", provider="klangio")
@@ -383,7 +386,10 @@ class _SubmitBreaker:
         transition = None
         streak = 0
         with self._lock:
-            if trial and self.state == self.HALF_OPEN:
+            # Snapshot, clock, decide, write: one critical section (see ``admit``).
+            state, count = self.state, self.consecutive_no_answer
+            now = _breaker_now()
+            if trial and state == self.HALF_OPEN:
                 self.trial_in_flight = False
                 if outcome == OUTCOME_ANSWERED:
                     self._reset_locked()
@@ -392,18 +398,19 @@ class _SubmitBreaker:
                     pass  # stays half-open; the next submit becomes the trial
                 else:  # no answer, or still cannot connect: pause again
                     self.state = self.OPEN
-                    self.open_until = _breaker_now() + pause
-                    streak = self.consecutive_no_answer
+                    self.open_until = now + pause
+                    streak = count
                     transition = self.OPEN
-            elif failures > 0 and self.state == self.CLOSED:
+            elif failures > 0 and state == self.CLOSED:
                 if outcome == OUTCOME_ANSWERED:
                     self.consecutive_no_answer = 0
                 elif outcome == OUTCOME_NO_ANSWER:
-                    self.consecutive_no_answer += 1
-                    if self.consecutive_no_answer >= failures:
+                    count += 1
+                    self.consecutive_no_answer = count
+                    if count >= failures:
                         self.state = self.OPEN
-                        self.open_until = _breaker_now() + pause
-                        streak = self.consecutive_no_answer
+                        self.open_until = now + pause
+                        streak = count
                         transition = self.OPEN
                 # not_sent / aborted: neither proves nor disproves a hang; streak unchanged.
             # A normal (non-trial) submit that finishes while open/half-open (it was admitted

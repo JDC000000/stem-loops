@@ -488,3 +488,60 @@ def test_pipeline_paused_marker_on_the_extracting_row_and_no_per_job_sentry(monk
 
 def test_pipeline_not_sent_is_provider_failed():
     assert not isinstance(kg.ChordSubmitNotSent("x"), ChordSubmitUnanswered)
+
+
+# ------------------------------------------------------------------ K-2 lock (deterministic)
+
+
+def _rendezvous_clock(monkeypatch, t: float) -> None:
+    """Make ``_breaker_now`` (called INSIDE the breaker's critical sections) a two-thread
+    rendezvous. Without the lock both threads reach it and pass the barrier together, so
+    they interleave inside the critical section. With the lock the second thread cannot
+    enter, the first one's wait times out and it carries on alone. Deterministic either way:
+    the GIL cannot hide the race because each thread blocks mid-section."""
+    barrier = threading.Barrier(2, timeout=0.5)
+
+    def clock() -> float:
+        with contextlib.suppress(threading.BrokenBarrierError):
+            barrier.wait()
+        return t
+
+    monkeypatch.setattr(kg, "_breaker_now", clock)
+
+
+def _run_two(fn) -> list[object]:
+    results: list[object] = []
+    lock = threading.Lock()
+
+    def worker():
+        try:
+            r = fn()
+        except ChordProviderPaused:
+            r = "paused"
+        with lock:
+            results.append(r)
+
+    threads = [threading.Thread(target=worker) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=5)
+    return results
+
+
+def test_k2_lock_admit_never_hands_out_two_trials(env, monkeypatch):
+    _open(env)
+    _rendezvous_clock(monkeypatch, env.clock.t + 1800)
+    results = _run_two(kg._BREAKER.admit)
+    assert sorted(map(str, results)) == ["True", "paused"]
+    assert len(env.events("chords_breaker_half_open")) == 1
+
+
+def test_k2_lock_settle_opens_exactly_once(env, monkeypatch):
+    _no_answer(env)
+    _no_answer(env)  # streak 2 of 3: the next two settles race to open it
+    _rendezvous_clock(monkeypatch, env.clock.t)
+    _run_two(lambda: kg._BREAKER.settle(kg.OUTCOME_NO_ANSWER, trial=False))
+    assert kg._BREAKER.state == kg._SubmitBreaker.OPEN
+    assert len(env.events("chords_breaker_open")) == 1
+    env.sentry.assert_called_once()

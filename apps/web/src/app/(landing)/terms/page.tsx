@@ -14,24 +14,29 @@ import { chordsLineShown } from '@/lib/chords-claim';
 // constant and to the worker's own default, so a drift between the three fails there.
 const MAX_TRACK_MIN = Math.floor(MAX_TRACK_SEC / 60);
 
-// C-17 (QA 2026-11-18). Source of truth: plans.monthly_job_quota for 'free' = 5, set by
-// apps/worker/migrations/034_v3_pricing_model_truth.sql and enforced for accounts by
+// C-17 (QA 2026-11-18); B-8w (2026-11-25). NO NUMBER for the Free monthly limit on this page.
+// Source of truth: plans.monthly_job_quota for 'free' (seeded 5 by
+// apps/worker/migrations/034_v3_pricing_model_truth.sql), enforced for accounts by
 // checkMonthlyQuota() / enforceEntitlement() (lib/billing/entitlements.ts) and, for links, by
-// bumpJobsUsedWithinQuota() in app/api/jobs/route.ts. Pinned against that migration by
-// test/chords-switch-surfaces.test.mjs ("numeric claims"); /pricing reads the row.
+// bumpJobsUsedWithinQuota() in app/api/jobs/route.ts. /pricing reads that row at request time.
+// For the beta Jon changes the row in the DB (30 from 2026-11-30, back on 2026-12-14) with no
+// code change, so a number typed here would be false for two weeks. The sentence below points at
+// /pricing instead; test/legal-terms-copy.test.mjs pins that no "<n> songs a month" figure
+// appears on this page.
 //
 // Credits are for UPLOADED files only: the credit_consumption trigger (migration 013) accepts
-// upload jobs only, and a Free account holding credits is still capped at the 5 for links
-// (app/api/jobs/route.ts, link branch). Hence "credits for uploaded files" below (QA follow-up SF-3).
+// upload jobs only, and a Free account holding credits is still capped at the free monthly limit
+// for links (app/api/jobs/route.ts, link branch). Hence "credits for uploaded files" below (QA
+// follow-up SF-3).
 //
 // BILLING_ENFORCED SWITCH-ON CHECKLIST (QA follow-up SF-4; the flag lives in lib/billing/entitlements.ts,
 // a CODEOWNERS path this change does not touch). Today BILLING_ENFORCED is off, and a Free
-// account's UPLOADS fall back to this monthly allowance, so "covers 5 songs a month" is true for
-// uploads and links alike. With BILLING_ENFORCED=true a Free upload with no credits is refused
-// (CREDIT_BALANCE_INSUFFICIENT) and the 5 covers LINKS only. On the day the flag goes on, in the
-// same change: reword the Free sentence below (e.g. "covers 5 song links a month; uploads use
-// credits"), bump TERMS_UPDATED_ON (components/landing/legal.ts), and re-check /pricing and /help.
-const FREE_MONTHLY_SONGS = 5;
+// account's UPLOADS fall back to this monthly allowance, so "a monthly number of songs" is true
+// for uploads and links alike. With BILLING_ENFORCED=true a Free upload with no credits is refused
+// (CREDIT_BALANCE_INSUFFICIENT) and the allowance covers LINKS only. On the day the flag goes on,
+// in the same change: reword the Free sentence below (e.g. "covers a monthly number of song links;
+// uploads use credits"), bump TERMS_UPDATED_ON (components/landing/legal.ts), and re-check /pricing
+// and /help.
 
 // SEO-06: registry-driven, so the page gets canonical, Open Graph and Twitter tags.
 // generateMetadata: the shared Open Graph image is a DB-17 chord claim (read at build: static page).
@@ -62,9 +67,10 @@ export default function TermsPage() {
               finds bar-length loops you can cut and download.
             </p>
             <p>
-              The Free plan costs nothing and covers {FREE_MONTHLY_SONGS}&nbsp;songs a month on your account. For more than
-              that you need a paid plan (Pro or Studio), or credits for uploaded files (credits do not add song links).
-              Prices and limits are on the <a href="/pricing">pricing page</a>.
+              {/* B-8w: no number here; see the C-17 note at the top of this file. */}
+              The Free plan costs nothing and covers a monthly number of songs on your account: the limit shown on
+              the <a href="/pricing">pricing page</a>, which we may change. For more than that you need a paid plan (Pro or
+              Studio), or credits for uploaded files (credits do not add song links). Prices are on the same page.
             </p>
             <p>
               You can start a job from an uploaded file without an account; a song link added on the home page asks you to

@@ -55,7 +55,7 @@ export default function PrivacyPage() {
               <li>
                 <strong>Your audio.</strong> The file you upload, or the audio fetched from the YouTube link you paste. It is
                 sent to the processors named below to be separated into stems
-                {chords ? ' and to have its chords estimated.' : '.'}
+                {chords ? '; some of those stems are then sent on to have the chords estimated.' : '.'}
               </li>
               <li>
                 <strong>Job details.</strong> The link or file name, the song’s title (the video’s title on YouTube, or the file name without its extension), the stems and loop length you chose, and the job’s progress.
@@ -133,8 +133,15 @@ export default function PrivacyPage() {
               <li>
                 <strong>Replicate</strong> runs the stem separation. Your audio is sent to them.
               </li>
+              {/* B-8w. What Klangio receives (apps/worker/src/worker/pipeline.py, _maybe_run_chord_recognition ->
+                  _choose_chord_input; chord_providers/klangio.py _submit, multipart field `file`): ONE file built
+                  from the separated stems -- by default keys + guitar + other mixed with bass
+                  ("harmonic_mix", ffmpeg amix in a job tmpdir), or a single keys/guitar/other stem if
+                  the operator sets CHORDS_STEM. vocals and drums are never candidates. Never the
+                  uploaded or fetched original. A DISCLOSURE: DB-17 leaves it on whatever the switch says. */}
               <li>
-                <strong>Klangio</strong> estimates the chords. Your audio is sent to them too.
+                <strong>Klangio</strong> (Klangio GmbH, Germany) estimates the chords. We send them one audio file made
+                from the instrument stems of your song; the vocal and drum stems are never sent.
               </li>
               <li>
                 <strong>Cloudflare R2</strong> stores your files until they are deleted.

@@ -17,6 +17,8 @@ SETTINGS = json.loads((ROOT / ".claude" / "settings.json").read_text())
 ALLOW = SETTINGS["permissions"]["allow"]
 DENY = SETTINGS["permissions"]["deny"]
 
+# #430: the settings.json comment before #389 (git show 600cd9d:.claude/settings.json); #389 only appended to it.
+BASE_COMMENT = "T1 subagent guardrails. Session-7 (2026-11-05). See claude/merge-autonomy-recommendations.md Decision box for the allow/deny rationale. These rules apply to subagents and to the main session alike; the main session merging via scripts/safe_merge.sh satisfies M-1 even though --admin itself is denied below. || DEFERRED TO LEVEL 3 (2026-11-05, audit finding F9): this file denies Bash(gh pr merge --admin*) while allowing Bash(scripts/safe_merge.sh *), and that script's final line is `exec gh pr merge \"$PR\" --admin ...`. So an allowed wrapper executes a denied command. THE OPEN QUESTION, for the Level-3 reviewer at the 72h retro: does the permission layer inspect subprocesses spawned by an allowed script, or only the Bash invocation it was given? If only the invocation, then EVERY deny rule in this file is circumventable by a wrapper script, which matters far beyond merging. Not tested as of 2026-11-05 because testing it means attempting a blocked merge. Do not treat the deny list as a security boundary until this is answered. Retro task: trig_017AKZq6MEVFDioEbEwpHM1g."
 ORIGINAL_DENY = [
     "Bash(git push * main)",
     "Bash(git push * v3/main)",
@@ -148,12 +150,16 @@ def matches(rule, cmd):
         return cmd == pre or cmd.startswith(pre + " ")
     if "*" not in p:
         return cmd == p
+    # #430: decide the bare-command case on the RULE text, before the literal-prefix check (which would
+    # reject the bare command), not on re.escape output: since Python 3.7 re.escape no longer escapes a
+    # space, so the old `rx.endswith(r"\ .*")` test was never true and this branch was dead.
+    if p.endswith(" *") and p.count("*") == 1:
+        pre = p[:-2]
+        return cmd == pre or cmd.startswith(pre + " ")
     lit = p[: p.index("*")]
     if not cmd.startswith(lit):
         return False
     rx = re.escape(p).replace(r"\*", ".*")
-    if rx.endswith(r"\ .*") and p.count("*") == 1:
-        rx = rx[: -len(r"\ .*")] + "(?: .*)?"
     return re.match("^" + rx + "$", cmd, re.S) is not None
 
 
@@ -168,6 +174,8 @@ class SettingsDenyTest(unittest.TestCase):
 
     def test_comment_keeps_caveats(self):
         c = SETTINGS["comment"]
+        # #430: the whole pre-#389 comment is kept verbatim as a prefix (not just a few substrings of it)
+        self.assertTrue(c.startswith(BASE_COMMENT + " "), "settings.json comment no longer starts with the full base comment")
         self.assertIn("Retro task: trig_017AKZq6MEVFDioEbEwpHM1g.", c)
         self.assertIn("not a security boundary", c)
         self.assertIn("#389", c)
@@ -190,6 +198,25 @@ class SettingsDenyTest(unittest.TestCase):
 
     def test_bypass_commands_denied(self):
         for c in BYPASS:
+            self.assertTrue(denied(c), c)
+
+    def test_matcher_model_semantics(self):
+        # #430: pins the model itself, so a dead branch cannot hide again
+        self.assertTrue(matches("Bash(rm -rf *)", "rm -rf"))  # sole trailing ` *` also matches the bare command
+        self.assertTrue(matches("Bash(rm -rf *)", "rm -rf /tmp/x"))
+        self.assertFalse(matches("Bash(rm -rf *)", "rm -rfv"))  # ...but not a longer word
+        self.assertFalse(matches("Bash(git push * main)", "git push main"))  # two wildcards: no bare-command form
+        self.assertTrue(matches("Bash(git push * main)", "git push origin main"))
+        self.assertTrue(matches("Bash(git push -f*)", "git push -f"))
+        self.assertTrue(matches("Bash(git push -f)", "git push -f"))
+        self.assertFalse(matches("Bash(git push -f)", "git push -f origin"))
+        self.assertTrue(matches("Bash(git push:*)", "git push"))
+        self.assertTrue(matches("Bash(git push:*)", "git push origin"))
+        self.assertFalse(matches("Bash(git push:*)", "git pushx"))
+
+    def test_bare_commands_denied(self):
+        # #430: with the bare-command branch live, every ` *`-suffixed deny rule also denies the bare command
+        for c in ("rm -rf", "rm -fr", "rm -Rf", "rm -r -f", "rm --recursive --force", "git push -d", "git push --delete"):
             self.assertTrue(denied(c), c)
 
     def test_normal_commands_not_denied(self):

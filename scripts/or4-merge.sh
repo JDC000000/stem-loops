@@ -7,6 +7,8 @@
 #   a number, or M-9/M-11 (<= 1 word between). Counted: `**VERDICT: FAIL**`, `> VERDICT - FAIL`, `1. VERDICT (final): FAIL`, `- [x] VERDICT PASS 99`, `R1 SCORES: M-9 1`, `| VERDICT | FAIL |`,
 #   fullwidth colon. NOT counted: `## Verdict`, `| M2 VERDICT count back |`, `- SCORES on line 2`, `verdict_unique`, `Final verdict: FAIL` (word not at line start).
 #   Lone CR, form feed, VT, NEL, U+2028 and U+2029 count as line breaks. Case-insensitive counting predates v3.6.1; v3.6.1 added only indentation.
+#   #430 residue (TIGHTENING ONLY, still v3.6.2): SCORES + ONE word (letter first, e.g. final, R2) + a colon + a number also counts (`SCORES (final): 40 40`, `SCORES final: 40`); counted line numbers
+#   in the FAIL message are after CRLF -> LF (editor numbering), then lone CR/FF/VT/NEL/U+2028/U+2029 split lines. Counting is otherwise unchanged; nothing loosened.
 #   REVIEWERS: outside line 1 (and line 2 for money) no line may begin, after indentation / quote / list / table / heading markup, numbering, `[x]` or a short label, with VERDICT then
 #   a colon or PASS/FAIL, or SCORES then a colon, a number or M-9/M-11. Headings, table rows and prose that only mention the words are fine. The FAIL message names the counted line numbers.
 #   RESIDUAL (still hidden): zero-width characters or homoglyphs INSIDE the word, the bare word alone on a line, 2+ words before PASS/FAIL, underscore-joined forms, the word + space +
@@ -96,11 +98,15 @@ marker_score() { grep -aE '^VERDICT: ' "$1" | tail -1 | grep -oE "^VERDICT: PASS
 # LC_ALL=C: bytes >= 0x80 are non-letters. Fails closed. Residual: homoglyphs / zero-width INSIDE the word, bare word alone, 2+ words before PASS/FAIL, underscore-joined, word + prose.
 _MARK_PFX='^([^[:alpha:]]|\[[[:alpha:]]\]|[[:alpha:]]{1,3}[0-9]+)*'
 VERDICT_LINE_RE="${_MARK_PFX}verdict([^[:alnum:]:]*:|[^[:alnum:]_]+([[:alpha:]]+[^[:alnum:]_]+)?(pass|fail)([^[:alnum:]]|\$))"
-SCORES_LINE_RE="${_MARK_PFX}scores([^[:alnum:]:]*:|[^[:alnum:]_]+([0-9]|([[:alpha:]]+[^[:alnum:]_]+)?m[^[:alnum:]]?(9|11)([^0-9]|\$)))"
-# marker_line_count <file> <regex>: lone CR, FF, VT, NEL (C2 85), U+2028, U+2029 are line breaks too (a hidden line cannot hide behind them).
-marker_line_count() { tr '\r\f\v' '\n\n\n' <"$1" 2>/dev/null | sed 's/\xe2\x80\xa8/\n/g; s/\xe2\x80\xa9/\n/g; s/\xc2\x85/\n/g' | grep -aciE "$2"; }
-# marker_count_lines <file> <regex>: the counted line numbers (after line-break normalisation), for the FAIL message only.
-marker_count_lines() { tr '\r\f\v' '\n\n\n' <"$1" 2>/dev/null | sed 's/\xe2\x80\xa8/\n/g; s/\xe2\x80\xa9/\n/g; s/\xc2\x85/\n/g' | grep -aniE "$2" | cut -d: -f1 | tr '\n' ' '; }
+SCORES_LINE_RE="${_MARK_PFX}scores([^[:alnum:]:]*:|[^[:alnum:]_]+([0-9]|([[:alpha:]]+[^[:alnum:]_]+)?m[^[:alnum:]]?(9|11)([^0-9]|\$)|[[:alpha:]][[:alnum:]]*[^[:alnum:]:]*:[^[:alnum:]]*[0-9]))"
+# _marker_norm <file>: CRLF -> LF first (#430: so a CRLF file's line numbers match an editor's), then lone CR, FF, VT, NEL (C2 85), U+2028, U+2029
+# become line breaks too (a hidden line cannot hide behind them). Dropping the CR of a CRLF only removes empty lines, which never count.
+_marker_norm() { sed 's/\r$//' "$1" 2>/dev/null | tr '\r\f\v' '\n\n\n' | sed 's/\xe2\x80\xa8/\n/g; s/\xe2\x80\xa9/\n/g; s/\xc2\x85/\n/g'; }
+# marker_line_count <file> <regex>: counted lines after _marker_norm.
+marker_line_count() { _marker_norm "$1" | grep -aciE "$2"; }
+# marker_count_lines <file> <regex>: the counted line numbers, for the FAIL message only. They are numbered AFTER _marker_norm: CRLF keeps editor numbering;
+# a lone CR / FF / VT / NEL / U+2028 / U+2029 inside a line starts a new number, so later numbers can be higher than an editor shows.
+marker_count_lines() { _marker_norm "$1" | grep -aniE "$2" | cut -d: -f1 | tr '\n' ' '; }
 # marker_one <file> <regex>: rc 0 iff exactly ONE line counts both on the raw file and after line-break normalisation (never looser than either count).
 marker_one() { [ "$(grep -aciE "$2" "$1" 2>/dev/null)" = 1 ] && [ "$(marker_line_count "$1" "$2")" = 1 ]; }
 # verdict_unique <review-file>: rc 0 iff the file has exactly ONE counted VERDICT line (see VERDICT_LINE_RE) and it is line 1 and a PASS marker line.

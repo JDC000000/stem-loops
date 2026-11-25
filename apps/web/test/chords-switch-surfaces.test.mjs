@@ -399,7 +399,7 @@ const SWITCHED = {
   'src/app/loops/page.tsx': 0, // reads the switch and passes it to LoopsView
   'src/app/(landing)/privacy/page.tsx': 8,
   'src/app/(landing)/terms/page.tsx': 4,
-  'src/components/landing/faq.tsx': 5,
+  'src/components/landing/faq.tsx': 6, // +1: the pickup answer (#379 item 3), ON branch only
   'src/lib/emails/templates/welcome.ts': 1,
   'src/lib/seo/jsonld.ts': 1,
   'src/lib/seo/llms.ts': 1,

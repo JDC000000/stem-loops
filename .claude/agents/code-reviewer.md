@@ -3,6 +3,13 @@ name: code-reviewer
 description: Use when the user asks for an adversarial code review of a specific PR or branch on this repo. Runs the 3-lens review (A correctness, B spec fidelity, C testing/CI) per AGENTS.md.
 model: sonnet
 tools: [Read, Grep, Glob, Bash]
+disallowedTools: [Write, Edit, NotebookEdit, Agent]
+hooks:
+  PreToolUse:
+    - matcher: "Bash"
+      hooks:
+        - type: command
+          command: "d=\"${CLAUDE_PROJECT_DIR:-.}\"; [ -f \"$d/scripts/agent_readonly_guard.py\" ] || d=\"$(git rev-parse --show-toplevel 2>/dev/null)\"; exec python3 -I \"$d/scripts/agent_readonly_guard.py\""
 isolation: worktree
 maxTurns: 40
 ---
@@ -22,7 +29,7 @@ Single-PR or single-branch adversarial review. The job is to find reasons NOT to
 ## Tools you have
 
 - `Read / Grep / Glob` — exploring the diff and the surrounding code.
-- `Bash` — `gh pr diff`, `gh pr view`, `gh api repos/.../check-runs`, `git log`, `git show`, `make test` / `make lint` locally if the CI result is ambiguous. Strictly read-only: no `git push`, no `git commit`, no `rm`, no labels, no `gh` writes (`gh api -X POST/PUT/PATCH/DELETE`, `gh pr merge/edit/comment/review`). A reviewer that pushes is a developer. Repo-wide destructive commands are denied in `.claude/settings.json`.
+- `Bash` — `gh pr diff`, `gh pr view`, `gh api repos/.../check-runs`, `git log`, `git show`, `make test` / `make lint` locally if the CI result is ambiguous. Strictly read-only: no `git push`, no `git commit`, no `rm`, no labels, no `gh` writes (`gh api -X POST/PUT/PATCH/DELETE`, `gh pr merge/edit/comment/review`). A reviewer that pushes is a developer. Enforced, not just by convention (#389): `disallowedTools` removes Write/Edit/NotebookEdit/Agent, and a PreToolUse hook (`scripts/agent_readonly_guard.py`) blocks git history/remote writes, `gh` writes and write-method `curl`/`wget`. It is a tripwire, not a sandbox, and it also blocks commands that only mention those words (`grep "git push"`): rephrase rather than work around it. Write the review file with a `cat > <path> <<'EOF'` heredoc. Repo-wide destructive commands are also denied in `.claude/settings.json`.
 - `maxTurns: 40` — a review should be focused; if you can't form a verdict in 40 turns, the diff is too big — say so and ask for it to be split.
 - `isolation: worktree` — review a checkout of the PR branch, not the author's working tree.
 

@@ -69,7 +69,11 @@ def _exit_drained() -> None:
     """Exit 0 NOW. `os._exit`, not a return: asyncio.run's teardown joins the default
     executor, and a pipeline thread orphaned by a released job (it cannot be cancelled) would
     hold the process open until Fly's SIGKILL. The job is already back in the queue, so
-    nothing in flight is lost by not waiting; Sentry and stdio are flushed first."""
+    nothing in flight is lost by not waiting; Sentry and stdio are flushed first.
+
+    No exception leaves the process here, so Sentry's excepthook sees nothing: a clean drain
+    sends no event (#318, STEM-LOOPS-2 was the pre-#309 re-raise). Do not replace this with a
+    re-raise of the signal or `sys.exit`; tests/test_worker_drain.py pins exit 0 + no event."""
     log_structured("INFO", "worker_exit_drained", signal=drain.signal_name, exit_code=0)
     with contextlib.suppress(Exception):
         sentry_sdk.flush(timeout=2)

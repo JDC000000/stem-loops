@@ -1,5 +1,17 @@
 name: Deploy
 
+# OPERATING RULES (deploy guard, JON approval: LEDGER-22A row 7):
+# - Dispatch only from v3/main (`--ref v3/main`). The gate fails any other ref, and
+#   both deploy jobs use Environment `production`, which only v3/main may deploy to.
+# - NEVER `gh run rerun` (or "Re-run jobs" on) a deploy run. A re-run replays the
+#   ORIGINAL run's workflow file and SHA; a red gate means: wait until v3/main CI
+#   on the head is green, then dispatch a NEW run.
+# - `gate_only: true` runs only the gate (both deploy jobs are skipped): use it to
+#   exercise the gate live without deploying.
+# - Job `ruleset-drift` only warns (::warning) when ruleset 26478884's required
+#   contexts differ from scripts/ci_green_gate.py REQUIRED_CONTEXTS; no deploy job
+#   needs it, so a read error can never block a (revert) redeploy.
+
 on:
   workflow_dispatch:
     inputs:
@@ -12,10 +24,19 @@ on:
           - all
           - web
           - worker
+      gate_only:
+        description: 'Run only the CI green gate; skip both deploy jobs'
+        required: false
+        default: false
+        type: boolean
+
+permissions: {}
 
 jobs:
   ci-green-gate:
-    # Fail closed BEFORE any deploy step unless (1) the SHA being deployed
+    # Fail closed BEFORE any deploy step unless (0) the run's ref is
+    # refs/heads/v3/main and the gated SHA/ref/run id equal the runner's own
+    # GITHUB_SHA/GITHUB_REF/GITHUB_RUN_ID, (1) the SHA being deployed
     # (github.sha: the head of the dispatched ref) is on v3/main, (2) every
     # required check of ruleset 26478884 has a GitHub Actions check-run on that
     # exact SHA that concluded success (in_progress, queued, skipped, neutral,
@@ -57,20 +78,55 @@ jobs:
       - name: Require main CI green on the deployed SHA
         env:
           SHA: ${{ github.sha }}
+          REF: ${{ github.ref }}
           RUN_ID: ${{ github.run_id }}
         run: |
           set -euo pipefail
-          python3 -I -u scripts/ci_green_gate.py --sha "$SHA" --run-id "$RUN_ID" \
+          python3 -I -u scripts/ci_green_gate.py --sha "$SHA" --ref "$REF" --run-id "$RUN_ID" \
             --runs "$RUNNER_TEMP/check-runs.ndjson" --compare "$RUNNER_TEMP/compare.json" \
             --deploy-runs "$RUNNER_TEMP/deploy-runs.ndjson"
+
+  ruleset-drift:
+    # NON-blocking: no deploy job needs this job and its step cannot fail. It warns
+    # when ruleset 26478884's required contexts differ from REQUIRED_CONTEXTS, or
+    # when the rules cannot be read. Never make a deploy job depend on it.
+    name: Ruleset drift warning (non-blocking)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Warn if ruleset 26478884 required contexts drifted
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -uo pipefail
+          if gh api --paginate "repos/$REPO/rules/branches/v3/main" --jq '.[]' > "$RUNNER_TEMP/rules.ndjson"; then
+            python3 -I -u scripts/ci_green_gate.py --drift "$RUNNER_TEMP/rules.ndjson" \
+              || echo "::warning title=ruleset drift::drift check exited non-zero (ignored)"
+          else
+            echo "::warning title=ruleset drift::cannot read v3/main branch rules with this token; drift not checked"
+          fi
+          exit 0
 
   deploy-web:
     name: Deploy Web to Vercel
     runs-on: ubuntu-latest
     needs: ci-green-gate
-    if: ${{ inputs.target == 'all' || inputs.target == 'web' }}
+    if: ${{ inputs.gate_only != true && (inputs.target == 'all' || inputs.target == 'web') }}
+    # Only v3/main may deploy to `production` (Jon's Environment setting); the deploy
+    # secrets live in the Environment, so no other ref's workflow receives them.
+    environment: production
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '20'
@@ -81,8 +137,9 @@ jobs:
       - name: Install deps
         run: pnpm install --frozen-lockfile
       - name: Deploy to Vercel
-        run: cd apps/web && npx vercel deploy --prod --token=${{ secrets.VERCEL_TOKEN }}
+        run: cd apps/web && npx vercel deploy --prod --token="$VERCEL_TOKEN"
         env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
 
@@ -90,9 +147,14 @@ jobs:
     name: Deploy Worker to Fly.io
     runs-on: ubuntu-latest
     needs: ci-green-gate
-    if: ${{ inputs.target == 'all' || inputs.target == 'worker' }}
+    if: ${{ inputs.gate_only != true && (inputs.target == 'all' || inputs.target == 'worker') }}
+    environment: production
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - uses: superfly/flyctl-actions/setup-flyctl@fc53c09e1bc3be6f54706524e3b82c4f462f77be  # 1.5
       - name: Deploy to Fly.io
         # --ha=false: this app must stay at ONE Machine (FOR UPDATE SKIP LOCKED makes

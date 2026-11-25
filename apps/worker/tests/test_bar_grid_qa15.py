@@ -154,6 +154,12 @@ def test_drift_bar_starts_follow_the_tempo(bpm0, bpm1, first, dur):
     # Spec: < 1 beat everywhere (old fixed grid: up to ~1 s; QA log 436 ms). Measured ~2 ms.
     assert err.max() < beat
     assert err.max() < 0.030, f"max bar-start error {err.max() * 1000:.0f} ms"
+    # #379 (M10): the per-beat refine must subtract ONSET_LATENCY_S like the constant grid
+    # does; without it every bar start sits ~9 ms late (a clipped transient) and the 30 ms
+    # bound above still passes. Measured with it: max 1.6-2.8 ms, mean -0.4..-0.6 ms.
+    assert err.max() < 0.004, f"max bar-start error {err.max() * 1000:.1f} ms"
+    signed = _bar_errors(grid, beats)
+    assert abs(signed.mean()) < 0.002, f"bar starts biased {signed.mean() * 1000:+.1f} ms"
 
 
 def test_drift_loops_start_on_bars_and_span_their_bars(tmp_path):

@@ -283,3 +283,28 @@ test('terms (Phase B, PB-1): the song library record and set lists outlive the 2
   );
   assertSays(assert, page, 'any chord corrections you saved', 'terms');
 });
+
+test('terms (B-8w): no hard-coded Free monthly limit; the sentence points at /pricing', async () => {
+  // plans.monthly_job_quota for 'free' is changed in the DB for the beta (30 from 2026-11-30,
+  // back on 2026-12-14) and /pricing reads the row; a number on this page would go false
+  // without any code change. So NO figure next to songs/tracks/links per month, in either
+  // normalisation or in the metadata, and the Free sentence names /pricing as the source.
+  const page = await renderPage(TERMS);
+  const figure = /\b\d+\s*(?:free\s*)?(?:songs?|tracks?|song\s*links?|jobs?)\s*(?:a|per|each|every)\s*month/i;
+  const figureTight = /\d+\s*(?:free\s*)?(?:songs?|tracks?|song\s*links?|jobs?)\s*(?:a|per|each|every)\s*month/i;
+  for (const [where, t] of [['text (spaced)', page.textSpaced], ['metadata', page.metaSpaced]]) {
+    assert.doesNotMatch(t, figure, `terms ${where}: a hard-coded monthly limit is back`);
+  }
+  assert.doesNotMatch(page.textTight, figureTight, 'terms (tight): a hard-coded monthly limit is back');
+  // "<n> a month" or "<n>/month" in any form, too.
+  assert.doesNotMatch(page.textSpaced, /\b\d+\s*(?:\/\s*mo(?:nth)?\b|a\s*month\b|per\s*month\b)/i);
+  // Split at the link: the tags->space channel renders "pricing page , which".
+  assertSays(assert, page, 'The Free plan costs nothing and covers a monthly number of songs on your account: the limit shown on the pricing page', 'terms');
+  assertSays(assert, page, 'which we may change. For more than that', 'terms');
+  assertSays(assert, page, 'For more than that you need a paid plan (Pro or Studio), or credits for uploaded files (credits do not add song links).', 'terms');
+  // The pointer is a real link to /pricing inside the Free sentence, not just the word.
+  assert.match(page.html, /the limit shown on\s*the\s*<a href="\/pricing">pricing page<\/a>, which we may change\./);
+  // Source too: the old constant must not come back as a number typed into the page.
+  const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'src', TERMS), 'utf8');
+  assert.doesNotMatch(src, /FREE_MONTHLY_SONGS/);
+});

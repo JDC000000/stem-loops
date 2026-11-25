@@ -122,12 +122,12 @@ const PRIVACY_DISCLOSURES = [
   'the reference numbers for the separation and chord-recognition runs — including the one held by Klangio',
   'Chord corrections you save, kept to improve the chord estimates',
   'Deleting your account removes your account details and your chord corrections.',
-  'Klangio estimates the chords. Your audio is sent to them too.',     // the processor list
+  'Klangio (Klangio GmbH, Germany) estimates the chords. We send them one audio file made from the instrument stems of your song; the vocal and drum stems are never sent.', // the processor list (B-8w)
 ];
 
 test('C-12 /privacy: the switch OFF removes the promise of chord estimation', () => {
   assert.match(ON.privacy.textSpaced, /one to estimate the chords/);
-  assert.match(ON.privacy.textSpaced, /and to have its chords estimated\./);
+  assert.match(ON.privacy.textSpaced, /some of those stems are then sent on to have the chords estimated\./);
   assert.deepEqual(chordHits(OFF.privacy, PRIVACY_DISCLOSURES), []);
   assert.match(OFF.privacy.textSpaced, /Your audio goes to outside services to be processed, and every one of them is named below\./);
   assert.match(OFF.privacy.textSpaced, /sent to the processors named below to be separated into stems\./);
@@ -139,7 +139,7 @@ test('C-12 /privacy: every disclosure, Klangio first, is still there with the sw
   }
   // Klangio stays a named processor, as a list item, in the "Who else handles it" section.
   const who = OFF.privacy.html.match(/<h2>Who else handles it<\/h2>[\s\S]*?<\/ul>/)?.[0] ?? '';
-  assert.match(who, /<li><strong>Klangio<\/strong> estimates the chords\. Your audio is sent to them too\.<\/li>/);
+  assert.match(who, /<li><strong>Klangio<\/strong> \(Klangio GmbH, Germany\) estimates the chords\. We send them one audio file made\s+from the instrument stems of your song; the vocal and drum stems are never sent\.<\/li>/);
 });
 
 // ── 4. the non-page surfaces: llms.txt, welcome email, shared metadata, JSON-LD ────────────
@@ -208,10 +208,10 @@ test('C-14: no "about 1–3 minutes" (or any measured-looking duration) on /help
 });
 
 // ── 7. C-17: /terms does not call paid plans optional ─────────────────────────────────────
-test('C-17: /terms states the Free cap and that more needs a plan or credits', () => {
+test('C-17: /terms states the Free cap (by pointing at /pricing, B-8w) and that more needs a plan or credits', () => {
   for (const r of [ON.terms, OFF.terms]) {
     assert.doesNotMatch(r.textSpaced, /not required|Free to use at the moment/i);
-    assert.match(r.textSpaced, /The Free plan costs nothing and covers \d+ songs a month on your account\. For more than that you need a paid plan \(Pro or Studio\), or credits for uploaded files \(credits do not add song links\)\./);
+    assert.match(r.textSpaced, /The Free plan costs nothing and covers a monthly number of songs on your account: the limit shown on the pricing page , which we may change\. For more than that you need a paid plan \(Pro or Studio\), or credits for uploaded files \(credits do not add song links\)\./);
     assert.match(r.html, /<a href="\/pricing">pricing page<\/a>/);
     // Review SF-3: credits never extend link jobs, so the page must not offer them as a remedy for links.
     assert.doesNotMatch(r.textSpaced, /\bor credits[;.]/);
@@ -242,9 +242,12 @@ test('SF-3: the "credits for uploaded files" claim matches the code: link jobs n
 
 test('SF-4: /terms keeps its BILLING_ENFORCED switch-on checklist next to the Free figure', () => {
   const src = readFileSync(join(SRC, 'app/(landing)/terms/page.tsx'), 'utf8');
-  const i = src.indexOf('const FREE_MONTHLY_SONGS');
+  // B-8w: the figure is gone; the checklist now sits above the Free sentence it governs.
+  // The JSX sentence carries a pointer comment back to the checklist, so the window is wider.
+  const i = src.indexOf('covers a monthly number of songs on your account');
   assert.ok(i > 0);
-  assert.match(src.slice(Math.max(0, i - 2000), i), /BILLING_ENFORCED SWITCH-ON CHECKLIST[\s\S]*reword the Free sentence/);
+  assert.match(src.slice(i - 200, i), /no number here; see the C-17 note at the top of this file/);
+  assert.match(src.slice(Math.max(0, i - 3000), i), /BILLING_ENFORCED SWITCH-ON CHECKLIST[\s\S]*reword the Free sentence/);
 });
 
 test('nit: each legal page shows the same day as its registry lastModified', async () => {
@@ -266,15 +269,17 @@ const freeQuota034 = () => {
   return { price: Number(m[1]), quota: Number(m[2]) };
 };
 
-test('numeric claims: the Free monthly songs on /terms equal plans.monthly_job_quota for free (migration 034)', () => {
-  // No later migration may re-seed the free quota without this test moving with it.
-  const later = readdirSync(join(REPO, 'apps/worker/migrations')).filter((f) => /^\d{3}_.*\.sql$/.test(f) && Number(f.slice(0, 3)) > 34)
-    .filter((f) => /monthly_job_quota/.test(readFileSync(join(REPO, 'apps/worker/migrations', f), 'utf8')));
-  assert.deepEqual(later, [], 'a later migration changes monthly_job_quota: point FREE_MONTHLY_SONGS and this test at it');
-  const { quota, price } = freeQuota034();
+test('numeric claims: /terms carries NO Free monthly figure; the free row it points at is free and still seeded (B-8w)', () => {
+  // B-8w (2026-11-25): the free monthly_job_quota is changed in the DB for the beta and
+  // /pricing reads the row, so /terms names no number and sends the reader to /pricing.
+  // What /terms still claims about the row: "The Free plan costs nothing".
+  const { price } = freeQuota034();
   assert.equal(price, 0, '"The Free plan costs nothing" needs price_cad_cents 0');
+  const later = readdirSync(join(REPO, 'apps/worker/migrations')).filter((f) => /^\d{3}_.*\.sql$/.test(f) && Number(f.slice(0, 3)) > 34)
+    .filter((f) => /price_cad_cents/.test(readFileSync(join(REPO, 'apps/worker/migrations', f), 'utf8')));
+  assert.deepEqual(later, [], 'a later migration changes plan prices: re-check "The Free plan costs nothing"');
   const said = [...ON.terms.textSpaced.matchAll(/(\d+)\s+songs? a month/g)].map((m) => Number(m[1]));
-  assert.deepEqual(said, [quota]);
+  assert.deepEqual(said, []);
 });
 
 test('numeric claims: every hour and day figure on /help, /terms, /privacy, llms.txt and the welcome email is the retention config', () => {
@@ -555,6 +560,6 @@ test('CHORDS_CLAIMS_CHANGED_ON: the flip day moves "Last updated" (and lastModif
     assert.equal(lm, '2026-12-05', `${path}: lastModified follows the flip day`);
   }
   // Unset: the pages' own days.
-  assert.match(ON.terms.textSpaced, /Last updated 22 November 2026/);
-  assert.match(ON.privacy.textSpaced, /Last updated 22 November 2026/);
+  assert.match(ON.terms.textSpaced, /Last updated 25 November 2026/);
+  assert.match(ON.privacy.textSpaced, /Last updated 25 November 2026/);
 });

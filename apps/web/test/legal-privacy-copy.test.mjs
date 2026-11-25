@@ -11,6 +11,9 @@
 // test/helpers/render-landing-page.mjs.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { renderPage } from './helpers/render-landing-page.mjs';
 import { assertNoBannedClaims, assertSays, section, phrase, PROCESSORS } from './legal-copy-shared.mjs';
 
@@ -156,4 +159,30 @@ test('privacy: metadata is the privacy metadata, not another page’s', async ()
   const page = await renderPage(PRIVACY);
   assert.match(page.metaSpaced, /What stem-loops stores, for how long, and who processes it\./);
   assert.match(page.metaSpaced, /\/privacy/);
+});
+
+test('privacy (B-8w): Klangio is named as Klangio GmbH, Germany, with what it actually receives', async () => {
+  // apps/worker/src/worker/pipeline.py: _maybe_run_chord_recognition -> _choose_chord_input sends
+  // ONE file built from the separated stems (default: keys + guitar + other, plus bass, mixed;
+  // or a single keys/guitar/other stem under CHORDS_STEM). vocals and drums are never
+  // candidates (_HARMONIC_STEMS / _MIX_EXTRA_STEMS). Pinned whole, in the processor list, in
+  // both normalisations, so dropping the company, the country or the vocal/drum exclusion is red.
+  const page = await renderPage(PRIVACY);
+  const list = section(page, 'Who else handles it', 'We don');
+  const line =
+    'Klangio (Klangio GmbH, Germany) estimates the chords. We send them one audio file made from the ' +
+    'instrument stems of your song; the vocal and drum stems are never sent.';
+  assert.match(list.textSpaced, phrase(line), 'privacy (tags→space): the Klangio line changed');
+  assert.match(list.textTight, phrase(line), 'privacy (tags→nothing): the Klangio line changed');
+  // The old wording said the audio itself went to Klangio; the original is never sent.
+  assert.doesNotMatch(page.textSpaced, /Klangio\S*\s*estimates the chords\.\s*Your audio is sent to them too/);
+});
+
+test('privacy (B-8w): the Klangio claim matches the worker code (vocals/drums never chord input)', () => {
+  const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'worker', 'src', 'worker', 'pipeline.py'), 'utf8');
+  assert.match(src, /^_HARMONIC_STEMS = \("keys", "guitar", "other"\)$/m);
+  assert.match(src, /^_MIX_EXTRA_STEMS = \("bass",\)$/m);
+  // The only production call to the chord provider passes the file _choose_chord_input chose.
+  assert.match(src, /stem_name, audio_path = chosen[\s\S]*?\.recognize\(\s*_Path\(audio_path\), stem=stem_name/);
+  assert.equal([...src.matchAll(/\.recognize\(/g)].length, 1, 'a second chord-provider call site: re-check the Klangio line');
 });

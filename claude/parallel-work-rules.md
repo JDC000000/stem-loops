@@ -15,7 +15,7 @@ why: JON D-6, 2026-11-23 19:50 Vancouver (LEDGER-19A row 95) and JON D-7, 2026-1
 - JON 2026-11-23 11:03: always run the most parallel work these rules allow; end every cycle with one line on how Jon could unlock more.
 - **JON D-6 2026-11-23 19:50: the orchestrator self-approves merges. Never ask Jon to approve a merge.**
 - **JON D-7, 2026-11-23 ~20:45 Vancouver, LEDGER-19A row 110: "M-SA scope + SA-2 money rules" (one rule for both sessions; folds 19B's SA-2 v1.2.1).** Conditions 6–7, the worker deploy and the FYI line below come from SA-2.
-- **JON standing approvals A1/A2/A3/A5, LEDGER-22A row 27, to 2026-12-19** (canonical: Project `claude/handover-22/JON-STANDING-APPROVALS-2026-11-25.md`; repo copy: AGENTS.md M-8 "Standing approvals"): in a session where Jon typed the adoption line, the Jon-only deploy, prod-read and own-PR merge sentences below are excepted by A1/A2/A3 (A2 inactive until the deploy guard holds two non-author reviews ≥ 95 at a main SHA recorded in the Project file); the rules below apply again after 12-19.
+- **JON standing approvals A1/A2/A3/A5, LEDGER-22A row 27, to 2026-12-19** (canonical: Project `claude/handover-22/JON-STANDING-APPROVALS-2026-11-25.md`; repo copy: AGENTS.md M-8 "Standing approvals"): in a session where Jon typed the adoption line, the Jon-only deploy, prod-read and own-PR merge sentences below are excepted by A1/A2/A3 (A2 NOT ACTIVE until the five activation steps in the Project file are recorded); the rules below apply again after 12-19.
 
 ## 1 · Merging (rewritten in v3.5; D-7 folded in v3.6; gate v3.6 wording in v3.6.1)
 

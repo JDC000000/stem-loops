@@ -9,7 +9,7 @@ hooks:
     - matcher: "Bash"
       hooks:
         - type: command
-          command: "d=\"${CLAUDE_PROJECT_DIR:-.}\"; [ -f \"$d/scripts/agent_readonly_guard.py\" ] || d=\"$(git rev-parse --show-toplevel 2>/dev/null)\"; exec python3 -I \"$d/scripts/agent_readonly_guard.py\""
+          command: "command -v python3 >/dev/null 2>&1 || { echo \"agent_readonly_guard: python3 not found, blocked (fail closed)\" >&2; exit 2; }; d=\"${CLAUDE_PROJECT_DIR:-.}\"; [ -f \"$d/scripts/agent_readonly_guard.py\" ] || d=\"$(git rev-parse --show-toplevel 2>/dev/null)\"; python3 -I \"$d/scripts/agent_readonly_guard.py\"; rc=$?; [ \"$rc\" -eq 0 ] || exit 2"
 isolation: worktree
 maxTurns: 50
 ---

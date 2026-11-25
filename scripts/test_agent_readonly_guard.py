@@ -27,7 +27,7 @@ def bash(cmd):
 
 ALLOWED = [
     "git log --oneline -5",
-    "git -C /home/claude/s22/wt git diff origin/v3/main...HEAD",
+    "git -C /home/claude/s22/wt diff origin/v3/main...HEAD",
     "git --no-pager show HEAD:scripts/or4-merge.sh",
     "git fetch --depth=50 origin pull/12/head",
     "git worktree add /tmp/rv -b rv FETCH_HEAD",
@@ -48,6 +48,21 @@ ALLOWED = [
     "curl -sS https://example.com/health",
     "grep -n push .claude/settings.json",
     "cat > /home/claude/s22/reviews/R1.md <<'EOF'\nthe author ran git push; it's fine\ngh pr merge is not used\nEOF",
+    "cat > /tmp/r.md <<'E.F'\ngit push mentioned\nE.F\ngit log -1",
+    "gh api repos/o/r/pulls/440 --jq '.head.sha'",
+    "gh api repos/o/r/commits/x/check-runs --jq '.check_runs[] | \"\\(.name) | \\(.status)\"'",
+    "gh api -X GET search/code -f q=git",
+    "gh api -iX GET rate_limit",
+    "cd /home/claude/s22/wt && git log -1 && git diff --stat origin/v3/main...HEAD -- scripts/",
+    "git fetch origin pull/440/head:pr440 && git worktree add ../rv pr440",
+    "git --attr-source HEAD log -1",
+    "git -c user.name='A B' log -1",
+    "git -C '/a b' status",
+    "for f in a b; do echo $f; done",
+    "curl -sS -o /dev/null -w '%{http_code}' https://stem-loops.fly.dev/health",
+    "curl -sSI https://x",
+    "wget -q -O - https://x",
+    "out=$(python3 -I -u -m unittest discover -s scripts 2>&1 | tail -3); echo $out",
 ]
 
 BLOCKED = [
@@ -99,6 +114,46 @@ BLOCKED = [
     "curl -d x=1 https://api.github.com/x",
     "curl --json {} https://x",
     "wget --post-data=x https://x",
+    # R1 (fable) bypasses that must be blocked
+    "gh api -iX POST repos/o/r/issues/1/comments",
+    "gh api -if body=x repos/o/r/issues/1/comments",
+    "curl -sX POST https://api.github.com/x",
+    "curl -sSd x=1 https://api.github.com/x",
+    "curl -s -dx=1 https://x",
+    "curl -sS -XPOST https://x",
+    "curl -XPOST https://x",
+    "curl -sT f https://x",
+    "curl -sF a=b https://x",
+    "curl -K cfg https://x",
+    "curl --config cfg https://x",
+    "curl --dat x=1 https://x",
+    "curl -so /dev/null -d@f https://x",
+    "curl --request=PUT https://x",
+    "git --attr-source HEAD push origin HEAD:x",
+    "git -C '/tmp/my repo' push origin HEAD:x",
+    "git -c user.name='Rev Bot' -c user.email=r@x commit -am fix",
+    "cat > /dev/null <<E.F\nx\nE.F\ngit push origin HEAD:x",
+    "cat > /dev/null <<'E-F'\nx\nE-F\ngit push origin HEAD:x",
+    "cat > /dev/null <<EOF\nno closing line\ngit push",
+    "echo push origin HEAD:x | xargs git",
+    "/usr/bin/gi? push origin HEAD:x",
+    "git pu${Z}sh origin HEAD:x",
+    "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=alias.p GIT_CONFIG_VALUE_0=push git p origin HEAD:x",
+    "X=git; $X push",
+    "export G=/usr/bin/gh; $G pr merge 1",
+    "{git,push,origin,HEAD:x}",
+    "python3 -c 'import subprocess; subprocess.run([\"git\",\"push\"])'",
+    "git p origin x",
+    "git clean -fdx",
+    "gh api graphql",
+    "gh api -X GET graphql",
+    "gh api /graphql -X GET",
+    "wget --method POST https://x",
+    "wget --method=PUT https://x",
+    "wget --post-d=x https://x",
+    "gh api -X GET -X POST repos/o/r/x",
+    "gh api --method post repos/o/r/x",
+    "git reflog expire --all",
 ]
 
 
@@ -115,6 +170,29 @@ class GuardCommands(unittest.TestCase):
                 rc, err = bash(cmd)
                 self.assertEqual(rc, 2, cmd)
                 self.assertIn("agent_readonly_guard: blocked", err)
+
+    def test_every_blocked_git_subcommand(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("guard", GUARD)
+        g = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(g)
+        self.assertEqual(g.GIT_BLOCKED & g.GIT_ALLOWED, set())
+        fixed = ["push", "commit", "merge", "rebase", "reset", "cherry-pick", "revert",
+                 "am", "tag", "update-ref", "pull", "clean", "send-pack", "receive-pack",
+                 "http-push", "commit-tree", "symbolic-ref", "notes", "replace"]
+        for sub in sorted(set(g.GIT_BLOCKED) | set(fixed)):
+            for form in ("git %s x", "git -C /x %s", "git --attr-source HEAD %s"):
+                with self.subTest(cmd=form % sub):
+                    self.assertIsNotNone(g.violation(form % sub))
+        remote_writes = {"add", "remove", "rm", "rename", "set-url", "set-head",
+                         "set-branches", "prune", "update"}
+        self.assertEqual(g.GIT_REMOTE_WRITES, remote_writes)
+        for sub in sorted(remote_writes):
+            with self.subTest(remote=sub):
+                self.assertIsNotNone(g.violation("git remote %s origin https://x" % sub))
+        for sub in ("log", "diff", "show", "fetch", "status", "worktree", "checkout"):
+            with self.subTest(allowed=sub):
+                self.assertIsNone(g.violation("git %s" % sub))
 
     def test_non_bash_tool_passes(self):
         rc, _ = run_guard({"tool_name": "Read", "tool_input": {"file_path": "/x"}})
@@ -181,6 +259,27 @@ class ReadOnlyFrontmatter(unittest.TestCase):
                                                          "tool_input": {"command": c}}),
                                        capture_output=True, text=True, timeout=30)
                     self.assertEqual(p.returncode, want, p.stderr)
+            # No python3 on PATH (sh and git only): must exit 2, not 127.
+            import shutil
+            import tempfile
+            with tempfile.TemporaryDirectory() as tmp:
+                os.symlink(shutil.which("git"), os.path.join(tmp, "git"))
+                env2 = dict(os.environ, CLAUDE_PROJECT_DIR=str(ROOT), PATH=tmp)
+                p = subprocess.run([shutil.which("sh"), "-c", cmd], cwd=str(ROOT), env=env2,
+                                   input=json.dumps({"tool_name": "Bash",
+                                                     "tool_input": {"command": "git push"}}),
+                                   capture_output=True, text=True, timeout=30)
+                with self.subTest(agent=name, case="no python3"):
+                    self.assertEqual(p.returncode, 2, p.stderr)
+                # python3 present but exiting 1 (e.g. a crash before main): must be 2
+                with open(os.path.join(tmp, "python3"), "w") as fh:
+                    fh.write("#!/bin/sh\nexit 1\n")
+                os.chmod(os.path.join(tmp, "python3"), 0o755)
+                os.symlink(shutil.which("sh"), os.path.join(tmp, "sh"))
+                p = subprocess.run([shutil.which("sh"), "-c", cmd], cwd=str(ROOT), env=env2,
+                                   input="{}", capture_output=True, text=True, timeout=30)
+                with self.subTest(agent=name, case="python3 exits 1"):
+                    self.assertEqual(p.returncode, 2, p.stderr)
             # CLAUDE_PROJECT_DIR without the guard: falls back to the git
             # toplevel of cwd; with neither, every Bash call is blocked.
             env = dict(os.environ, CLAUDE_PROJECT_DIR="/nonexistent-389")

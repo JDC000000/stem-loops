@@ -256,8 +256,16 @@ configured to author commits as that user:
 4. `--admin` stops being the normal merge path entirely
 
 Until the service account is created, the current workaround stands:
-(Superseded by M-SA for merge approval.) Jon runs `scripts/safe_merge.sh <N>` which enforces M-1 while admin-
-bypassing the CODEOWNERS self-approval block. Creating the service
+(Historical; superseded by M-SA.) Jon ran `scripts/safe_merge.sh <N>`, which enforces M-1 while admin-
+bypassing the CODEOWNERS self-approval block; it calls `gh pr merge --admin`,
+which needs GraphQL and cannot run in-session (M-8). Today PRs are merged only
+by the orchestrator (main session; never a subagent), only through
+`scripts/or4-merge.sh`, and only when every M-SA condition holds; for a
+protected or money-class PR that includes two PASS reviews from models other
+than the author's and a real run with `JON_ROW`/`JON_PR` (M-SA condition 3).
+OR-1 (defined in the Project's parallel-work rules, outside this repo): when a
+classifier, permission system or proxy refuses an action, record it, tell Jon,
+and never re-route around it. Creating the service
 account is a one-time setup step; track it in
 `claude/project-tracker.md` under "Structural" and close this note once
 it lands. Do NOT weaken CODEOWNERS or branch protection to shortcut
@@ -305,8 +313,12 @@ causes had already been eliminated; this was the fourth, and it was invisible
 in the UI because GitHub never displays a stored secret.
 
 **Consequences, now unlocked:**
-- Merge attribution is auditable. `merged_by` distinguishes automation from a
-  human, which it could not do before.
+- For `auto-merge.yml` merges only, `merged_by` distinguishes the App from a
+  human, which it could not do before. It does not do so for orchestrator
+  merges: a REST merge through `scripts/or4-merge.sh` shows `merged_by`
+  JDC000000, the same as a merge by Jon. Attribution for those lives in the
+  session ledger row (M-SA "After each merge") and the PR comments, never in
+  `merged_by`.
 - Dimension 5 of `claude/agent-effectiveness-scoring.md` moves from
   **Inferred** to **Direct** evidence, lifting the cap that rule imposed.
 - `BOT_TOKEN` can now be revoked as the real test that the App is doing the
@@ -534,8 +546,12 @@ the cutover plan lists as blocking pre-flight items:**
 **What this rule is not.** It is not a substitute for M-9 — a change can need
 both, and a CI gate touching grants needs both. And a security review clearing
 90 is not permission to merge a held change or to do a hard-rule item (M-SA).
-Every protected-class PR needs a second reviewer on a third model (M-SA);
-applying migrations, Stripe live and secrets stay Jon's, every time.
+Every protected-class PR (money path, migrations, workflows, secret paths
+included) is merged only by the orchestrator, only through
+`scripts/or4-merge.sh`, with two PASS reviews from models other than the
+author's (a second reviewer on a third model) and a real run with
+`JON_ROW`/`JON_PR`, under every M-SA condition; applying migrations, Stripe
+live and secrets stay Jon's, every time.
 
 ---
 

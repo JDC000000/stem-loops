@@ -295,6 +295,31 @@ def test_drift_no_tombstone_is_written_except_through_the_marker_helper():
     assert callers == {"_chords_unavailable"}
 
 
+def test_drift_every_marker_helper_call_is_returned_directly():
+    """#462 (fable mutant D5 on #456): a branch that calls ``_chords_unavailable(...,
+    tombstone=...)`` as a bare statement and then returns ``_chords_ok()`` writes a tombstone
+    while the row says ``ok``. Every call of a marker helper, anywhere in the module, must be
+    the direct value of a ``return`` -- so a tombstone write always IS the returned outcome."""
+    tree = ast.parse(inspect.getsource(pipeline))
+    returned = {
+        id(r.value) for r in ast.walk(tree) if isinstance(r, ast.Return) and r.value is not None
+    }
+    calls = [n for n in ast.walk(tree) if _call_name(n) in {"_chords_unavailable", "_chords_ok"}]
+    assert calls, "marker helpers not found; update this guard"
+    stray = [ast.unparse(n) for n in calls if id(n) not in returned]
+    assert stray == [], f"marker helper result not returned directly: {stray}"
+    # And only the hook produces markers (a helper called from elsewhere could write a
+    # tombstone outside the hook's outcome).
+    callers = {
+        fn.name
+        for fn in ast.walk(tree)
+        if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef))
+        for n in ast.walk(fn)
+        if _call_name(n) in {"_chords_unavailable", "_chords_ok"}
+    }
+    assert callers == {"_maybe_run_chord_recognition"}
+
+
 def test_drift_every_reason_in_the_hook_is_a_known_code_and_every_code_is_used():
     fn = _hook_ast()
     assigned: dict[str, list[ast.expr]] = {}

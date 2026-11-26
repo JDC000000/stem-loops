@@ -63,9 +63,10 @@ const INTERNAL_DETAILS = [
 
 const ALL_CODES_RE = new RegExp(`\\b(${[...ENTITLEMENT_CODES, 'INTERNAL_ERROR'].join('|')})\\b`);
 
-/** The copy a code must render to: headline + action from ERROR_COPY, nothing else. */
+/** The copy a code must render to: headline + action from ERROR_COPY (or, while checkout is
+ *  hidden, CHECKOUT_OFF_COPY: #453), nothing else. errorCopy() picks between them. */
 const expected = (code) => {
-  const c = copy.ERROR_COPY[code];
+  const c = copy.errorCopy(code);
   return c.action ? `${c.headline} ${c.action}` : c.headline;
 };
 const DEFAULT_SENTENCE = `${copy.DEFAULT_ERROR.headline} ${copy.DEFAULT_ERROR.action}`;

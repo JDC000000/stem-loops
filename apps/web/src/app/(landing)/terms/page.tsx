@@ -5,6 +5,7 @@ import { SiteFooter, SiteHeader } from '@/components/landing/SiteChrome';
 import { CONTACT_LABEL, CONTACT_URL, formatDay, termsUpdatedOn } from '@/components/landing/legal';
 import { MAX_TRACK_SEC } from '@/lib/play/types';
 import { chordsLineShown } from '@/lib/chords-claim';
+import { isCheckoutEnabled } from '@/lib/billing/checkout-switch';
 
 // Read from the one ceiling, exactly as the landing page does, rather than typed as a word.
 // A legal page is the worst place to carry a number that a single env change can falsify, and
@@ -50,6 +51,7 @@ export function generateMetadata(): Metadata {
 
 export default function TermsPage() {
   const chords = chordsLineShown(); // DB-17, read at build (the page is static)
+  const checkout = isCheckoutEnabled(); // QP-3 (#455), read at build (the page is static)
   return (
     <>
       <SiteHeader />
@@ -69,8 +71,12 @@ export default function TermsPage() {
             <p>
               {/* B-8w: no number here; see the C-17 note at the top of this file. */}
               The Free plan costs nothing and covers a monthly number of songs on your account: the limit shown on
-              the <a href="/pricing">pricing page</a>, which we may change. For more than that you need a paid plan (Pro or
-              Studio), or credits for uploaded files (credits do not add song links). Prices are on the same page.
+              the <a href="/pricing">pricing page</a>, which we may change.
+              {/* QP-3: while checkout is hidden in the beta (lib/billing/checkout-switch.ts, #455) nothing
+                  can be bought, so the page says so, in #470's words. Read at build, like the chords switch. */}
+              {checkout
+                ? ' For more than that you need a paid plan (Pro or Studio), or credits for uploaded files (credits do not add song links). Prices are on the same page.'
+                : ' Paid plans (Pro or Studio) and credits for uploaded files (credits do not add song links) cover more than that, but they aren’t on sale during the beta. Prices are on the same page.'}
             </p>
             <p>
               You can start a job from an uploaded file without an account; a song link added on the home page asks you to

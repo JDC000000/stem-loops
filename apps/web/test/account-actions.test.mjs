@@ -163,17 +163,46 @@ test('AccountActions (phone): the row wraps and every control is a >= 44px targe
   assert.match(tokens, /--h-control:\s*44px/);
 });
 
-test('AccountActions: submitting clears this browser\'s pending link and never cancels the submit', async () => {
+test('AccountActions: submitting clears this browser\'s buffered edits and pending link (audit §3 M3), never cancelling the submit', async () => {
   const { mod } = await renderActions();
-  const removed = [];
+  // A real-shaped localStorage: two buffered-edit keys (the current per-user form and the legacy
+  // single key, lib name in src/chord/edit-collector.ts), the pending link, and a bystander.
+  const store = new Map([
+    ['stem-loops-chord-edit-buffer', '[]'],
+    ['stem-loops-chord-edit-buffer:u1', '[{"x":1}]'],
+    ['sl.pendingLink', '{}'],
+    ['sl.theme', 'dark'],
+  ]);
+  const localStorage = {
+    get length() { return store.size; },
+    key: (i) => [...store.keys()][i] ?? null,
+    getItem: (k) => store.get(k) ?? null,
+    setItem: (k, v) => store.set(k, String(v)),
+    removeItem: (k) => store.delete(k),
+  };
   const prev = globalThis.window;
-  globalThis.window = { localStorage: { removeItem: (k) => removed.push(k), getItem: () => null, setItem() {}, key: () => null, length: 0 } };
+  globalThis.window = { localStorage };
   try {
     assert.equal(mod.forgetLocalUserState(), undefined, 'a return value could read as preventDefault');
   } finally {
     if (prev === undefined) delete globalThis.window; else globalThis.window = prev;
   }
-  assert.ok(removed.includes('sl.pendingLink'), `pending link not cleared: ${removed.join(',')}`);
+  assert.deepEqual([...store.keys()], ['sl.theme'], 'buffered edits or the pending link survived sign-out');
+});
+
+test('AccountActions: the Sign out form runs forgetLocalUserState on submit (the M3 clear is wired)', async () => {
+  const { mod } = await renderActions();
+  // Walk the element the REAL component returns (no DOM needed) and find the one form.
+  const forms = [];
+  (function walk(n) {
+    if (Array.isArray(n)) return n.forEach(walk);
+    if (!React.isValidElement(n)) return;
+    if (n.type === 'form') forms.push(n);
+    walk(n.props?.children);
+  })(mod.default());
+  assert.equal(forms.length, 1);
+  assert.equal(forms[0].props.action, '/api/auth/signout');
+  assert.equal(forms[0].props.onSubmit, mod.forgetLocalUserState, 'the sign-out form no longer clears local state');
 });
 
 // ── 3. Placement ─────────────────────────────────────────────────────────────

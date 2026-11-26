@@ -194,7 +194,7 @@ test('signed-in link: 403 / 400 stay 403 / 400 when clientIpHashOf throws (IP ha
 
 // ── Beta QA S1/S2 (QW-1): the refusals carry the real sentence ─────────────────────────────
 // The REAL error-copy module, checkout OFF (BILLING_CHECKOUT_ENABLED unset, the beta posture).
-const FREE_QUOTA_SENTENCE = "You've used all your free tracks this month. Your allowance resets at the start of next month.";
+const FREE_QUOTA_SENTENCE = "You've used all your free songs this month. Your allowance resets at the start of next month.";
 const NO_BUY = /\bbuy\b|purchase|credit pack|pick a plan|upgrade/i;
 
 test('S1: a free user out of songs pastes a link → 402 with the upload path\'s code and sentence', async () => {

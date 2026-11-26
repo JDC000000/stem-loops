@@ -93,6 +93,21 @@ export const SET_TOAST_MS = 3000;
 /** Shown when the browser refuses to keep the part names (private mode, full storage). */
 export const PART_NAMES_NOT_SAVED = 'Names not saved: this browser blocked storage.';
 
+/** The ⋯ button's accessible name lists what its menu holds (QA S8): the
+ *  chord items only when the song has chords (#496), speed only when the
+ *  engine offers it, Rename parts only when it shows. Menu order. */
+export function moreMenuLabel(o: { hasChords: boolean; speed: boolean; renameParts: boolean }): string {
+  const items = [
+    o.hasChords ? 'all chords' : null,
+    o.speed ? 'speed' : null,
+    'song info',
+    'count-in',
+    o.renameParts ? 'rename parts' : null,
+    'set lists',
+  ].filter(Boolean);
+  return `More: ${items.join(', ')}`;
+}
+
 /** The `?set=` this page was opened with (a list id or `demo`), or null. Client only. */
 export function readSetParam(search: string | null | undefined): string | null {
   if (!search) return null;
@@ -633,7 +648,11 @@ export function PlayerScreen(props: ScreenProps) {
             ref={menuButton}
             type="button"
             className={styles.more}
-            aria-label="More: all chords, song info, set lists"
+            aria-label={moreMenuLabel({
+              hasChords,
+              speed: Boolean(onSpeed),
+              renameParts: canRenameParts(playable, sections.length),
+            })}
             aria-haspopup="true"
             aria-expanded={menuOpen}
             aria-controls="player-menu"
@@ -667,35 +686,41 @@ export function PlayerScreen(props: ScreenProps) {
                 }
               }}
             >
-              <button
-                type="button"
-                className={styles.menuItem}
-                onClick={() => {
-                  setMenuOpen(false);
-                  setChartOpen(true);
-                }}
-              >
-                See all chords
-              </button>
-              <div className={styles.menuGroup} role="group" aria-labelledby="player-chord-mode">
-                <span id="player-chord-mode" className={styles.menuLabel}>
-                  Chords
-                </span>
-                <div className={styles.segmented}>
-                  {(['simple', 'detailed'] as const).map((m) => (
-                    <button
-                      key={m}
-                      type="button"
-                      className={styles.segment}
-                      aria-pressed={chordMode === m}
-                      onClick={() => pickChordMode(m)}
-                      data-testid={`chord-mode-${m}`}
-                    >
-                      {m === 'simple' ? 'Simple' : 'Detailed'}
-                    </button>
-                  ))}
+              {/* #496: the chord items, like Capo / transpose below, show only
+                  when the song has chords (reported by the overlay). */}
+              {hasChords ? (
+                <button
+                  type="button"
+                  className={styles.menuItem}
+                  onClick={() => {
+                    setMenuOpen(false);
+                    setChartOpen(true);
+                  }}
+                >
+                  See all chords
+                </button>
+              ) : null}
+              {hasChords ? (
+                <div className={styles.menuGroup} role="group" aria-labelledby="player-chord-mode">
+                  <span id="player-chord-mode" className={styles.menuLabel}>
+                    Chords
+                  </span>
+                  <div className={styles.segmented}>
+                    {(['simple', 'detailed'] as const).map((m) => (
+                      <button
+                        key={m}
+                        type="button"
+                        className={styles.segment}
+                        aria-pressed={chordMode === m}
+                        onClick={() => pickChordMode(m)}
+                        data-testid={`chord-mode-${m}`}
+                      >
+                        {m === 'simple' ? 'Simple' : 'Detailed'}
+                      </button>
+                    ))}
+                  </div>
                 </div>
-              </div>
+              ) : null}
               {onSpeed ? (
                 <div className={styles.menuGroup} role="group" aria-labelledby="player-speed" data-testid="speed-group">
                   {/* Phase C C1 (Beta): pitch-kept slow-down. 50% is not offered. */}

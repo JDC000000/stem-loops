@@ -63,7 +63,7 @@ const entStub = dataUrl(`
   export class EntitlementError extends Error {
     constructor(code, message) { super(message ?? code); this.name = 'EntitlementError'; this.code = code;
       this.status = code === 'PAID_LINK_INGEST_DISALLOWED' ? 400 : 402; } }
-  export const FREE_QUOTA_EXHAUSTED_MESSAGE = "You've used all your free tracks this month.";
+  export const FREE_QUOTA_EXHAUSTED_MESSAGE = "You've used all your free songs this month.";
   export const isPeriodStale = (pe) => !pe || new Date(pe).getTime() <= Date.now();
   export async function getEntitlementSnapshot(uid) {
     const r = await ${P}.query(

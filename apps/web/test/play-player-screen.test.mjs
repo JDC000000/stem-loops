@@ -121,7 +121,8 @@ test('P1.1 header: back · the song title as THE h1 · "<BPM> BPM · <key>" with
   assert.match(h, /<h1[^>]*data-testid="player-title"[^>]*>Lucky Ticket<\/h1>/);
   assert.match(h, /<span class="facts" data-testid="player-facts"><span class="sr">Detected: <\/span>102 BPM · B♭ major<\/span>/);
   assert.match(h, /<a class="back" href="\/history" aria-label="Back to song library">/);
-  assert.match(h, /<button[^>]*aria-label="More: all chords, song info, set lists"[^>]*aria-expanded="false"/);
+  // QA S8: the server render has not heard from the overlay yet (no chords), and no onSpeed here; the 4-part fixture shows Rename parts.
+  assert.match(h, /<button[^>]*aria-label="More: song info, count-in, rename parts, set lists"[^>]*aria-expanded="false"/);
   assert.match(decode(ssr({ artist: 'The Royal Sundowners' })), /102 BPM · B♭ major<\/span><span class="artist">The Royal Sundowners<\/span>/);
   // Phase A (J3): the BPM · key chip is 20px, white, readable at 70 cm.
   const css = read('src/components/play/Player.module.css');
@@ -1122,6 +1123,49 @@ test('C4: a song with no chords has no Capo / transpose control and no badge', a
   } finally {
     delete globalThis.__noChords;
   }
+});
+
+test('#496: a song with no chords has no "See all chords" and no Chords: Simple / Detailed in the ⋯ menu', async () => {
+  globalThis.__noChords = true;
+  try {
+    await withDom(async (dom) => {
+      setMedia(false);
+      await dom.mount(React.createElement(Player.PlayerView, viewProps({ onSpeed: noop })));
+      await dom.act(() => dom.find('[data-testid="player-more"]').click());
+      const items = dom.findAll('#player-menu button').map((b) => b.textContent);
+      assert.ok(!items.includes('See all chords'), items.join(' | '));
+      assert.equal(dom.find('[data-testid="chord-mode-simple"]'), null);
+      assert.equal(dom.find('[data-testid="chord-mode-detailed"]'), null);
+      assert.equal(dom.find('#player-chord-mode'), null);
+      assert.ok(items.includes('Song info'), 'the rest of the menu is still there');
+      assert.ok(dom.find('[data-testid="speed-group"]'));
+      assert.ok(dom.find('[data-testid="count-in-toggle"]'));
+      // QA S8: the ⋯ name does not promise chords that are not there.
+      assert.equal(dom.find('[data-testid="player-more"]').getAttribute('aria-label'), 'More: speed, song info, count-in, rename parts, set lists');
+      await dom.unmountAll();
+    });
+  } finally {
+    delete globalThis.__noChords;
+  }
+  // …and with chords, all of it is back, and the name says so.
+  await withDom(async (dom) => {
+    setMedia(false);
+    await dom.mount(React.createElement(Player.PlayerView, viewProps({ onSpeed: noop })));
+    await dom.act(() => dom.find('[data-testid="player-more"]').click());
+    const items = dom.findAll('#player-menu button').map((b) => b.textContent);
+    assert.ok(items.includes('See all chords'), items.join(' | '));
+    assert.ok(dom.find('[data-testid="chord-mode-simple"]'));
+    assert.ok(dom.find('[data-testid="transpose-group"]'));
+    assert.equal(dom.find('[data-testid="player-more"]').getAttribute('aria-label'), 'More: all chords, speed, song info, count-in, rename parts, set lists');
+    await dom.unmountAll();
+  });
+});
+
+test('QA S8: moreMenuLabel lists what the ⋯ menu holds, in menu order', async () => {
+  const { moreMenuLabel: L } = await import(graph.url('components/play/PlayerScreen.tsx'));
+  assert.equal(L({ hasChords: false, speed: false, renameParts: false }), 'More: song info, count-in, set lists');
+  assert.equal(L({ hasChords: true, speed: true, renameParts: true }), 'More: all chords, speed, song info, count-in, rename parts, set lists');
+  assert.equal(L({ hasChords: true, speed: false, renameParts: false }), 'More: all chords, song info, count-in, set lists');
 });
 
 test('D6: chords are Simple by default; ⋯ → Chords: Simple / Detailed switches both chord views and is remembered', async () => {

@@ -83,7 +83,7 @@ export const ERROR_COPY: Record<string, { headline: string; action: string }> = 
     action: 'Buy a credit pack to add more tracks.',
   },
   FREE_MONTHLY_QUOTA_EXHAUSTED: {
-    headline: "You've used all your free tracks this month.",
+    headline: "You've used all your free songs this month.",
     action: 'Your allowance resets at the start of next month.',
   },
   // LEGACY, kept so a stored error_code or an old client still resolves to

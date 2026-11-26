@@ -406,7 +406,7 @@ test('free, no credits, allowance spent under the lock -> 402 FREE_MONTHLY_QUOTA
   });
   assert.equal(res.status, 402);
   assert.equal(res.body.error_code, 'FREE_MONTHLY_QUOTA_EXHAUSTED');
-  assert.equal(res.body.message, "You've used all your free tracks this month. Your allowance resets at the start of next month.");
+  assert.equal(res.body.message, "You've used all your free songs this month. Your allowance resets at the start of next month.");
 });
 
 // Jon, 2026-11-16 ("Cap at 5/month"): credit holders stay capped on links, and

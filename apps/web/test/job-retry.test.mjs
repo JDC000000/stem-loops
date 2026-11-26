@@ -554,7 +554,7 @@ test('(j) (a) for a Free user now at quota → existing quota copy, 0 jobs, 0 de
     error: 'monthly quota reached', code: 'quota_exceeded', resets_at: '2026-12-01T00:00:00Z',
     // Beta QA S1 / QW-1: the real sentence, not the generic "on our end" fallback.
     error_code: 'FREE_MONTHLY_QUOTA_EXHAUSTED',
-    message: "You've used all your free tracks this month. Your allowance resets at the start of next month.",
+    message: "You've used all your free songs this month. Your allowance resets at the start of next month.",
   });
   assert.deepEqual(counts(w), { jobs: 1, jobsUsed: 5, songsUsed: null, debits: 0, burst: 1 });
   assert.equal(w.st.jobs.get(PARENT).retried_at, null);

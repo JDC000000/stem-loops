@@ -521,7 +521,7 @@ test('account deletion signs out and clears the saved link too', () => {
 const QUOTA_BODY = {
   error: 'monthly quota reached', code: 'quota_exceeded', resets_at: '2026-12-01T00:00:00Z',
   error_code: 'FREE_MONTHLY_QUOTA_EXHAUSTED',
-  message: "You've used all your free tracks this month. Your allowance resets at the start of next month.",
+  message: "You've used all your free songs this month. Your allowance resets at the start of next month.",
 };
 const ctaText = (dom) => dom.find('#cta')?.textContent ?? '';
 
@@ -535,7 +535,7 @@ test('mounted S1: a link refused for quota (402) shows the server sentence and o
   assert.equal(r.posts.length, 1);
   assert.deepEqual(r.assigns, []);
   assert.match(r.error, /We couldn’t start that job\./);
-  assert.match(r.error, /You've used all your free tracks this month\. Your allowance resets at the start of next month\./);
+  assert.match(r.error, /You've used all your free songs this month\. Your allowance resets at the start of next month\./);
   assert.doesNotMatch(r.error, /on our end/);
   assert.doesNotMatch(cta, /Try again/, 'a 402 cannot pass by pressing again');
   assert.match(cta, /Separate and play/);
@@ -547,7 +547,7 @@ test('mounted S1: a 402 with no message (an older server) still gets the quota s
     job: { status: 402, body: { error: 'monthly quota reached', code: 'quota_exceeded', resets_at: '' } },
     after: (dom) => submit(dom, 'https://youtu.be/dQw4w9WgXcQ'),
   });
-  assert.match(r.error, /You've used all your free tracks this month\./);
+  assert.match(r.error, /You've used all your free songs this month\./);
   assert.doesNotMatch(r.error, /on our end/);
 });
 

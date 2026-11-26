@@ -125,7 +125,7 @@ test('a 429 RETRY_LIMIT hides the button and says the limit', async () => {
 // Beta QA S1 (QW-1): "Try this song again" refused for quota used to read "We couldn't start that
 // just now. Wait a moment and try again." The reason is shown, and the button goes (a 402 cannot
 // pass by pressing again); "Start a new song" stays.
-const QUOTA_SENTENCE = "You've used all your free tracks this month. Your allowance resets at the start of next month.";
+const QUOTA_SENTENCE = "You've used all your free songs this month. Your allowance resets at the start of next month.";
 for (const [name, body] of [
   ['with the server sentence', { error: 'monthly quota reached', code: 'quota_exceeded', resets_at: '', error_code: 'FREE_MONTHLY_QUOTA_EXHAUSTED', message: QUOTA_SENTENCE }],
   ['from an older server (code only)', { error: 'monthly quota reached', code: 'quota_exceeded', resets_at: '' }],

@@ -17,6 +17,10 @@ import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
 import { wirePureLibs } from './helpers/pure-libs.mjs';
 import { loadStripeProvider } from './helpers/billing-harness.mjs';
+// B-8w "P": checkout is OFF unless BILLING_CHECKOUT_ENABLED is exactly 'true' (lib/billing/
+// checkout-switch.ts). These cases pin the ENABLED behaviour; the OFF state is pinned in
+// test/checkout-switch.test.mjs.
+process.env.BILLING_CHECKOUT_ENABLED = 'true';
 
 const WEB = join(dirname(fileURLToPath(import.meta.url)), '..');
 const toJs = (src) =>

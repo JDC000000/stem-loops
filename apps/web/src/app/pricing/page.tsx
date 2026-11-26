@@ -9,6 +9,9 @@ import { benefitLine, featuredPlan, features, planCta } from '@/lib/pricing-copy
 import { getEntitlementSnapshot } from '@/lib/billing/entitlements';
 // Read only (review of #301, R2-2): an effective-Free viewer may still hold a live subscription.
 import { freeViewerHasLiveSubscription } from '@/lib/billing/pricing-plan-state';
+// B-8w "P" (Jon, 2026-11-25): checkout is hidden during the beta unless
+// BILLING_CHECKOUT_ENABLED=true (default off). Prices stay visible; purchase actions do not.
+import { CHECKOUT_DISABLED_LABEL, isCheckoutEnabled } from '@/lib/billing/checkout-switch';
 
 // P6 (Jon, 2026-11-17): /pricing is a public, indexable page. Its metadata comes
 // from the page registry (lib/seo/pages.ts) and is declared in ./layout.tsx, as
@@ -137,7 +140,9 @@ export default async function PricingPage() {
         ? 'free'
         : null
       : effectivePlan;
-  const featuredCode = featuredPlan(plans.map((p) => p.code), !!user, currentPlan);
+  // Read on the server, per request. Off: no card is featured (nothing to buy, so no lime).
+  const checkoutOn = isCheckoutEnabled();
+  const featuredCode = checkoutOn ? featuredPlan(plans.map((p) => p.code), !!user, currentPlan) : null;
 
   // The V3-C10 trial banner used to render here, directly above the Free card.
   // It pitched a three-track signup offer to every signed-out viewer, while the
@@ -173,7 +178,7 @@ export default async function PricingPage() {
           // visitor or a Free user, Studio for Pro, none for Studio. No badge or
           // "recommended" / "most popular" text: there is no data behind either claim.
           const featured = p.code === featuredCode;
-          const cta = planCta(p.code, !!user, currentPlan, featuredCode);
+          const cta = planCta(p.code, !!user, currentPlan, featuredCode, checkoutOn);
           return (
             <section key={p.code} className={`pr-card${featured ? ' pr-featured' : ''}`} aria-label={p.display_name}>
               <h2 className="pr-name">{p.display_name}</h2>
@@ -208,6 +213,11 @@ export default async function PricingPage() {
                   returnTo="/pricing"
                   primary={cta.primary}
                 />
+              ) : cta.kind === 'unavailable' ? (
+                // Checkout is off during the beta: copy, not a control.
+                <p className="pr-cta pr-cta-current" data-testid="checkout-unavailable">
+                  {CHECKOUT_DISABLED_LABEL}
+                </p>
               ) : cta.kind === 'sign-in' ? (
                 <a href="/login?return_to=/pricing" className={cta.primary ? 'pr-cta jp-primary' : 'pr-cta pr-cta-quiet'}>
                   Get {p.display_name}
@@ -220,6 +230,7 @@ export default async function PricingPage() {
 
       <h2 className="pr-h2">Credits</h2>
       <p className="pr-lede">One credit is one uploaded track on the Free plan. Credits never expire.</p>
+      {checkoutOn ? (
       <CreditPackCheckout returnTo="/pricing">
       <div className="pr-packs">
         {packs.map((c) => (
@@ -239,6 +250,22 @@ export default async function PricingPage() {
         ))}
       </div>
       </CreditPackCheckout>
+      ) : (
+      // Checkout off (beta): the packs and prices stay; no hCaptcha, no buy button, no link.
+      <div className="pr-packs">
+        {packs.map((c) => (
+          <section key={c.pack_code} className="pr-card" aria-label={`${c.credits} credits for ${priceCad(c.price_cad_cents)}`}>
+            <div className="pr-pack-credits">{c.credits} credits</div>
+            <div className="pr-pack-price">
+              {priceCad(c.price_cad_cents)}
+            </div>
+            <p className="pr-cta pr-cta-current" data-testid="checkout-unavailable">
+              {CHECKOUT_DISABLED_LABEL}
+            </p>
+          </section>
+        ))}
+      </div>
+      )}
     </main>
   );
 }

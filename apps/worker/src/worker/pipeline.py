@@ -42,7 +42,12 @@ import sentry_sdk
 from psycopg.types.json import Json
 
 from . import fetch_canary, tmpdirs
-from .chord_source import ChordQuotaExceeded, ChordSubmitUnanswered, ChordSubmitUncertain
+from .chord_source import (
+    ChordProviderPaused,
+    ChordQuotaExceeded,
+    ChordSubmitUnanswered,
+    ChordSubmitUncertain,
+)
 from .classifier.energy_classifier import classify_energy
 from .classifier.section_labeler import label_sections
 from .cleanup import PURGED_MARKER, RETAINED_UNTIL_SQL
@@ -1229,6 +1234,7 @@ CHORDS_UNAVAILABLE_REASONS = frozenset(
         "too_long",  # tombstone too_long
         "no_harmonic_stem",  # tombstone not_attempted
         "quota",  # Klangio monthly cap / HTTP 402; tombstone not_attempted
+        "provider_paused",  # K-2 submit circuit breaker open, nothing sent; tombstone not_attempted
         "submit_uncertain",  # ledger sentinel / claim held; tombstone provider_failed
         "submit_unanswered",  # the billable POST got no answer; tombstone provider_failed
         "provider_failed",  # any other provider error; tombstone provider_failed
@@ -1408,6 +1414,14 @@ def _maybe_run_chord_recognition(job_id: str, stem_paths: dict, requested_stems)
         log_structured("WARN", "chords_skipped_quota", job_id=job_id, error=str(exc)[:200])
         sentry_sdk.capture_exception(exc)
         return _chords_unavailable(job_id, "quota", tombstone="not_attempted")
+    except ChordProviderPaused as exc:
+        # K-2: the Klangio submit breaker is open (recent submits went unanswered). Nothing was
+        # claimed, reserved or sent for this track. The breaker's own open/half-open/closed
+        # logs + the Sentry event on open carry the incident; no per-job Sentry event here.
+        log_structured(
+            "INFO", "chords_skipped_provider_paused", job_id=job_id, error=str(exc)[:200]
+        )
+        return _chords_unavailable(job_id, "provider_paused", tombstone="not_attempted")
     except ChordSubmitUncertain as exc:
         # A previous run may already have paid for this job but lost the id: skip rather than
         # risk a second $0.20. Tombstone reason stays one the web loader maps.

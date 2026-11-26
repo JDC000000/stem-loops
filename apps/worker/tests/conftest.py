@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import functools
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -22,6 +23,22 @@ def _isolate_klangio_quota(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> N
     """
     monkeypatch.setenv("KLANGIO_QUOTA_BACKEND", "file")
     monkeypatch.setenv("KLANGIO_QUOTA_FILE", str(tmp_path / "klangio_quota.json"))
+
+
+@pytest.fixture(autouse=True)
+def _reset_klangio_breaker(monkeypatch: pytest.MonkeyPatch):
+    """K-2: the Klangio submit circuit breaker is process-wide state. Start every test
+    closed with the default thresholds, so one test's unanswered POSTs cannot make a later
+    test's submit "paused". Only touches the module if something already imported it."""
+    monkeypatch.delenv("KLANGIO_BREAKER_FAILURES", raising=False)
+    monkeypatch.delenv("KLANGIO_BREAKER_PAUSE_SEC", raising=False)
+    mod = sys.modules.get("worker.chord_providers.klangio")
+    if mod is not None:
+        mod._BREAKER.reset()
+    yield
+    mod = sys.modules.get("worker.chord_providers.klangio")
+    if mod is not None:
+        mod._BREAKER.reset()
 
 
 @pytest.fixture(autouse=True)

@@ -33,6 +33,7 @@ from tests.test_beatless_finishes_done import JOB, _drive
 from worker import pipeline
 from worker.chord_providers import klangio as kg
 from worker.chord_source import (
+    ChordProviderPaused,
     ChordQuotaExceeded,
     ChordResult,
     ChordSegment,
@@ -138,6 +139,15 @@ def test_unavailable_no_harmonic_stem(hook, monkeypatch):
     ("exc", "reason", "tombstone"),
     [
         pytest.param(ChordQuotaExceeded("cap"), "quota", "not_attempted", id="quota"),
+        pytest.param(
+            ChordProviderPaused("breaker open"), "provider_paused", "not_attempted", id="paused"
+        ),
+        pytest.param(
+            kg.ChordSubmitNotSent("connect failed"),
+            "provider_failed",
+            "provider_failed",
+            id="not-sent",
+        ),
         pytest.param(
             ChordSubmitUncertain("sentinel"), "submit_uncertain", "provider_failed", id="uncertain"
         ),

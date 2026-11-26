@@ -11,9 +11,10 @@ E — Klangio bridge in parallel with own-model training).
 
 Harte-syntax labels (``C:maj``, ``F#:7``, ``N`` for no-chord) are the on-wire
 contract — enforced by ``is_valid_harte_label`` and the matching test. All three
-providers in the ``provider`` field — ``klangio`` | ``replicate`` | ``internal``
-— are typed here so the eval harness and downstream readers can switch on a
-closed enum. Only ``klangio`` is wired in this PR; the rest raise
+providers in the ``provider`` field — ``klangio`` | ``replicate`` | ``internal`` |
+``btc`` — are typed here so the eval harness and downstream readers can switch on a
+closed enum. ``klangio`` is wired; ``btc`` (DR-D1 option A, self-hosted, free) is wired as a
+scaffold whose model runner lands after Jon's D1a decision; the rest raise
 ``NotImplementedError`` until Y1.2+.
 """
 
@@ -26,7 +27,7 @@ from pathlib import Path
 from typing import Literal, Protocol
 
 StemKind = Literal["mix", "instrumental", "other"]
-ProviderName = Literal["klangio", "replicate", "internal"]
+ProviderName = Literal["klangio", "replicate", "internal", "btc"]
 
 # Harte-subset regex for the provider contract. Root is a natural letter plus an
 # OPTIONAL sharp/flat; quality is one of the 24 chord qualities in
@@ -183,7 +184,7 @@ def get_chord_source(provider: str | None = None) -> ChordSource:
     """Factory. Defaults to ``os.environ['CHORDS_PROVIDER']`` or ``'klangio'``.
 
     Returns the concrete implementation; the import is lazy so a missing provider
-    dep never breaks the rest of the pipeline. The three provider literals are
+    dep never breaks the rest of the pipeline. The four provider literals are
     the SAME closed set as the ``ProviderName`` type above — any new provider
     must be added in BOTH places (M-4 type ↔ code drift rule).
     """
@@ -192,11 +193,16 @@ def get_chord_source(provider: str | None = None) -> ChordSource:
         from .chord_providers.klangio import KlangioChordSource
 
         return KlangioChordSource()
+    if name == "btc":
+        # Lazy: the worker never imports the BTC module (or, later, torch) unless selected.
+        from .chord_providers.btc import BtcChordSource
+
+        return BtcChordSource()
     if name in ("replicate", "internal"):
         raise NotImplementedError(
             f"ChordSource provider '{name}' is deferred to PR-Y1.2+ "
             f"(see claude/phase-2-y1-chord-model-decision.md)."
         )
     raise ValueError(
-        f"Unknown CHORDS_PROVIDER '{name}'. Supported: klangio | replicate | internal."
+        f"Unknown CHORDS_PROVIDER '{name}'. Supported: klangio | btc | replicate | internal."
     )

@@ -1359,9 +1359,12 @@ def _maybe_run_chord_recognition(job_id: str, stem_paths: dict, requested_stems)
         from .chord_source import get_chord_source  # noqa: PLC0415
 
         # The ledger makes the billable POST at-most-once per job: a recorded Klangio job id
-        # is reattached (free GETs) after a reaper requeue / deploy / failed R2 upload.
+        # is reattached (free GETs) after a reaper requeue / deploy / failed R2 upload. It
+        # (and its jobs.klangio_job_id claim / drain check) is Klangio-only: a free
+        # self-hosted provider (btc) bills nothing, so it gets ledger=None (DR-D1).
+        ledger = _KlangioJobLedger(job_id) if provider_name == "klangio" else None
         result = get_chord_source(provider_name).recognize(
-            _Path(audio_path), stem=stem_name, ledger=_KlangioJobLedger(job_id)
+            _Path(audio_path), stem=stem_name, ledger=ledger
         )
 
         import json as _json  # noqa: PLC0415

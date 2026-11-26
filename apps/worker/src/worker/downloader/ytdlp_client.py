@@ -51,6 +51,20 @@ PROXY_URL = os.environ.get("PROXY_URL", "")  # e.g. http://user:pass@geo.iproyal
 # through the residential proxy — 20s cut off legitimate slow-but-successful fetches
 # (false DOWNLOAD_TIMEOUT), so give proxied fetches real headroom.
 TIMEOUT = 10 if not PROXY_URL else 30
+# QK-1: TIMEOUT bounds the WHOLE yt-dlp run (extractor + full media download + ffmpeg WAV
+# conversion), not a socket read. A long video is fetched in full on purpose (see
+# downloader._fetch), and both the bytes (~1 MB/min) and the conversion (~0.4 s/min measured)
+# grow with its length, so a flat 30 s failed long videos that were downloading fine.
+# The per-attempt bound therefore grows with the length gate 0c read from metadata:
+# TIMEOUT + TIMEOUT_PER_DECLARED_MIN_S per declared minute, never above TIMEOUT_CEILING_S.
+# Unknown length -> TIMEOUT, exactly as before. Ceiling: probe 15 s + 2 x (live check 15 s +
+# 120 s) + 2 s retry delay = 287 s, still inside the reaper's 300 s stale window for this
+# un-heartbeated stage.
+TIMEOUT_PER_DECLARED_MIN_S = 2.5
+TIMEOUT_CEILING_S = 120.0
+# QK-1: a proxied run that WAS receiving media bytes when TIMEOUT cut it was killed by OUR
+# budget on OUR exit, not by the video or the user: FETCH_PROXY_FAILED(download_timeout).
+DOWNLOAD_TIMEOUT_CAUSE = "download_timeout"
 
 # #320: first-byte stall deadline. A NON-FINAL attempt whose media download has received NO
 # media byte this many seconds after the download subprocess started is cut (whole process
@@ -192,6 +206,29 @@ def begin_attempt(*, stall_cut: bool | None = None) -> None:
     _attempt.ms_first_byte = None
     if stall_cut is not None:
         _attempt.stall_cut = stall_cut
+
+
+def set_declared_duration(duration_sec: float | None) -> None:
+    """QK-1: the length gate 0c read for the video about to be fetched (None = unknown).
+    download_audio() sets it before its attempts and clears it after, so a pooled thread never
+    carries one job's length into the next."""
+    _attempt.declared_sec = duration_sec
+
+
+def attempt_timeout_s(declared_sec: float | None = None) -> float:
+    """Wall-clock bound for ONE yt-dlp run (QK-1). ``TIMEOUT`` for an unknown, zero, negative
+    or NaN length; else ``TIMEOUT + TIMEOUT_PER_DECLARED_MIN_S`` per declared minute, capped at
+    ``max(TIMEOUT, TIMEOUT_CEILING_S)``. Never below ``TIMEOUT``."""
+    if declared_sec is None:
+        declared_sec = getattr(_attempt, "declared_sec", None)
+    try:
+        d = float(declared_sec) if declared_sec is not None else 0.0
+    except (TypeError, ValueError):
+        d = 0.0
+    if not d > 0:  # None, 0, negative, NaN (inf falls through to the ceiling)
+        return float(TIMEOUT)
+    scaled = TIMEOUT + TIMEOUT_PER_DECLARED_MIN_S * d / 60.0
+    return min(scaled, max(float(TIMEOUT), TIMEOUT_CEILING_S))
 
 
 def _take_stall_cut() -> bool:
@@ -673,7 +710,8 @@ def fetch_audio_file(youtube_url: str) -> str:
     cmd += ["--", youtube_url]
 
     deadline = first_byte_deadline_s() if stall_cut else None
-    r = _run_download(cmd, TIMEOUT, deadline)
+    timeout_s = attempt_timeout_s()
+    r = _run_download(cmd, timeout_s, deadline)
     if r.first_byte_at is not None:
         _attempt.ms_first_byte = max(0, int((r.first_byte_at - _attempt.t0) * 1000))
 
@@ -691,6 +729,11 @@ def fetch_audio_file(youtube_url: str) -> str:
         # The final attempt is never cut (B-1): if it never got a byte, it fails exactly as
         # before (DOWNLOAD_TIMEOUT), with the stall recorded as the reason for observability.
         stalled = r.first_byte_at is None
+        if proxy and not stalled:
+            # QK-1: media was flowing and OUR budget cut it -- ours, not the user's. Retried
+            # like proxy_connect; as a final error the allowance is given back (OUR_FAULT).
+            log_structured("WARN", "ytdlp_download_timeout", timeout_s=timeout_s, proxied=True)
+            raise FetchProxyFailedError(DOWNLOAD_TIMEOUT_CAUSE)
         raise DownloadTimeoutError(
             "yt-dlp timed out", failure_reason=FIRST_BYTE_STALL if stalled else None
         )

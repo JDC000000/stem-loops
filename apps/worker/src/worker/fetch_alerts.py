@@ -46,6 +46,11 @@ _PROXY_FAILURE_MESSAGES = {
         "link fetch failed at our proxy ({cause}): the last attempt's exit sent no media byte "
         "before FETCH_FIRST_BYTE_DEADLINE_SEC"
     ),
+    # QK-1: media was flowing when our per-attempt wall-clock bound cut the run.
+    "download_timeout": (
+        "link fetch failed at our proxy ({cause}): media was arriving but the run passed the "
+        "per-attempt wall-clock bound (ytdlp_client.attempt_timeout_s)"
+    ),
 }
 
 

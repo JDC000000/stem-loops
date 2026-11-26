@@ -377,12 +377,25 @@ def test_an_uncut_attempt_with_no_byte_fails_exactly_as_before(fake_download):
     assert ei.value.error_code not in job_failure.OUR_FAULT_CODES
 
 
-def test_the_overall_timeout_is_still_download_timeout_and_keeps_its_first_byte(fake_download):
+def test_the_overall_timeout_with_bytes_is_ours_and_keeps_its_first_byte(fake_download):
+    """QK-1: proxied, media was arriving, OUR wall-clock bound cut it -> FETCH_PROXY_FAILED
+    (download_timeout), not the user-class DOWNLOAD_TIMEOUT it was before."""
+    fake_download["script"] = ["timeout"]
+    with pytest.raises(FetchProxyFailedError) as ei:
+        ytdlp_client.fetch_audio_file(URL)
+    assert ei.value.cause == "download_timeout" and ei.value.retryable
+    assert isinstance(ytdlp_client.last_first_byte_ms(), int), "slow-but-moving: byte recorded"
+
+
+def test_the_overall_timeout_with_bytes_direct_is_still_download_timeout(
+    fake_download, monkeypatch
+):
+    monkeypatch.setattr(ytdlp_client, "PROXY_URL", "")
     fake_download["script"] = ["timeout"]
     with pytest.raises(DownloadTimeoutError) as ei:
         ytdlp_client.fetch_audio_file(URL)
+    assert not isinstance(ei.value, FetchProxyFailedError)
     assert ei.value.failure_reason is None
-    assert isinstance(ytdlp_client.last_first_byte_ms(), int), "slow-but-moving: byte recorded"
 
 
 def test_a_cut_attempt_is_classed_as_our_proxy_and_infra():
@@ -464,7 +477,7 @@ def test_a_timed_out_attempt_keeps_its_first_byte_in_fetch_attempts(fake_downloa
     fake_download["script"] = ["timeout", "ok"]
     downloader.download_audio(URL, JOB)
     rows = gates.attempts
-    assert [r["outcome_class"] for r in rows] == ["DOWNLOAD_TIMEOUT", "ok"]
+    assert [r["outcome_class"] for r in rows] == ["FETCH_PROXY_FAILED", "ok"]  # QK-1
     assert isinstance(rows[0]["ms_first_byte"], int)
 
 

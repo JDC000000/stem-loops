@@ -24,17 +24,17 @@ const TERMS = await renderPage('app/(landing)/terms/page.tsx');
 const wyg = () => HOME.html.match(/<ul class="wyg"[^>]*>([\s\S]*?)<\/ul>/)?.[1] ?? '';
 // The FAQ section only: the hero's example has its own <details> ("How to read this").
 const homeFaq = () => HOME.html.match(/<section[^>]*id="faq"[\s\S]*?<\/section>/)?.[0] ?? '';
-const soon = () => HOME.html.match(/<p class="wyg-soon"[^>]*>([\s\S]*?)<\/p>/)?.[1] ?? '';
+const more = () => HOME.html.match(/<p class="wyg-more"[^>]*>([\s\S]*?)<\/p>/)?.[1] ?? '';
 
-test('"What you get" is three true-today proof points, in order, short, with "Coming soon" (A4 home page diet)', () => {
+test('"What you get" is three true-today proof points, in order, short, with the ⋯ menu line (A4 home page diet; QW-4)', () => {
   const lines = [...wyg().matchAll(/<li data-line="([^"]+)">([\s\S]*?)<\/li>/g)].map((m) => [m[1], flatten(m[2])]);
   assert.deepEqual(lines, [
     ['chords', 'Chords in time with the song, with the next one shown. Auto-detected, so trust your ear.'],
     ['stems', '6 stems — drums, bass, guitar, keys, vocals, other. Turn your part down, mute it or solo it.'],
     ['loop', 'Loop any section — or several in a row.'],
   ]);
-  const n = words(flatten(wyg())) + words(flatten(soon()));
-  assert.ok(n >= 25 && n <= 60, `"What you get" + "Coming soon" is ${n} words; three one-liners`);
+  const n = words(flatten(wyg())) + words(flatten(more()));
+  assert.ok(n >= 25 && n <= 60, `"What you get" + the ⋯ menu line is ${n} words; three one-liners`);
   // The old 8-row scope sheet is gone, and so is the desktop-first device line.
   assert.doesNotMatch(HOME.html, /class="spec"|<dt>Where it runs<\/dt>|<dt>Track length<\/dt>|Best in Chrome on a computer/);
 });

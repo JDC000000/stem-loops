@@ -334,3 +334,34 @@ test('#460 signup without otp_expired and without code still -> auth_callback_fa
   const res = await mod.GET(makeReq('https://stem-loops.com/auth/callback?type=signup&error_code=bad_jwt'));
   assert.equal(loc(res), `${LOGIN}?error=auth_callback_failed`);
 });
+
+// ─── QW-6: a sign-up link opened in another browser (no PKCE verifier here) ─────────────────
+// auth-js returns AuthPKCECodeVerifierMissingError (code pkce_code_verifier_not_found). For a
+// sign-up link that is its own code, auth_link_other_browser, whose copy says what happened and
+// sends the person to password sign-in here. The destination (a waiting song) is kept.
+
+test('QW-6 signup link, verifier missing (code) -> auth_link_other_browser, destination kept', async () => {
+  const mod = await loadRoute({ exchangeResult: { error: { name: 'AuthPKCECodeVerifierMissingError', code: 'pkce_code_verifier_not_found', status: 400 } } });
+  const res = await mod.GET(makeReq('https://stem-loops.com/auth/callback?type=signup&code=c1&next=' + encodeURIComponent('/?resume=link&n=' + 'a'.repeat(32))));
+  assert.equal(res.status, 307);
+  assert.equal(loc(res), `${LOGIN}?error=auth_link_other_browser&return_to=${encodeURIComponent('/?resume=link&n=' + 'a'.repeat(32))}`);
+  assert.equal(globalThis.__sentryCaptures.length, 1, 'still reported');
+});
+
+test('QW-6 signup link, verifier missing (name only) -> auth_link_other_browser', async () => {
+  const mod = await loadRoute({ exchangeResult: { error: { name: 'AuthPKCECodeVerifierMissingError' } } });
+  const res = await mod.GET(makeReq('https://stem-loops.com/auth/callback?type=signup&code=c1'));
+  assert.equal(loc(res), `${LOGIN}?error=auth_link_other_browser`);
+});
+
+test('QW-6 signup link, any OTHER exchange error keeps auth_signup_link_failed', async () => {
+  const mod = await loadRoute({ exchangeResult: { error: { name: 'AuthApiError', code: 'flow_state_expired' } } });
+  const res = await mod.GET(makeReq('https://stem-loops.com/auth/callback?type=signup&code=c1'));
+  assert.equal(loc(res), `${LOGIN}?error=auth_signup_link_failed`);
+});
+
+test('QW-6 recovery link, verifier missing -> auth_callback_failed (password sign-in is not the answer there)', async () => {
+  const mod = await loadRoute({ exchangeResult: { error: { name: 'AuthPKCECodeVerifierMissingError', code: 'pkce_code_verifier_not_found' } } });
+  const res = await mod.GET(makeReq('https://stem-loops.com/auth/callback?type=recovery&code=c1&next=/account/reset-password'));
+  assert.equal(loc(res), `${LOGIN}?error=auth_callback_failed&return_to=%2Faccount%2Freset-password`);
+});

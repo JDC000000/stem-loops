@@ -65,6 +65,8 @@ if (!skip) {
       };`,
       'lib/auth/supabase.ts': 'export const getUser = async () => globalThis.__ldUser ?? null; export const deleteAuthUser = async () => {};',
       'lib/client-ip.ts': 'export const clientIpHashOf = () => globalThis.__ldIp;',
+      // QW-2: the R2 stem probe (no R2 here). Ids in __ldBroken have no playable stems.
+      'lib/jobs/stem-artifacts.ts': 'export const hasPlayableStems = async (id) => !(globalThis.__ldBroken ?? []).includes(id);',
     },
     packages: {
       '@sentry/nextjs': 'export const captureException = (e) => { (globalThis.__ldCaptured ??= []).push(e); }; export const captureMessage = () => {};',
@@ -243,6 +245,37 @@ test('(c) re-paste of a done and retained job -> same id, no charge', { skip }, 
   assert.equal(fresh.status, 201, JSON.stringify(fresh.body));
   assert.notEqual(fresh.body.id, first.body.id);
   assert.equal((await counts(u, url)).jobs_used, before.jobs_used + 1);
+});
+
+test('QW-2: re-paste of a done job with no playable stems -> a new job, charged; a playable older one is reused', { skip }, async () => {
+  const u = await user();
+  const url = canon(vid());
+  as(u);
+  const first = await paste(url);
+  assert.equal(first.status, 201);
+  await pool.query("UPDATE jobs SET status = 'done' WHERE id = $1", [first.body.id]);
+  globalThis.__ldBroken = [first.body.id];
+  try {
+    const before = await counts(u, url);
+    const fresh = await paste(url);
+    assert.equal(fresh.status, 201, JSON.stringify(fresh.body));
+    assert.notEqual(fresh.body.id, first.body.id);
+    const after1 = await counts(u, url);
+    assert.equal(after1.jobs, before.jobs + 1);
+    assert.equal(after1.jobs_used, before.jobs_used + 1);
+    // The new job is queued: the next re-paste reuses it, nothing charged.
+    const again = await paste(url);
+    assert.deepEqual([again.status, again.body], [200, HIT(fresh.body.id)]);
+    assert.deepEqual(await counts(u, url), after1);
+    // Newer done job broken, older done job playable -> the older one ($7 skip list on real PG).
+    await pool.query("UPDATE jobs SET status = 'done' WHERE id = $1", [fresh.body.id]);
+    globalThis.__ldBroken = [fresh.body.id];
+    const older = await paste(url);
+    assert.deepEqual([older.status, older.body], [200, HIT(first.body.id)]);
+    assert.deepEqual(await counts(u, url), after1);
+  } finally {
+    globalThis.__ldBroken = undefined;
+  }
 });
 
 test('(d) re-paste after the previous job FAILED -> a new job, charged normally', { skip }, async () => {

@@ -1,5 +1,6 @@
 // Browser-side direct-to-R2 upload (moved unchanged from the old home page so the
 // landing form keeps the same retry/diagnostics behaviour). Client-only: uses XHR.
+import { UPLOAD_STORAGE_REJECTED_MSG } from '@/lib/error-copy';
 
 type UploadErr = Error & { retriable?: boolean };
 
@@ -17,10 +18,12 @@ function putOnce(uploadUrl: string, file: File, contentType: string, onProgress:
     };
     xhr.onload = () => {
       if (xhr.status >= 200 && xhr.status < 300) return resolve();
-      // R2 returns an XML <Error><Code>…</Code></Error> body — surface it verbatim.
+      // R2 returns an XML <Error><Code>…</Code></Error> body. QW-3: it is diagnostic detail for
+      // the console only; the user gets the friendly line from error-copy.ts, never the XML,
+      // the status line or the storage host.
       const body = (xhr.responseText || '').slice(0, 300);
       console.error('[upload] storage rejected PUT', { attempt, status: xhr.status, statusText: xhr.statusText, readyState: xhr.readyState, body });
-      const err: UploadErr = new Error(`Storage rejected the upload (HTTP ${xhr.status}${xhr.statusText ? ' ' + xhr.statusText : ''})${body ? ': ' + body : ''}`);
+      const err: UploadErr = new Error(UPLOAD_STORAGE_REJECTED_MSG);
       err.retriable = false; // definitive server response — retrying won't help
       reject(err);
     };

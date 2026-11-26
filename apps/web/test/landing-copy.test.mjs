@@ -370,17 +370,22 @@ test('the landing states the device scope truthfully and phone first (Story 8; A
   for (const [where, text] of READ_AS) for (const re of banned) assert.doesNotMatch(text, re, `${where} says ${re}`);
 });
 
-test('the landing says tempo and pitch are coming, and never implies we have them', () => {
-  // Slice 1b (P7): the Tempo / Pitch and capo / Lyrics rows are gone with the scope sheet. The
-  // gap is still STATED, now as one "Coming soon" line, read from the RENDERED page so that a
-  // commented-out or hidden line cannot satisfy it.
-  const soon = RENDER.html.match(/<p class="wyg-soon"[^>]*>([\s\S]*?)<\/p>/);
-  assert.ok(soon, 'the "Coming soon" line is not rendered');
-  assert.equal(flatten(soon[1]), 'Coming soon: slow a song down without changing its pitch.');
-  // …and it is NOT one of the things "What you get" offers.
+test('the landing names where Speed and Capo / transpose are (the ⋯ menu), and overclaims neither', () => {
+  // QW-4 (QA 2026-11-26): Speed (Beta, 90% / 75%, pitch kept) and Capo / transpose shipped in the
+  // player's ⋯ menu with no flag, so the old "Coming soon: slow a song down" line went false. It is
+  // now one "In the player's ⋯ menu" line, read from the RENDERED page so that a commented-out or
+  // hidden line cannot satisfy it.
+  const more = RENDER.html.match(/<p class="wyg-more"[^>]*>([\s\S]*?)<\/p>/);
+  assert.ok(more, 'the "In the player\u2019s \u22ef menu" line is not rendered');
+  assert.equal(flatten(more[1]), 'In the player\u2019s \u22ef menu: slow down to 90% or 75%, same pitch (Beta), or set a capo.');
+  // The rates are the engine's, not typed from memory.
+  const rates = readFileSync(join(WEB, 'src/lib/play/engine.ts'), 'utf8').match(/export const PLAYBACK_RATES = \[([^\]]*)\]/)[1];
+  assert.equal(rates.replace(/\s/g, ''), '1,0.9,0.75', 'PLAYBACK_RATES changed: update the home line and the FAQ');
+  // No "coming soon" for either any more, and it is still NOT one of the "What you get" lines.
+  for (const [where, text] of READ_AS) assert.doesNotMatch(text, /coming soon/i, `${where} still says "coming soon"`);
   assert.doesNotMatch(flatten(WYG_HTML()), /\bslow\b|\btempo\b|\bpitch\b|\bcapo\b/i);
-  // and the marketing copy never offers either as something you can do today
-  const banned = [/\byou can slow\b/i, /\bslow it down\b(?![^.]*\bnot\b)/i, /\bhalf speed\b/i, /\btranspose\b/i, /\bchange its key\b(?![^.]*\bnot\b)/i];
+  // Never overclaimed: no half speed (50% is not offered) and no key change of the AUDIO.
+  const banned = [/\bhalf speed\b/i, /\b50 ?%/, /\bchange (?:the|its) key\b(?!\?)(?![^.]*\bnot\b)/i, /\bpitch.shift/i, /\bany speed\b/i];
   for (const [file, src] of RAW_PAGE_AND_COMPONENTS) for (const re of banned) assert.doesNotMatch(src, re, `${file} matches ${re}`);
   for (const [where, text] of READ_AS) for (const re of banned) assert.doesNotMatch(text, re, `${where} says ${re}`);
 });

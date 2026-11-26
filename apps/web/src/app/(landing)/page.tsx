@@ -28,7 +28,7 @@ import { HomeDemo } from '@/components/landing/HomeDemo';
 import { SiteFooter, SiteHeader } from '@/components/landing/SiteChrome';
 import type { Metadata } from 'next';
 import { FaqItem, homeFaq } from '@/components/landing/faq';
-import { COMING_SOON, whatYouGet } from '@/components/landing/what-you-get';
+import { IN_THE_PLAYER_LEAD, inThePlayer, whatYouGet } from '@/components/landing/what-you-get';
 import { chordsLineShown } from '@/lib/chords-claim';
 import { JsonLd } from '@/components/seo/JsonLd';
 import { homeGraph } from '@/lib/seo/jsonld';
@@ -98,7 +98,7 @@ export default function HomePage() {
         </section>
 
         {/* 2. WHAT YOU GET: three one-line proof points (components/landing/what-you-get.ts),
-            the "Coming soon" disclosure, and the one line linking the plans. */}
+            the "In the player's ⋯ menu" line (QW-4), and the one line linking the plans. */}
         <section className="section" id="scope" aria-labelledby="scope-h">
           <div className="container">
             <div className="reading">
@@ -111,8 +111,8 @@ export default function HomePage() {
                   </li>
                 ))}
               </ul>
-              <p className="wyg-soon" data-testid="coming-soon">
-                <strong>Coming soon:</strong> {COMING_SOON.charAt(0).toLowerCase() + COMING_SOON.slice(1)}
+              <p className="wyg-more" data-testid="in-the-player">
+                <strong>{IN_THE_PLAYER_LEAD}</strong> {inThePlayer(chords)}
               </p>
               <p className="body-lg more-link">
                 <a href="/pricing">See the monthly song limits →</a>

@@ -57,9 +57,16 @@ export function faqEntries(chords: boolean = chordsLineShown()): Record<string, 
     id: 'faq-tempo',
     q: 'Can I slow a song down, or change its key?',
     a: (
+      // QW-4: both are in the player's ⋯ (More) menu today. Speed: components/play/PlayerScreen.tsx
+      // (1, 0.9, 0.75, pitch kept; absent where the browser cannot stretch audio). Capo / transpose:
+      // components/play/TransposeMenuItem.tsx, chord names only, shown when the song has chords
+      // (so it leaves this answer with the DB-17 switch off).
       <p>
-        Not yet. Playing a track slower without dropping its pitch is next, and a capo or key change follows it. Today
-        the song plays at its own tempo in its own key.
+        Slow it down, yes: in the player’s ⋯ menu, Speed (Beta) plays the song at 90% or 75% without
+        changing its pitch, in browsers that can do it.
+        {chords
+          ? ' The same menu has Capo / transpose, which moves the chord names to a capo or another key; the audio itself stays in its own key.'
+          : ' Changing the key is not offered: the song plays in its own key.'}
       </p>
     ),
   },

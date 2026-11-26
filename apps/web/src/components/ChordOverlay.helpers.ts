@@ -1746,7 +1746,10 @@ export function unavailableMessage(reason: ChordUnavailableReason): string {
       // same result, so the copy says where the problem is and that re-uploading won't fix it.
       return 'Chord detection didn\u2019t return a result for this track. This is usually on our end rather than your song, so uploading it again won\u2019t help right now. Your stems and loops are unaffected.';
     case 'not_attempted':
-      return 'Chord detection wasn\u2019t run for this track.';
+      // QW-9: also written while the chord provider is paused or unanswered (K-2 provider_paused,
+      // quota; worker pipeline.py). No cause is surfaced to the web, so the copy names none, and
+      // it promises no date.
+      return 'Chord detection wasn\u2019t run for this track. Your stems and loops are unaffected, and chords may be added later.';
     case 'load_failed':
       return 'We couldn\u2019t load the chords. Refresh the page to try again.';
     default:

@@ -270,6 +270,13 @@ test('provider_failed copy does not pin the failure on the track, and does not i
   assert.match(m, /stems and loops are unaffected/);
 });
 
+test('not_attempted copy (QW-9): says stems and loops are fine, names no cause, promises no date', () => {
+  const m = unavailableMessage('not_attempted');
+  assert.equal(m, 'Chord detection wasn\u2019t run for this track. Your stems and loops are unaffected, and chords may be added later.');
+  assert.doesNotMatch(m, /\b(?:paused|quota|provider|Klangio|error|failed)\b/i);
+  assert.doesNotMatch(m, /\b(?:today|tomorrow|soon|hours?|days?|minutes?|by \w+day)\b/i);
+});
+
 test('unavailableMessage: every reason has distinct non-empty copy; unknown does not guess a cause', () => {
   const reasons = ['too_long', 'too_short', 'provider_failed', 'not_attempted', 'load_failed', 'unknown'];
   const msgs = reasons.map(unavailableMessage);

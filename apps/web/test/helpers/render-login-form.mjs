@@ -33,6 +33,8 @@ async function build() {
   const returnTo = lib('return-to.mjs', 'src/lib/auth/return-to.ts');
   const errors = lib('login-errors.mjs', 'src/lib/auth/login-errors.ts');
   const magic = lib('magic-link.mjs', 'src/lib/auth/magic-link.ts');
+  // QW-6: the address remembered for a failed-link prefill (the REAL module).
+  const remembered = lib('remembered-email.mjs', 'src/lib/auth/remembered-email.ts');
   const formStyles = lib('form-styles.mjs', 'src/lib/ui/form-styles.ts');
   // A4: LoginForm reads PENDING_RETURN_TO (the home form's sign-in-first marker). The REAL module,
   // with its one relative import pointed at the transpiled YouTube validator.
@@ -49,11 +51,15 @@ async function build() {
     'signInWithOAuth: (...a) => globalThis.__loginStub?.oauth?.(...a), ' +
     // QA A-08: sign-in and reset are scriptable the same way (globalThis.__loginStub.password / .reset).
     'signInWithPassword: (...a) => globalThis.__loginStub?.password?.(...a), ' +
-    'resetPasswordForEmail: (...a) => globalThis.__loginStub?.reset?.(...a) } }; }');
+    'resetPasswordForEmail: (...a) => globalThis.__loginStub?.reset?.(...a), ' +
+    // QW-6: the /login?code= check awaits getSession(); scriptable as globalThis.__loginStub.session.
+    'getSession: async () => ({ data: { session: (await globalThis.__loginStub?.session?.()) ?? null } }) } }; }');
   // 2A: records trackEvent calls into globalThis.__analyticsCalls when a test has set it (never
   // creates the global itself, so withDom's leaked-global check stays meaningful).
   const analytics = put('analytics.mjs', 'export function trackEvent(...a) { globalThis.__analyticsCalls?.push(a); } export const navigationGrace = async () => {};');
-  const hcaptcha = put('hcaptcha.mjs', 'export default function HCaptcha() { return null; }');
+  // Renders nothing. A test may capture each widget's props through globalThis.__hcaptchaStub
+  // (QW-7: to fire onVerify for the resend widget); unset, it is inert as before.
+  const hcaptcha = put('hcaptcha.mjs', 'export default function HCaptcha(props) { globalThis.__hcaptchaStub?.(props); return null; }');
   // The REAL show/hide password field (Slice 1b), not a stub: the toggle is what is tested.
   const passwordField = put('PasswordField.mjs', toJs(read('src/components/PasswordField.tsx'), true));
 
@@ -64,6 +70,7 @@ async function build() {
     .replace(/from ['"]@\/lib\/auth\/password-rules['"]/g, `from '${rules}'`)
     .replace(/from ['"]@\/lib\/auth\/login-errors['"]/g, `from '${errors}'`)
     .replace(/from ['"]@\/lib\/auth\/magic-link['"]/g, `from '${magic}'`)
+    .replace(/from ['"]@\/lib\/auth\/remembered-email['"]/g, `from '${remembered}'`)
     .replace(/from ['"]@\/lib\/ui\/form-styles['"]/g, `from '${formStyles}'`)
     .replace(/from ['"]@\/lib\/pending-link['"]/g, `from '${pendingLink}'`)
     .replace(/from ['"]@\/components\/PasswordField['"]/g, `from '${passwordField}'`)

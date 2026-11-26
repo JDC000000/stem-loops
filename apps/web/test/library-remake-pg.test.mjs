@@ -56,6 +56,8 @@ if (!skip) {
     name: 'library-remake-pg',
     entries: ['app/api/library/route.ts', 'app/api/library/remake/route.ts', 'app/api/library/[entryId]/route.ts', 'lib/billing/entitlements.ts'],
     overrides: {
+    // QW-2: the paste's R2 stem probe (reached via lib/library-server.ts); never called here.
+    'lib/jobs/stem-artifacts.ts': 'export const hasPlayableStems = async () => true;',
       'lib/db.ts': `
         const wait = async (name, text) => {
           const b = globalThis.__lbBarrier;

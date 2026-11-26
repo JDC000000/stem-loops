@@ -19,6 +19,11 @@
 //                             The account exists, so "request a new link"
 //                             is wrong for this user: the copy sends them to
 //                             password sign-in (and Forgot password as the fallback)
+//       auth_link_other_browser  a SIGNUP-confirmation link whose exchange failed because this
+//                             browser holds no PKCE verifier (Supabase's
+//                             `pkce_code_verifier_not_found`): it was opened in another
+//                             browser, device or a mail app's in-app browser (QW-6).
+//                             The copy says so and sends them to password sign-in here
 //       auth_callback_failed  everything else: no `code`, or the exchange of a
 //                             non-signup link (recovery) rejected or threw
 //
@@ -48,6 +53,13 @@ export const runtime = 'nodejs';
 const FAILED = '/login?error=auth_callback_failed';
 const EXPIRED = '/login?error=auth_link_expired';
 const SIGNUP_LINK_FAILED = '/login?error=auth_signup_link_failed';
+const OTHER_BROWSER = '/login?error=auth_link_other_browser';
+
+/** Supabase's "no PKCE verifier in this browser" (auth-js AuthPKCECodeVerifierMissingError). */
+function isVerifierMissing(err: unknown): boolean {
+  const e = (err ?? {}) as { code?: unknown; name?: unknown };
+  return e.code === 'pkce_code_verifier_not_found' || e.name === 'AuthPKCECodeVerifierMissingError';
+}
 
 export async function GET(request: NextRequest) {
   const { searchParams, origin } = request.nextUrl;
@@ -83,12 +95,14 @@ export async function GET(request: NextRequest) {
       // config drift). Report to Sentry — this is a security-relevant
       // signal when it spikes — but keep the user-facing path quiet.
       Sentry.captureException(error, { tags: { route: 'auth/callback' } });
+      if (isSignup && isVerifierMissing(error)) return fail(OTHER_BROWSER);
       return fail(isSignup ? SIGNUP_LINK_FAILED : FAILED);
     }
   } catch (err) {
     // Unexpected throw (network to Supabase, missing env, programming
     // error). Same shape as above — capture and redirect.
     Sentry.captureException(err, { tags: { route: 'auth/callback' } });
+    if (isSignup && isVerifierMissing(err)) return fail(OTHER_BROWSER);
     return fail(isSignup ? SIGNUP_LINK_FAILED : FAILED);
   }
 

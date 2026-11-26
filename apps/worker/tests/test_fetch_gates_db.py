@@ -8,7 +8,7 @@ import psycopg
 import pytest
 
 from worker.downloader import fetch_gates
-from worker.errors import DownloadBlockedError
+from worker.errors import BlocklistUnavailableError
 
 DB = os.environ.get("DATABASE_URL")
 pytestmark = pytest.mark.skipif(not DB, reason="DATABASE_URL not set")
@@ -111,8 +111,10 @@ def test_blocklist_rejects_unknown_reason(conn):
 
 def test_blocklist_fails_closed_when_db_unreachable(monkeypatch):
     monkeypatch.setenv("DATABASE_URL", "postgresql://nobody:x@127.0.0.1:1/none")
-    with pytest.raises(DownloadBlockedError):
+    # Still fail-closed, but our fault (QK-4): INTERNAL_ERROR, so the song comes back.
+    with pytest.raises(BlocklistUnavailableError) as ei:
         fetch_gates.is_blocklisted("dQw4w9WgXcQ")
+    assert ei.value.error_code == "INTERNAL_ERROR"
 
 
 def test_log_attempt_writes_one_row_and_never_raises(conn, monkeypatch):

@@ -37,6 +37,7 @@ from worker.errors import (
     DownloadBlockedError,
     DownloadPrivateError,
     DownloadTimeoutError,
+    FetchPausedError,
     FetchProxyFailedError,
 )
 
@@ -347,9 +348,12 @@ def test_other_failures_keep_their_code_even_during_an_outage(chain, exc, code):
 def test_the_kill_switch_is_not_an_outage(chain):
     set_check("proxy", False, 30)
     chain.paused = "fetch_youtube"
-    with pytest.raises(DownloadBlockedError) as ei:
+    # QK-4: the kill switch is ours (INTERNAL_ERROR, song returned), but it is still never
+    # attributed to a proxy outage: it keeps its own type and code.
+    with pytest.raises(FetchPausedError) as ei:
         downloader.download_audio(URL, JOB)
     assert not isinstance(ei.value, FetchProxyFailedError)
+    assert ei.value.error_code == "INTERNAL_ERROR"
 
 
 def test_a_block_that_clears_on_retry_still_succeeds(chain):

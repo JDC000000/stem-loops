@@ -526,3 +526,20 @@ test('phone: the current item is marked, and /loops keeps its product tag under 
     assert.equal(t, tag, path);
   }
 });
+
+// QA-78 (Phase 10 Loops): at 760-800px the /loops bar wrapped to two lines (the tag beside the
+// wordmark plus the "Download loops" pill did not fit). In the 760-899px band the /loops tag
+// stacks under the wordmark, as on a phone. Layout is unreachable here (no Chromium on the
+// authoring box); the browser journeys measure it. This gates the rule and its scope.
+test('QA-78: in the 760-899px band the /loops product tag stacks under the wordmark', () => {
+  const css = readFileSync(join(APP, '..', 'styles', 'signed-in-nav.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+  const band = css.match(/@media \(min-width: 760px\) and \(max-width: 899px\) \{([\s\S]*?)\n\}/)?.[1] ?? '';
+  assert.match(band, /\.sin-item \{\s*padding: 0 10px;\s*\}/, 'the #316 padding trim is kept');
+  assert.match(band, /\.sin-brand:has\(\.sin-product\[data-product="Download loops"\]\) \{ flex-direction: column;/);
+  assert.match(band, /\.sin-product\[data-product="Download loops"\] \{[^}]*line-height: 16px;/);
+  // Scoped to /loops: no unqualified .sin-brand / .sin-product rule in the band, so the landing
+  // and /jobs (tag "Play along") and the tagless pages are unchanged at these widths.
+  assert.doesNotMatch(band, /(^|\n)\s*\.sin-(brand|product)\s*\{/);
+  // The tag is not hidden in the band: Story 8.4 holds at every width.
+  assert.doesNotMatch(band, /\.sin-product[^{]*\{[^}]*display:\s*none/);
+});

@@ -550,7 +550,12 @@ test('(j) (a) for a Free user now at quota → existing quota copy, 0 jobs, 0 de
   const w = W0({ restore: RESTORED, jobsUsed: 5 });
   const r = await post(w);
   assert.equal(r.status, 402);
-  assert.deepEqual(r.body, { error: 'monthly quota reached', code: 'quota_exceeded', resets_at: '2026-12-01T00:00:00Z' });
+  assert.deepEqual(r.body, {
+    error: 'monthly quota reached', code: 'quota_exceeded', resets_at: '2026-12-01T00:00:00Z',
+    // Beta QA S1 / QW-1: the real sentence, not the generic "on our end" fallback.
+    error_code: 'FREE_MONTHLY_QUOTA_EXHAUSTED',
+    message: "You've used all your free tracks this month. Your allowance resets at the start of next month.",
+  });
   assert.deepEqual(counts(w), { jobs: 1, jobsUsed: 5, songsUsed: null, debits: 0, burst: 1 });
   assert.equal(w.st.jobs.get(PARENT).retried_at, null);
 }));
@@ -563,7 +568,7 @@ test('(k) a free retry at quota → allowed (no quota check); the burst limit st
   const b = W0({ restore: null, jobsUsed: 5, burst: { retry_after_s: 60 } });
   const r = await post(b);
   assert.equal(r.status, 429);
-  assert.deepEqual(r.body, { error: 'too many requests', code: 'rate_limit_burst', retry_after_s: 60 });
+  assert.deepEqual(r.body, { error: 'too many requests', code: 'rate_limit_burst', retry_after_s: 60, error_code: 'RATE_LIMITED', message: "You're sending requests too fast. Wait a minute and try again." });
   assert.equal(b.st.jobs.size, 1);
   assert.equal(b.st.jobs.get(PARENT).retried_at, null);
 }));

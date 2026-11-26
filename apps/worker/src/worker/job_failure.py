@@ -43,6 +43,10 @@ from .logger import log_structured
 # Q-B (Jon 2026-11-21): a final DOWNLOAD_BLOCKED raised while the fetch canary reports our
 # path failing (fresh result) is reclassified AT THE SOURCE to FETCH_PROXY_FAILED
 # (downloader._attribute_block_to_outage), so the stored code is ours and this tuple is unchanged.
+# QK-2 / QK-4 (2026-11-26), also with this tuple unchanged: a job that retained no playable stem
+# fails UPLOAD_FAILED (pipeline._require_a_playable_stem), and the kill switch, a failed blocklist
+# read and a worker with ALLOW_YOUTUBE_INPUT off raise INTERNAL_ERROR subclasses (errors.py)
+# instead of DOWNLOAD_BLOCKED -- all ours, so the credit / song comes back.
 OUR_FAULT_CODES = ("SEPARATION_FAILED", "UPLOAD_FAILED", "INTERNAL_ERROR", "FETCH_PROXY_FAILED")
 REFUND_PROVIDER = "worker_job_failed"
 # Never refunded, even though no paid call was made (Jon 2026-11-18 09:23 PT: "No refund for

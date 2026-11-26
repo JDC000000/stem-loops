@@ -36,7 +36,7 @@ const S = () => globalThis.__dd;
 const DB = `
 const S = () => globalThis.__dd;
 let seq = 0;
-const LIVE = /SELECT jobs\\.id::text AS id FROM jobs/;
+const LIVE = /SELECT jobs\\.id::text AS id(, jobs\\.status)? FROM jobs/;
 const LOCK = /pg_advisory_xact_lock\\(hashtextextended\\('link-dedupe:'/;
 const norm = (stems, dflt) => [...new Set(stems && stems.length ? stems : dflt)].sort();
 function lookup(visible, sql, p) {
@@ -46,10 +46,12 @@ function lookup(visible, sql, p) {
   // Paste lookup (#372 R2): params [user, url, statuses, normalisedStems, bars, defaultStems].
   const sameLoops = (r) => p.length < 6 ||
     ((r.bars ?? 4) === p[4] && JSON.stringify(norm(r.stems, p[5])) === JSON.stringify(p[3]));
+  const skipped = p[6] ?? [];
   const hit = visible
-    .filter((r) => r.user_id === p[0] && r.url === p[1] && (r.status === 'done' || statuses.includes(r.status)) && sameLoops(r))
+    .filter((r) => r.user_id === p[0] && r.url === p[1] && (r.status === 'done' || statuses.includes(r.status)) && sameLoops(r)
+      && !skipped.includes(r.id))
     .sort((a, b) => b.created - a.created)[0];
-  return { rows: hit ? [{ id: hit.id }] : [], rowCount: hit ? 1 : 0 };
+  return { rows: hit ? [{ id: hit.id, status: hit.status }] : [], rowCount: hit ? 1 : 0 };
 }
 async function outside(sql, p) {
   const s = S();
@@ -119,6 +121,11 @@ const graph = buildModuleGraph({
       export const lockAnonIp = async () => { L('lockAnonIp'); };
       export const checkAnonJobCaps = async () => ({ allowed: true });`,
     'lib/client-ip.ts': `export const clientIpHashOf = () => 'iphash';`,
+    // QW-2: the R2 stem probe. __dd.broken: ids with no playable stems; __dd.probeNull: could not tell.
+    'lib/jobs/stem-artifacts.ts': `export const hasPlayableStems = async (id, ipHash) => {
+      const s = globalThis.__dd; s.probes.push([id, ipHash()]);
+      if (s.probeNull) return null;
+      return !s.broken.includes(id); };`,
     'lib/auth/supabase.ts': `export const getUser = async () => globalThis.__dd.user;`,
     'lib/billing/rate-limit.ts': `
       const L = (n) => globalThis.__dd.log.push(n);
@@ -152,7 +159,7 @@ function reset(state = {}) {
   globalThis.__dd = {
     log: [], lookups: [], locks: [], debits: [], sentry: [], rows: [], mutex: new Map(), txs: 0,
     user: { user_id: USER_ID, email: 'a@b.co' }, trial: false, hideFromOutside: false, outsideBarrier: null,
-    quota: null, insertBlocked: false,
+    quota: null, insertBlocked: false, broken: [], probes: [], probeNull: false,
     ...state,
   };
 }
@@ -177,7 +184,7 @@ test('wiring: a signed-in paste looks up outside the tx, then LOCK (user, canoni
   // the second is the non-trial insert tx, whose FIRST statement is the link-dedupe lock.
   assert.deepEqual(order, ['db.query:lookup', 'tx:commit', 'tx:lock', 'tx:lookup', 'tx:insert', 'tx:commit']);
   assert.deepEqual(S().locks, [[USER_ID, CANON]], 'the lock key is the user and the CANONICAL url');
-  for (const l of S().lookups) assert.deepEqual(l.params, [USER_ID, CANON, IN_FLIGHT, ALL_SORTED, 4, ALL]);
+  for (const l of S().lookups) assert.deepEqual(l.params, [USER_ID, CANON, IN_FLIGHT, ALL_SORTED, 4, ALL, []]);
 });
 
 test('the lookup is the live-job predicate: done AND retained, or in flight — never failed', async () => {
@@ -288,9 +295,10 @@ test('anonymous paste: unchanged — no live-job lookup, no link-dedupe lock', a
 
 test('pasteHooks is passed on the signed-in LINK branch only (upload / anonymous code untouched)', () => {
   const src = readFileSync(join(WEB, 'src/app/api/jobs/route.ts'), 'utf8');
-  assert.equal(src.match(/\.\.\.pasteHooks\(\)/g)?.length, 1);
+  const HOOKS = '...pasteHooks({ clientIpHash: () => clientIpHashOf(request) })';
+  assert.equal(src.split('...pasteHooks(').length - 1, 1);
   const call = src.slice(src.indexOf('if (user) {\n      const r = await createAuthedLinkJob('));
-  assert.ok(call.length < src.length && call.slice(0, 600).includes('...pasteHooks()'));
+  assert.ok(call.length < src.length && call.slice(0, 800).includes(HOOKS));
 });
 
 // ── #372 R2 ─────────────────────────────────────────────────────────────────────────────────
@@ -363,4 +371,67 @@ test('R2 SF: refusals with the REAL hooks on — 402 quota and in-tx 429 still a
   const hit = await paste();
   assert.deepEqual([hit.status, hit.body], [200, HIT('live')]);
   assert.ok(!S().log.includes('checkMonthlyQuota'));
+});
+
+// ── QW-2: a DONE job that cannot play (encoder failed, or its stems are gone) is not reused ──
+const NEW_JOB_CHARGES = ['enforceEntitlement', 'checkAdmission', 'consumeTrialInTx', 'checkBurstLimit',
+  'checkMonthlyQuota', 'rollPeriodIfStale', 'bumpJobsUsedWithinQuota', 'recordAllowanceDebit'];
+
+test('QW-2: re-paste of a done job with NO playable stems (encode_failed / gone) → a new job, charged normally', async () => {
+  reset({ broken: ['broken-job'], rows: [{ id: 'broken-job', user_id: USER_ID, url: CANON, status: 'done', created: 0 }] });
+  const r = await paste();
+  assert.equal(r.status, 201, JSON.stringify(r.body));
+  assert.notEqual(r.body.id, 'broken-job');
+  assert.equal(r.body.existing, undefined);
+  assert.deepEqual(charged(), NEW_JOB_CHARGES);
+  assert.deepEqual(S().debits, [r.body.id]);
+  // Probed ONCE (findExisting); beforeInsert's repeat reused the verdict and skipped it again.
+  assert.deepEqual(S().probes, [['broken-job', 'iphash']]);
+  const inTx = S().lookups.at(-1).params;
+  assert.deepEqual(inTx[6], ['broken-job'], 'the in-tx lookup excludes the unplayable job');
+  // And the NEXT re-paste reuses that new (queued) job: one broken job costs one new song, not a loop.
+  S().log.length = 0;
+  const again = await paste();
+  assert.deepEqual([again.status, again.body], [200, HIT(r.body.id)]);
+  assert.deepEqual(charged(), []);
+});
+
+test('QW-2: a done job that CAN play is still reused (probe true), and an in-flight one is never probed', async () => {
+  reset({ rows: [{ id: 'good-done', user_id: USER_ID, url: CANON, status: 'done', created: 0 }] });
+  const r = await paste();
+  assert.deepEqual([r.status, r.body], [200, HIT('good-done')]);
+  assert.deepEqual(charged(), []);
+  assert.deepEqual(S().probes.map((p) => p[0]), ['good-done']);
+
+  reset({ broken: ['q'], rows: [{ id: 'q', user_id: USER_ID, url: CANON, status: 'queued', created: 0 }] });
+  const q = await paste();
+  assert.deepEqual([q.status, q.body], [200, HIT('q')]);
+  assert.deepEqual(S().probes, [], 'an in-flight hit has no stems yet and is reused without a probe');
+});
+
+test('QW-2: probe could not tell (rate limit / R2 fault → null) → reuse, never a second charged job', async () => {
+  reset({ probeNull: true, broken: ['d'], rows: [{ id: 'd', user_id: USER_ID, url: CANON, status: 'done', created: 0 }] });
+  const r = await paste();
+  assert.deepEqual([r.status, r.body], [200, HIT('d')]);
+  assert.deepEqual(charged(), []);
+});
+
+test('QW-2: a newer broken done job is skipped for an OLDER playable one of the same selection', async () => {
+  reset({ broken: ['newer'], rows: [
+    { id: 'older', user_id: USER_ID, url: CANON, status: 'done', created: 1 },
+    { id: 'newer', user_id: USER_ID, url: CANON, status: 'done', created: 2 },
+  ] });
+  const r = await paste();
+  assert.deepEqual([r.status, r.body], [200, HIT('older')]);
+  assert.deepEqual(charged(), []);
+  assert.deepEqual(S().lookups.map((l) => l.params[6]), [[], ['newer']]);
+});
+
+test('QW-2: at most PASTE_MAX_SKIPPED (3) broken jobs are probed per lookup, then a new job', async () => {
+  const ids = ['b1', 'b2', 'b3', 'b4'];
+  reset({ broken: ids, rows: ids.map((id, i) => ({ id, user_id: USER_ID, url: CANON, status: 'done', created: i })) });
+  const r = await paste();
+  assert.equal(r.status, 201, JSON.stringify(r.body));
+  assert.deepEqual(S().probes.map((p) => p[0]), ['b4', 'b3', 'b2']);
+  assert.deepEqual(charged(), NEW_JOB_CHARGES);
 });

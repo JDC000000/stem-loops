@@ -39,7 +39,7 @@ import {
 import { consumeTrialInTx } from '@/lib/trial';
 import { consumeCreditInTx } from '@/lib/billing/credits';
 import { BAD_ORIGIN, crossOriginRefusal } from '@/lib/same-origin';
-import { createAuthedLinkJob, type LinkJobDeps } from '@/lib/jobs/create-link-job';
+import { createAuthedLinkJob, burstRefusalBody, quotaRefusalBody, type LinkJobDeps } from '@/lib/jobs/create-link-job';
 import { pasteHooks } from '@/lib/library-server';
 
 // QA-64: recordAllowanceDebit() returns false only when migration 042 is not applied yet (the
@@ -223,11 +223,7 @@ export async function POST(request: NextRequest) {
         const burst = await checkBurstLimit(user.user_id);
         if (burst) {
           return new NextResponse(
-            JSON.stringify({
-              error: 'too many requests',
-              code: 'rate_limit_burst',
-              retry_after_s: burst.retry_after_s,
-            }),
+            JSON.stringify(burstRefusalBody(burst.retry_after_s, RATE_LIMIT_MSG)),
             {
               status: 429,
               headers: {
@@ -239,14 +235,9 @@ export async function POST(request: NextRequest) {
         }
         const quota = await checkMonthlyQuota(user.user_id);
         if (quota) {
-          return NextResponse.json(
-            {
-              error: 'monthly quota reached',
-              code: 'quota_exceeded',
-              resets_at: quota.resets_at,
-            },
-            { status: 402 },
-          );
+          // Beta QA S1: the sentence, not a bare code (a paid plan is the one that is not on
+          // the free allowance; freeAllowance was set from the same snapshot above).
+          return NextResponse.json(quotaRefusalBody(quota.resets_at, !freeAllowance, entitlementMessage), { status: 402 });
         }
       }
 
@@ -423,8 +414,8 @@ export async function POST(request: NextRequest) {
     // upload jobs only, migration 013); that file meters a link with bumpJobsUsed /
     // bumpJobsUsedWithinQuota instead.
     // NO DOUBLE CHARGE (#372): pasteHooks() reuses this user's live job for the same canonical
-    // URL AND the same loops (stem set + loop length; in flight, or done and retained; never a
-    // failed one) — 200 { id, existing: true } with nothing spent — and repeats that lookup
+    // URL AND the same loops (stem set + loop length; in flight, or done and retained and still
+    // playable (QW-2); never a failed one) — 200 { id, existing: true } with nothing spent — and repeats that lookup
     // under a per-(user, URL) advisory lock in the insert tx, so two concurrent pastes (or a
     // paste and a Re-make) make one job and one debit (lib/library-server.ts). The lib answers
     // 200 ONLY for such a hit; a new job stays 201 { id, status: 'queued' }. ToolForm opens the
@@ -437,7 +428,9 @@ export async function POST(request: NextRequest) {
           stems: bodyObj.stems,
           loopLengthBars: bodyObj.loop_length_bars,
           clientIpHash: () => clientIpHashOf(request),
-          ...pasteHooks(),
+          // QW-2: a done hit is reused only if it can still play (lib/jobs/stem-artifacts.ts);
+          // the probe spends this caller's per-IP stem-list budget.
+          ...pasteHooks({ clientIpHash: () => clientIpHashOf(request) }),
         },
         linkJobDeps(),
       );

@@ -65,6 +65,8 @@ if (!skip) {
       'lib/billing/entitlements.ts',
     ],
     overrides: {
+    // QW-2: the paste's R2 stem probe (reached via lib/library-server.ts); never called here.
+    'lib/jobs/stem-artifacts.ts': 'export const hasPlayableStems = async () => true;',
       'lib/db.ts': `export const db = {
         query: (t, p) => globalThis.__pbPool.query(t, p),
         tx: async (fn) => { const c = await globalThis.__pbPool.connect();

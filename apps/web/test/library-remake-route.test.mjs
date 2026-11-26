@@ -39,6 +39,8 @@ const graph = buildModuleGraph({
   name: 'library-remake-route',
   entries: ['app/api/library/remake/route.ts', 'app/api/library/[entryId]/route.ts'],
   overrides: {
+    // QW-2: the paste's R2 stem probe (reached via lib/library-server.ts); never called here.
+    'lib/jobs/stem-artifacts.ts': 'export const hasPlayableStems = async () => true;',
     'lib/db.ts': `
       const S = () => globalThis.__rm;
       async function q(text, params, inTx) {

@@ -457,10 +457,30 @@ test('A5: lime is ONE primary fill on /pricing, signed in or out: Get Pro', asyn
   const plan = (code, name, cents) => ({ code, display_name: name, price_cad_cents: cents, monthly_job_quota: 5, services: ['youtube'], export_stems: false, export_wav24: false });
   const plans = [plan('free', 'Free', 0), plan('pro', 'Pro', 499), plan('studio', 'Studio', 1200)];
   const packs = [20, 60, 180].map((n) => ({ pack_code: `credits_${n}`, credits: n, price_cad_cents: n * 25 }));
-  const signedOut = await renderPricingPage({ user: null, plans, packs });
-  assert.deepEqual(limeFills(signedOut), ['a Get Pro'], 'signed out');
-  const signedIn = await renderPricingPage({ user: { user_id: '22222222-2222-2222-2222-222222222222', email: 'u@x.co' }, plans, packs });
-  assert.deepEqual(limeFills(signedIn), ['button Get Pro'], 'signed in');
+  const signedInUser = { user_id: '22222222-2222-2222-2222-222222222222', email: 'u@x.co' };
+  // B-8w "P": checkout is OFF unless BILLING_CHECKOUT_ENABLED is exactly 'true'
+  // (lib/billing/checkout-switch.ts). ON: Get Pro is the one lime fill, unchanged.
+  const saved = process.env.BILLING_CHECKOUT_ENABLED;
+  try {
+    process.env.BILLING_CHECKOUT_ENABLED = 'true';
+    const signedOut = await renderPricingPage({ user: null, plans, packs });
+    assert.deepEqual(limeFills(signedOut), ['a Get Pro'], 'signed out, checkout on');
+    const signedIn = await renderPricingPage({ user: signedInUser, plans, packs });
+    assert.deepEqual(limeFills(signedIn), ['button Get Pro'], 'signed in, checkout on');
+    // OFF (unset, the beta default): nothing to buy, so NO lime at all, and the beta copy
+    // is the neutral "Current plan" style, never lime.
+    delete process.env.BILLING_CHECKOUT_ENABLED;
+    for (const [who, user] of [['signed out', null], ['signed in', signedInUser]]) {
+      const html = await renderPricingPage({ user, plans, packs });
+      assert.deepEqual(limeFills(html), [], `${who}, checkout off`);
+      assert.doesNotMatch(html, /Get Pro|Get Studio|Buy credits/, `${who}, checkout off`);
+      const beta = [...html.matchAll(/<p class="pr-cta pr-cta-current" data-testid="checkout-unavailable">Coming soon — free during the beta<\/p>/g)].length;
+      assert.equal(beta, 2 + packs.length, `${who}, checkout off: beta copy on Pro, Studio and every pack`);
+    }
+  } finally {
+    if (saved === undefined) delete process.env.BILLING_CHECKOUT_ENABLED;
+    else process.env.BILLING_CHECKOUT_ENABLED = saved;
+  }
 });
 
 test('A16 (amended, approved by Jon 2026-11-17): section chips are 22px pills, and the token file says so', () => {

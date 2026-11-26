@@ -370,6 +370,7 @@ const ALLOW = {
   // disclosures and plumbing
   'src/app/account/delete/page.tsx': [1, 'DISCLOSURE: "Any chord corrections you saved" among what deletion removes'],
   'src/components/DeleteAccountForm.tsx': [0, 'imports the chord edit collector to clear it: code'],
+  'src/components/AccountActions.tsx': [0, 'imports the chord edit collector to clear it on sign-out: code'],
   'src/app/account/layout.tsx': [0, 'comment only'],
   'src/app/jobs/[id]/JobView.tsx': [0, 'comments only (the player owns the chord track)'],
   'src/app/jobs/[id]/page.tsx': [0, 'comment only (names the play-chords route)'],

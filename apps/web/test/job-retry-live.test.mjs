@@ -121,3 +121,43 @@ test('a 429 RETRY_LIMIT hides the button and says the limit', async () => {
     assert.equal(dom.find('[data-testid="job-retry"]'), null);
   });
 });
+
+// Beta QA S1 (QW-1): "Try this song again" refused for quota used to read "We couldn't start that
+// just now. Wait a moment and try again." The reason is shown, and the button goes (a 402 cannot
+// pass by pressing again); "Start a new song" stays.
+const QUOTA_SENTENCE = "You've used all your free tracks this month. Your allowance resets at the start of next month.";
+for (const [name, body] of [
+  ['with the server sentence', { error: 'monthly quota reached', code: 'quota_exceeded', resets_at: '', error_code: 'FREE_MONTHLY_QUOTA_EXHAUSTED', message: QUOTA_SENTENCE }],
+  ['from an older server (code only)', { error: 'monthly quota reached', code: 'quota_exceeded', resets_at: '' }],
+]) {
+  test(`S1: a 402 quota refusal on retry ${name} shows the quota reason and hides the button`, async () => {
+    await withDom(async (dom) => {
+      await mount(dom, (url, method) => {
+        if (url.endsWith('/retry') && method === 'POST') return res(402, body);
+        if (url.endsWith('/retry')) return res(200, { action: 'eligible', retries_left: 2, charge: 'charged', retry_of: null });
+        return res(200, JOB);
+      });
+      const b = await waitFor(dom, '[data-testid="job-retry"]');
+      await dom.act(async () => { b.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true })); });
+      const note = await waitFor(dom, '[data-testid="job-retry-note"]');
+      assert.equal(note?.textContent, QUOTA_SENTENCE);
+      assert.equal(dom.find('[data-testid="job-retry"]'), null, 'no retry button for a 402');
+      assert.ok([...dom.window.document.querySelectorAll('a')].some((a) => a.textContent === 'Start a new song'));
+    });
+  });
+}
+
+test('S2: a burst 429 with no message (older server) gets the per-client sentence, button kept', async () => {
+  await withDom(async (dom) => {
+    await mount(dom, (url, method) => {
+      if (url.endsWith('/retry') && method === 'POST') return res(429, { error: 'too many requests', code: 'rate_limit_burst', retry_after_s: 60 });
+      if (url.endsWith('/retry')) return res(200, { action: 'eligible', retries_left: 2, charge: 'free', retry_of: null });
+      return res(200, JOB);
+    });
+    const b = await waitFor(dom, '[data-testid="job-retry"]');
+    await dom.act(async () => { b.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true })); });
+    const note = await waitFor(dom, '[data-testid="job-retry-note"]');
+    assert.equal(note?.textContent, "You're sending requests too fast. Wait a minute and try again.");
+    assert.ok(dom.find('[data-testid="job-retry"]'));
+  });
+});

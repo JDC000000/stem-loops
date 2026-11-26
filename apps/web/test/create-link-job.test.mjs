@@ -286,11 +286,11 @@ test('per-IP WHERE refuses: 429 RATE_LIMITED, and a trial song is not burned', w
   assert.deepEqual(f.rows(), { jobs: 0, jobsUsed: 0, trialUsed: 0, debits: 0, burst: 1 });
 }));
 
-test('burst limit → the same raw 429 the route always sent', withYoutube(async () => {
+test('burst limit → the same raw 429 the route always sent, now with the sentence (beta QA S2)', withYoutube(async () => {
   const w = world({ burst: { retry_after_s: 12 } });
   assert.deepEqual(await w.tap(), {
     status: 429,
-    body: { error: 'too many requests', code: 'rate_limit_burst', retry_after_s: 12 },
+    body: { error: 'too many requests', code: 'rate_limit_burst', retry_after_s: 12, error_code: 'RATE_LIMITED', message: 'RATE_MSG' },
     headers: { 'content-type': 'application/json', 'Retry-After': '12' },
     raw: true,
   });
@@ -298,7 +298,11 @@ test('burst limit → the same raw 429 the route always sent', withYoutube(async
 
 test('Free quota exhausted → 402 quota_exceeded; capped in the tx with the right copy', withYoutube(async () => {
   const w = world({ jobsUsed: 5 });
-  assert.deepEqual(await w.tap(), { status: 402, body: { error: 'monthly quota reached', code: 'quota_exceeded', resets_at: '2026-12-01T00:00:00Z' } });
+  // Beta QA S1: the 402 carries the upload path's code and sentence (old fields kept).
+  assert.deepEqual(await w.tap(), { status: 402, body: {
+    error: 'monthly quota reached', code: 'quota_exceeded', resets_at: '2026-12-01T00:00:00Z',
+    error_code: 'FREE_MONTHLY_QUOTA_EXHAUSTED', message: 'copy(FREE_MONTHLY_QUOTA_EXHAUSTED|undefined)',
+  } });
   assert.deepEqual(w.rows(), { jobs: 0, jobsUsed: 5, trialUsed: 0, debits: 0, burst: 1 });
   // A credit holder passes checkMonthlyQuota (the upload waiver) and is capped under the lock.
   const c = world({ plan: 'freeCredits', jobsUsed: 5 });

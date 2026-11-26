@@ -16,7 +16,34 @@ export const LOGIN_ERROR_COPY: Record<string, string> = {
     'That link could not be completed here, but your account was created. Sign in with the email and password you chose. If that does not work, use Forgot password? to get a new link.',
   auth_link_expired:
     'That link has expired. Request a new one and open it as soon as it arrives.',
+  // QW-6: a SIGNUP-confirmation link whose exchange failed because this browser holds no PKCE
+  // verifier, i.e. it was opened in another browser, device or a mail app's in-app browser. The
+  // address is confirmed by then (Supabase verifies before it redirects), so password sign-in here
+  // works. Emitted by app/auth/callback/route.ts.
+  auth_link_other_browser:
+    'This link was opened in a different browser. Sign in with your email and password here. If that does not work, use Forgot password? to get a new link.',
+  // QW-6: a one-time sign-in link (or the Google return) landed on /login?code=... and the browser
+  // client's exchange produced no session, almost always because the link was requested in another
+  // browser. Set by LoginForm itself (not the callback route), never sent in a URL.
+  auth_signin_link_failed:
+    'This link was opened in a different browser, so it could not sign you in here. Sign in with your email and password here, or ask for a new one-time link and open it in this browser.',
 };
+
+/**
+ * Codes that mean "an email link could not finish in this browser". With one showing, LoginForm
+ * opens the email options, prefills the address it remembered (if any) and says what happened to
+ * a waiting song link.
+ */
+export const LINK_FAILED_CODES: ReadonlySet<string> = new Set([
+  'auth_signup_link_failed',
+  'auth_link_other_browser',
+  'auth_signin_link_failed',
+]);
+
+/** Shown under a link-failed message when a song link was waiting but this browser does not hold it. */
+export const LINK_FAILED_REPASTE = 'Your song link was saved in the other browser. After you sign in, paste it again.';
+/** Shown under a link-failed message when this browser still holds the waiting song link. */
+export const LINK_FAILED_LINK_KEPT = 'Your song link is still saved. It starts once you sign in.';
 
 export const LOGIN_ERROR_FALLBACK = 'Sign-in did not complete. Please try again.';
 
@@ -42,6 +69,21 @@ export const AUTH_BAD_CREDENTIALS = 'That email and password don’t match. Chec
 export const AUTH_NOT_CONFIRMED = 'Confirm your email first: open the link we sent you, then sign in.';
 export const AUTH_RATE_LIMITED = 'Too many tries. Wait a minute and try again.';
 export const AUTH_GENERIC = 'Something went wrong. Please try again.';
+
+// QW-7: resend the sign-up confirmation (POST /api/auth/resend-confirmation). The success line is
+// the SAME whether or not the address has an account, or one waiting for confirmation: the route
+// never tells them apart (no account enumeration).
+export const RESEND_CONFIRMATION_LABEL = 'Resend confirmation email';
+export const RESEND_CONFIRMATION_SENT =
+  'If that address has an account waiting for confirmation, a new link is on its way. Open it in this browser, and check spam if it is not there in a minute.';
+export const RESEND_CONFIRMATION_FAILED = 'We couldn’t send that just now. Wait a minute and try again.';
+export const RESEND_CAPTCHA_HINT = 'Complete the bot check above to resend the email.';
+
+/** True when a thrown sign-in error is Supabase's "email not confirmed". */
+export function isEmailNotConfirmed(err: unknown): boolean {
+  const code = (err as { code?: unknown } | null)?.code;
+  return code === 'email_not_confirmed';
+}
 
 /** An Error carrying copy written by this app, safe to show as is. */
 export function appCopyError(message: string, extra: Record<string, unknown> = {}): Error {

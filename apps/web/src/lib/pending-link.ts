@@ -162,6 +162,22 @@ export function takePendingLink(store: Store | null | undefined, nonce: string |
   return e.url;
 }
 
+/**
+ * Read-only check (QW-6): does this browser hold a fresh, valid saved link for `nonce`? Never
+ * removes or changes the entry; /login uses it to say whether the song survives the sign-in.
+ */
+export function hasPendingLink(store: Store | null | undefined, nonce: string | null, now: number = Date.now()): boolean {
+  if (!store || nonce === null) return false;
+  let raw: string | null = null;
+  try {
+    raw = store.getItem(PENDING_LINK_KEY);
+  } catch {
+    return false;
+  }
+  const e = parseEntry(raw, now);
+  return e !== null && e.nonce === nonce;
+}
+
 /** Mark `url` as starting now unless a start began within IN_FLIGHT_MS. True = this caller may start it. */
 export function markInFlight(store: Store, url: string, now: number = Date.now()): boolean {
   const key = IN_FLIGHT_PREFIX + url;

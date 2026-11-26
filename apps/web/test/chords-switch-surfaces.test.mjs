@@ -207,15 +207,37 @@ test('C-14: no "about 1–3 minutes" (or any measured-looking duration) on /help
   assert.match(ON.help.textSpaced, /How long does it take\? Usually a few minutes\. It depends on how long the song is and how busy the queue is\./);
 });
 
+// ── QW-4: /help says where Speed and Capo / transpose are; Capo only with the switch ON ──────
+test('QW-4: /help answers the tempo question with the ⋯ menu; the Capo sentence leaves with the switch OFF', () => {
+  const speed = /Can I slow a song down, or change its key\? Slow it down, yes: in the player\u2019s \u22ef menu, Speed \(Beta\) plays the song at 90% or 75% without changing its pitch, in browsers that can do it\./;
+  for (const r of [ON.help, OFF.help]) {
+    assert.match(r.textSpaced, speed);
+    assert.doesNotMatch(r.textSpaced, /Not yet\.|is next, and a capo/);
+  }
+  assert.match(ON.help.textSpaced, /The same menu has Capo \/ transpose, which moves the chord names to a capo or another key; the audio itself stays in its own key\./);
+  assert.doesNotMatch(OFF.help.textSpaced, /\bcapo\b|transpose/i);
+  assert.match(OFF.help.textSpaced, /Changing the key is not offered: the song plays in its own key\./);
+});
+
 // ── 7. C-17: /terms does not call paid plans optional ─────────────────────────────────────
-test('C-17: /terms states the Free cap (by pointing at /pricing, B-8w) and that more needs a plan or credits', () => {
-  for (const r of [ON.terms, OFF.terms]) {
+test('C-17: /terms states the Free cap (by pointing at /pricing, B-8w) and that more needs a plan or credits', async () => {
+  // QP-3: with checkout hidden (the default: BILLING_CHECKOUT_ENABLED unset, #455) the page says
+  // plans and credits are not on sale during the beta; with checkout on it says more needs one.
+  const CHECKOUT_ON = await renderPage(TERMS, { env: { CHORDS_CLAIMS: undefined, BILLING_CHECKOUT_ENABLED: 'true' } });
+  for (const r of [ON.terms, OFF.terms, CHECKOUT_ON]) {
     assert.doesNotMatch(r.textSpaced, /not required|Free to use at the moment/i);
-    assert.match(r.textSpaced, /The Free plan costs nothing and covers a monthly number of songs on your account: the limit shown on the pricing page , which we may change\. For more than that you need a paid plan \(Pro or Studio\), or credits for uploaded files \(credits do not add song links\)\./);
+    assert.match(r.textSpaced, /The Free plan costs nothing and covers a monthly number of songs on your account: the limit shown on the pricing page , which we may change\./);
     assert.match(r.html, /<a href="\/pricing">pricing page<\/a>/);
     // Review SF-3: credits never extend link jobs, so the page must not offer them as a remedy for links.
     assert.doesNotMatch(r.textSpaced, /\bor credits[;.]/);
+    assert.match(r.textSpaced, /credits for uploaded files \(credits do not add song links\)/);
   }
+  for (const r of [ON.terms, OFF.terms]) {
+    assert.match(r.textSpaced, /Paid plans \(Pro or Studio\) and credits for uploaded files \(credits do not add song links\) cover more than that, but they aren\u2019t on sale during the beta\. Prices are on the same page\./);
+    assert.doesNotMatch(r.textSpaced, /you need a paid plan/);
+  }
+  assert.match(CHECKOUT_ON.textSpaced, /which we may change\. For more than that you need a paid plan \(Pro or Studio\), or credits for uploaded files \(credits do not add song links\)\. Prices are on the same page\./);
+  assert.doesNotMatch(CHECKOUT_ON.textSpaced, /on sale during the beta/);
 });
 
 test('SF-3: the "credits for uploaded files" claim matches the code: link jobs never spend a credit', () => {
@@ -328,7 +350,7 @@ test('numeric claims: every hour and day figure on /help, /terms, /privacy, llms
 const ALLOW = {
   // the player and its chord track: render THE JOB'S OWN chord data, or "No chords for this song."
   'src/components/ChordOverlay.tsx': [27, 'player chord track: testids, aria-labels and pickers for the job\'s own chords'],
-  'src/components/ChordOverlay.helpers.ts': [25, 'player chord track helpers: labels for the job\'s own chord runs ("No chord", "Unknown chord", kind === \'chord\')'],
+  'src/components/ChordOverlay.helpers.ts': [26, 'player chord track helpers: labels for the job\'s own chord runs ("No chord", "Unknown chord", kind === \'chord\'); +1 QW-9 not_attempted copy, shown only on a job with no chords'],
   'src/components/ChordPhone.helpers.ts': [3, 'player chord track helpers (phone)'],
   'src/components/tapTarget.ts': [0, 'comments only (the shared tap floor, QA-73)'],
   'src/components/play/PlayerScreen.tsx': [12, 'player: NO_CHORDS_LINE ("No chords for this song.") and no-chords testids; the ⋯ "Chords: Simple / Detailed" view toggle (Phase A, D6) over the job\'s own chords'],
@@ -404,7 +426,7 @@ const SWITCHED = {
   'src/app/loops/page.tsx': 0, // reads the switch and passes it to LoopsView
   'src/app/(landing)/privacy/page.tsx': 8,
   'src/app/(landing)/terms/page.tsx': 4,
-  'src/components/landing/faq.tsx': 6, // +1: the pickup answer (#379 item 3), ON branch only
+  'src/components/landing/faq.tsx': 7, // +1: the pickup answer (#379 item 3), ON branch only; +1: the capo sentence (QW-4), ON branch only
   'src/lib/emails/templates/welcome.ts': 1,
   'src/lib/seo/jsonld.ts': 1,
   'src/lib/seo/llms.ts': 1,

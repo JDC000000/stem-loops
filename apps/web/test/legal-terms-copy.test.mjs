@@ -300,8 +300,12 @@ test('terms (B-8w): no hard-coded Free monthly limit; the sentence points at /pr
   assert.doesNotMatch(page.textSpaced, /\b\d+\s*(?:\/\s*mo(?:nth)?\b|a\s*month\b|per\s*month\b)/i);
   // Split at the link: the tags->space channel renders "pricing page , which".
   assertSays(assert, page, 'The Free plan costs nothing and covers a monthly number of songs on your account: the limit shown on the pricing page', 'terms');
-  assertSays(assert, page, 'which we may change. For more than that', 'terms');
-  assertSays(assert, page, 'For more than that you need a paid plan (Pro or Studio), or credits for uploaded files (credits do not add song links).', 'terms');
+  assertSays(assert, page, 'which we may change. Paid plans', 'terms');
+  // QP-3: checkout is hidden by default (BILLING_CHECKOUT_ENABLED unset, #455), so the default
+  // render says plans and credits are not on sale; the checkout-on render keeps the old sentence.
+  assertSays(assert, page, 'Paid plans (Pro or Studio) and credits for uploaded files (credits do not add song links) cover more than that, but they aren\u2019t on sale during the beta.', 'terms');
+  const on = await renderPage(TERMS, { env: { BILLING_CHECKOUT_ENABLED: 'true' } });
+  assertSays(assert, on, 'For more than that you need a paid plan (Pro or Studio), or credits for uploaded files (credits do not add song links).', 'terms (checkout on)');
   // The pointer is a real link to /pricing inside the Free sentence, not just the word.
   assert.match(page.html, /the limit shown on\s*the\s*<a href="\/pricing">pricing page<\/a>, which we may change\./);
   // Source too: the old constant must not come back as a number typed into the page.

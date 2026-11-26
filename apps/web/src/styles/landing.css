@@ -286,8 +286,8 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
 .wyg { margin: var(--space-6) 0 0; padding: 0; list-style: none; max-width: var(--sl-reading); border-top: 1px solid var(--border-default); }
 .wyg li { padding-block: var(--space-3); border-bottom: 1px solid var(--border-default); color: var(--text-muted); line-height: 1.5; }
 .wyg strong { color: var(--text-primary); font-weight: 600; }
-.wyg-soon { margin: var(--space-4) 0 0; color: var(--text-muted); }
-.wyg-soon strong { color: var(--text-secondary); font-weight: 600; }
+.wyg-more { margin: var(--space-4) 0 0; color: var(--text-muted); }
+.wyg-more strong { color: var(--text-secondary); font-weight: 600; }
 .faq-more { margin-top: var(--space-6); }
 /* A standalone link on its own line: a 44px tap target (j7-mobile measures every control). */
 .more-link a { display: inline-flex; align-items: center; min-height: 44px; color: var(--text-primary); text-underline-offset: 4px; }

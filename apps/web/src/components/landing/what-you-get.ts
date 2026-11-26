@@ -23,5 +23,18 @@ export function whatYouGet(chordsShown: boolean): readonly WhatYouGetLine[] {
   return chordsShown ? [CHORDS, STEMS, LOOP] : [STEMS, LOOP, PHONE];
 }
 
-/** Built-next, stated as such: never offered as something you can do today. */
-export const COMING_SOON = 'Slow a song down without changing its pitch.';
+/**
+ * QW-4 (QA 2026-11-26): what the player's ⋯ (More) menu adds, TRUE TODAY. It replaced a
+ * "Coming soon: slow a song down" line that went false when both shipped with no flag:
+ *   - Speed (Beta): PLAYBACK_RATES = 1, 0.9, 0.75 with the pitch kept (lib/play/engine.ts,
+ *     lib/play/stretch.ts; the "Speed Beta" group in components/play/PlayerScreen.tsx);
+ *   - Capo / transpose: components/play/TransposeMenuItem.tsx. It moves the chord NAMES only
+ *     (display, lib/play/transpose.ts) and shows only when the song has chords, so with the
+ *     DB-17 chords switch off that half of the line is dropped.
+ */
+export const IN_THE_PLAYER_LEAD = 'In the player\u2019s \u22ef menu:';
+export function inThePlayer(chordsShown: boolean): string {
+  return chordsShown
+    ? 'slow down to 90% or 75%, same pitch (Beta), or set a capo.'
+    : 'slow down to 90% or 75%, same pitch (Beta).';
+}

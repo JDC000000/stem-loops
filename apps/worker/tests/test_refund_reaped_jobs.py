@@ -418,7 +418,7 @@ class _Harness:
         mp.setattr(pipeline, "extract_and_tag", extract)
         mp.setattr(pipeline, "_maybe_run_chord_recognition", self._stage("chords", None))
         mp.setattr(pipeline, "record_loops", self._stage("record_loops", 0))
-        mp.setattr(pipeline, "retain_stems", self._stage("retain_stems", {}))
+        mp.setattr(pipeline, "retain_stems", self._stage("retain_stems", {"play": ["drums"]}))
 
         @contextlib.asynccontextmanager
         async def heartbeat(job_id):

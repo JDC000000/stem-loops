@@ -28,7 +28,7 @@ from importlib import metadata
 
 import psycopg
 
-from ..errors import DownloadBlockedError
+from ..errors import BlocklistUnavailableError
 from ..logger import log_structured
 from ..spend_gate import SCOPE_SPEND_GLOBAL
 
@@ -332,7 +332,9 @@ def is_blocklisted(video_id: str) -> bool:
             )
     except Exception as exc:  # noqa: BLE001
         log_structured("ERROR", "blocklist_read_failed", error=str(exc)[:120])
-        raise DownloadBlockedError("blocklist check unavailable") from exc
+        # Fail closed (a takedown is never bypassed), but the fault is OURS: INTERNAL_ERROR, so
+        # the link song is given back and the failure is reported (QK-4), not DOWNLOAD_BLOCKED.
+        raise BlocklistUnavailableError("blocklist check unavailable") from exc
 
 
 _ytdlp_version: str | None | bool = False  # False = not looked up yet

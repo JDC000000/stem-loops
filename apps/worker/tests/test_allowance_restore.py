@@ -563,3 +563,76 @@ def test_a_restore_error_never_blocks_the_reaper_failing_a_link_job(conn, monkey
     _fail(jid, "INTERNAL_ERROR")
     assert _used(conn, uid) == 0
     assert _debit(conn, jid) == (True, True, False)
+
+
+# --------------------------------------------------------------------------- QK-4
+def _drive_link(monkeypatch, *, flag: bool, raises: Exception | None):
+    """The real _run_pipeline on a real link job; only the fetch is stubbed (it raises)."""
+    from worker import replicate_client
+
+    monkeypatch.delenv("STUB_MODE", raising=False)
+    monkeypatch.delenv("STEMLOOPS_AUDIO_URL", raising=False)
+    monkeypatch.delenv("STEMLOOPS_AUDIO_FILE", raising=False)
+    if flag:
+        monkeypatch.setenv("ALLOW_YOUTUBE_INPUT", "true")
+    else:
+        monkeypatch.delenv("ALLOW_YOUTUBE_INPUT", raising=False)
+
+    def fetch(*_a, **_k):
+        raise raises  # type: ignore[misc]
+
+    monkeypatch.setattr(pipeline, "download_audio", fetch)
+    monkeypatch.setattr(pipeline.sentry_sdk, "capture_exception", lambda *a, **k: None)
+    monkeypatch.setattr(pipeline, "_reported_once", set())
+    monkeypatch.setattr(replicate_client, "_heartbeat", lambda *_: None)
+
+
+def _qk4_cases():
+    from worker.errors import (
+        BlocklistUnavailableError,
+        FetchPausedError,
+        YoutubeInputDisabledError,
+    )
+
+    return [
+        ("kill_switch", True, FetchPausedError("kill switch fetch_global"), FetchPausedError),
+        ("blocklist", True, BlocklistUnavailableError("db"), BlocklistUnavailableError),
+        ("env_split", False, None, YoutubeInputDisabledError),
+    ]
+
+
+@pytest.mark.parametrize("case", _qk4_cases(), ids=lambda c: c[0])
+@pytest.mark.parametrize("trial", [False, True], ids=["unit", "trial"])
+def test_qk4_our_link_refusals_give_the_song_back_once(conn, monkeypatch, case, trial):
+    _name, flag, raises, cls = case
+    uid = _user(conn, jobs_used=2, trial_songs_used=0 if trial else None)
+    jid = _link_job(conn, uid, status="queued", trial=trial)
+    assert _used(conn, uid) == 3
+    _drive_link(monkeypatch, flag=flag, raises=raises)
+    with pytest.raises(cls):
+        asyncio.run(pipeline._run_pipeline(str(jid)))
+    status, code, message = _job(conn, jid)
+    assert (status, code) == ("failed", "INTERNAL_ERROR")
+    sentence = TRIAL_RETURNED_SENTENCE if trial else ALLOWANCE_RETURNED_SENTENCE
+    assert message.endswith(sentence)
+    assert _used(conn, uid) == 2
+    if trial:
+        assert _songs(conn, uid) == 0
+    # The reaper / consumer / a second failure on the same job give nothing more.
+    _fail(jid, "INTERNAL_ERROR")
+    asyncio.run(consumer.mark_failed(str(jid), "INTERNAL_ERROR", MSG))
+    assert _used(conn, uid) == 2
+    assert _job(conn, jid)[2].count(sentence) == 1
+
+
+def test_qk4_a_real_youtube_block_still_keeps_the_song(conn, monkeypatch):
+    from worker.errors import DownloadBlockedError
+
+    uid = _user(conn)
+    jid = _link_job(conn, uid, status="queued")
+    _drive_link(monkeypatch, flag=True, raises=DownloadBlockedError("bot wall"))
+    with pytest.raises(DownloadBlockedError):
+        asyncio.run(pipeline._run_pipeline(str(jid)))
+    assert _job(conn, jid)[:2] == ("failed", "DOWNLOAD_BLOCKED")
+    assert _used(conn, uid) == 1
+    assert _debit(conn, jid) == (False, None, None)

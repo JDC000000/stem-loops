@@ -563,6 +563,9 @@ test('route, switch OFF: free upload is refused once checkMonthlyQuota denies', 
   assert.equal(res.status, 402);
   const body = await res.json();
   assert.equal(body.code, 'quota_exceeded');
+  // Beta QA S1: the same code and sentence the enforceEntitlement refusal gives, never a bare 402.
+  assert.equal(body.error_code, 'FREE_MONTHLY_QUOTA_EXHAUSTED');
+  assert.equal(body.message, "You've used all your free tracks this month. Your allowance resets at the start of next month.");
   assert.equal(
     globalThis.__q.find((c) => c.fn === 'incrementJobsUsed'),
     undefined,

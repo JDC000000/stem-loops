@@ -270,3 +270,28 @@ export const RETRY_TRIAL_USED_MSG_CHECKOUT_OFF =
 export function retryTrialUsedMessage(checkoutEnabled: boolean = checkoutEnabledNow()): string {
   return checkoutEnabled ? RETRY_TRIAL_USED_MSG : RETRY_TRIAL_USED_MSG_CHECKOUT_OFF;
 }
+
+// ── Start refusals: quota and burst (beta QA S1/S2, QW-1) ──────────────────────────────────
+// checkMonthlyQuota (402 `quota_exceeded`) and checkBurstLimit (429 `rate_limit_burst`) used to
+// answer with no `message`, so a free user out of songs who pasted a link read "Something went
+// wrong on our end". The servers now send the sentence; these are the same sentences, used as
+// the client's fallback for a body without one (an older server, a proxy). No 'buy' wording:
+// FREE_MONTHLY_QUOTA_EXHAUSTED has no CHECKOUT_OFF_COPY variant because it needs none.
+
+/** The sentence for a refused job start, from a parsed error body. `fallback` when nothing fits. */
+export function startRefusalMessage(body: unknown, fallback: string): string {
+  const b = (body && typeof body === 'object' ? body : {}) as { message?: unknown; code?: unknown };
+  if (typeof b.message === 'string' && b.message.trim()) return b.message;
+  if (b.code === 'quota_exceeded') return entitlementMessage('FREE_MONTHLY_QUOTA_EXHAUSTED');
+  if (b.code === 'rate_limit_burst') return RATE_LIMITED_PER_CLIENT_MSG;
+  return fallback;
+}
+
+/**
+ * A refusal that the same request cannot get past by trying again soon: 402 (the month's
+ * allowance, trial or credits are used up). The UI must not offer "Try again" for it. A 429 or
+ * 503 passes with time, so it keeps its retry.
+ */
+export function isFinalStartRefusal(status: number): boolean {
+  return status === 402;
+}

@@ -30,6 +30,7 @@ import { jobLabel } from '@/lib/job-label';
 import { ProcessingHeading } from '@/components/ProcessingHeading';
 import {
   failedJobMessage,
+  isFinalStartRefusal,
   RETRY_ALREADY_MSG,
   RETRY_BUTTON_LABEL,
   RETRY_COOLDOWN_MSG,
@@ -40,6 +41,7 @@ import {
   RETRY_OF_LABEL,
   RETRY_OF_LINK_TEXT,
   retryTrialUsedMessage,
+  startRefusalMessage,
   UPLOAD_AGAIN_LABEL,
 } from '@/lib/error-copy';
 import { jobTrimNote } from '@/lib/input-trim';
@@ -270,8 +272,13 @@ export default function JobView({
       if (res.status === 429 && body?.error_code === 'RETRY_LIMIT') {
         setRetryInfo((cur) => ({ ...(cur ?? { action: 'cap_reached' }), action: 'cap_reached' }));
       }
-      // Any other refusal (C-1: a 429 from the rate limit) keeps the button: it can work later.
-      setRetryNote(body?.message ?? 'We couldn\'t start that just now. Wait a moment and try again.');
+      // Beta QA S1 (QW-1): a 402 (this month's songs are used up) cannot work by pressing again,
+      // so the button goes and the reason stays. Any other refusal (C-1: a 429 from the rate
+      // limit) keeps the button: it can work later.
+      if (isFinalStartRefusal(res.status)) {
+        setRetryInfo((cur) => ({ ...(cur ?? { action: 'none' }), action: 'none' }));
+      }
+      setRetryNote(startRefusalMessage(body, 'We couldn\'t start that just now. Wait a moment and try again.'));
     } catch {
       setRetryNote("We couldn't reach the server. Check your connection and try again.");
     } finally {

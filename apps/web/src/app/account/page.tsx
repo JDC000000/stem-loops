@@ -5,6 +5,7 @@ import { db } from '@/lib/db';
 import { JOB_RETAINED_UNTIL_SQL } from '@/lib/retention';
 import { serverGet, type CreditsBalance, type Entitlements } from '@/lib/billing/server-fetch';
 import BillingButton from '@/components/BillingButton';
+import AccountActions from '@/components/AccountActions';
 import { jobLabel } from '@/lib/job-label';
 import { hasPortalSubscription, showManageSubscription } from '@/lib/billing/portal-eligibility';
 
@@ -156,6 +157,9 @@ export default async function AccountPage() {
           </ul>
         )}
       </section>
+
+      {/* Beta QA S4/S5: Send feedback (mailto) and Sign out. components/AccountActions.tsx. */}
+      <AccountActions />
 
       <p style={{ marginTop: 24, fontSize: 14 }}>
         <a href="/account/delete" style={{ color: 'var(--status-failed, #f66)' }}>Delete account</a>

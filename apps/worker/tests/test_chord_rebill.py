@@ -523,6 +523,11 @@ def _orchestrate(monkeypatch: pytest.MonkeyPatch, *, extract_raises: Exception |
     # them. `cut_recorded_loops` runs from loop_cutter's claim loop instead, so
     # the pipeline path these tests walk never reaches it.
     monkeypatch.setattr(pipeline, "record_loops", lambda *a, **k: 0)
+    # QK-2: the stem paths here are fake, so the real retain_stems would save no playable
+    # stem and the job would (rightly) fail UPLOAD_FAILED. These tests are about chords.
+    monkeypatch.setattr(
+        pipeline, "retain_stems", lambda _j, paths: {"play": sorted(paths), "download": []}
+    )
     failed: list[tuple] = []
     monkeypatch.setattr(pipeline, "_fail", _async(lambda *a: failed.append(a)))
     monkeypatch.setattr(replicate_client, "_heartbeat", lambda *_: None)
@@ -636,7 +641,12 @@ def test_stem_retention_runs_INSIDE_the_stage_heartbeat(monkeypatch: pytest.Monk
 
     def fake_retain(job_id, stem_paths):
         order.append("retain_stems")
-        return {"play": [], "download": [], "expected": list(pipeline.ALL_STEMS), "complete": False}
+        return {
+            "play": ["drums"],
+            "download": [],
+            "expected": list(pipeline.ALL_STEMS),
+            "complete": False,
+        }
 
     monkeypatch.setattr(pipeline, "_stage_heartbeat", tracking_heartbeat)
     monkeypatch.setattr(pipeline, "retain_stems", fake_retain)

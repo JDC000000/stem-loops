@@ -47,6 +47,9 @@ _ALLOWED = re.compile(r"^https?://(www\.|m\.)?(youtube\.com|youtu\.be)(/|$)", re
 # like proxy_connect -- or DOWNLOAD_TIMEOUT when direct; the next attempt gets a fresh exit.
 # The final attempt runs to TIMEOUT as before, so a job's final error is never a stall cut
 # and the attempt budget (YTDLP_MAX_ATTEMPTS) is unchanged.
+# QK-1: the per-attempt bound scales with the declared length (ytdlp_client.attempt_timeout_s),
+# and a PROXIED run cut by that bound after media bytes arrived is FETCH_PROXY_FAILED
+# (download_timeout): retried, and ours (allowance given back) when final.
 # Only retry error classes where a DIFFERENT exit IP plausibly changes the outcome.
 # DOWNLOAD_AGE_RESTRICTED / DOWNLOAD_PRIVATE / DOWNLOAD_INVALID_URL are properties of
 # the video itself, not the network path — retrying those just burns the retry budget
@@ -122,6 +125,8 @@ def download_audio(
         if final is e:
             raise
         raise final from e
+    finally:
+        ytdlp_client.set_declared_duration(None)  # QK-1: never carried into the next job
     with contextlib.suppress(Exception):
         burst_detector.record_success()
     return result
@@ -188,6 +193,9 @@ def _fetch(
                 duration_sec=round(declared, 1),
                 max_sec=max_duration_sec,
             )
+
+    # QK-1: each yt-dlp attempt's wall-clock bound grows with this length (unknown -> as before).
+    ytdlp_client.set_declared_duration(declared)
 
     attempt_no = 0
     last_exc: Exception | None = None

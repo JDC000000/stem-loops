@@ -57,7 +57,8 @@ class FetchProxyFailedError(StemLoopsError):
     credentials: not transient, never retried), ``proxy_connect`` (the proxy could not be
     reached or could not open the tunnel) or ``first_byte_stall`` (#320: the exit sent no
     media byte within ``FETCH_FIRST_BYTE_DEADLINE_SEC``; raised only on a NON-final attempt and
-    retried on a fresh exit, so it is never a job's final error). ``detail`` is a fixed string: the proxy URL
+    retried on a fresh exit, so it is never a job's final error) or ``download_timeout`` (QK-1:
+    media was arriving and our per-attempt wall-clock bound cut the run). ``detail`` is a fixed string: the proxy URL
     carries ``user:pass`` and must never reach a log, an event or the job row.
     """
 

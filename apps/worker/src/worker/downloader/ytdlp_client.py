@@ -51,6 +51,24 @@ PROXY_URL = os.environ.get("PROXY_URL", "")  # e.g. http://user:pass@geo.iproyal
 # through the residential proxy — 20s cut off legitimate slow-but-successful fetches
 # (false DOWNLOAD_TIMEOUT), so give proxied fetches real headroom.
 TIMEOUT = 10 if not PROXY_URL else 30
+# QK-1: TIMEOUT bounds the WHOLE yt-dlp run (extractor + full media download + ffmpeg WAV
+# conversion), not a socket read. A long video is fetched in full on purpose (see
+# downloader._fetch), and both the bytes (~1 MB/min) and the conversion (~0.4 s/min measured)
+# grow with its length, so a flat 30 s failed long videos that were downloading fine.
+# The per-attempt bound therefore grows with the length gate 0c read from metadata:
+# TIMEOUT + TIMEOUT_PER_DECLARED_MIN_S per declared minute, never above TIMEOUT_CEILING_S.
+# Unknown length -> TIMEOUT, exactly as before. The link stage (fetch + trim + R2 staging) is
+# heartbeated in pipeline._run_pipeline (review F2, #477): its paper worst case is longer
+# than the reaper's 300 s stale window whatever this ceiling is (see the PR body).
+TIMEOUT_PER_DECLARED_MIN_S = 2.5
+TIMEOUT_CEILING_S = 120.0
+# QK-1: a proxied run that WAS receiving media bytes when its bound cut it was killed by OUR
+# budget on OUR exit: FETCH_PROXY_FAILED(download_timeout) -- but ONLY when the declared length
+# was known and the bound was NOT ceiling-capped (review F1, #477). A video too long for the
+# ceiling fails the same way every time; giving the song back for it would be a refund for
+# over length (Jon 2026-11-18: "No refund for over length."), repeatable at will and read as
+# a proxy outage. That case, and an unknown length, stay DOWNLOAD_TIMEOUT exactly as before.
+DOWNLOAD_TIMEOUT_CAUSE = "download_timeout"
 
 # #320: first-byte stall deadline. A NON-FINAL attempt whose media download has received NO
 # media byte this many seconds after the download subprocess started is cut (whole process
@@ -192,6 +210,45 @@ def begin_attempt(*, stall_cut: bool | None = None) -> None:
     _attempt.ms_first_byte = None
     if stall_cut is not None:
         _attempt.stall_cut = stall_cut
+
+
+def set_declared_duration(duration_sec: float | None) -> None:
+    """QK-1: the length gate 0c read for the video about to be fetched (None = unknown).
+    download_audio() sets it before its attempts and clears it after, so a pooled thread never
+    carries one job's length into the next."""
+    _attempt.declared_sec = duration_sec
+
+
+def _declared(declared_sec: float | None) -> float:
+    """The usable declared length in seconds; 0.0 when unknown / zero / negative / NaN."""
+    if declared_sec is None:
+        declared_sec = getattr(_attempt, "declared_sec", None)
+    try:
+        d = float(declared_sec) if declared_sec is not None else 0.0
+    except (TypeError, ValueError):
+        return 0.0
+    return d if d > 0 else 0.0  # NaN fails `d > 0`
+
+
+def bound_is_fit(declared_sec: float | None = None) -> bool:
+    """True when the declared length is KNOWN and its scaled bound fits under the ceiling, i.e.
+    our bound was sized for this video (QK-1 review F1). Only then is a cut with bytes flowing
+    ours. False for an unknown length or a ceiling-capped bound."""
+    d = _declared(declared_sec)
+    if not d:
+        return False
+    return TIMEOUT + TIMEOUT_PER_DECLARED_MIN_S * d / 60.0 <= max(float(TIMEOUT), TIMEOUT_CEILING_S)
+
+
+def attempt_timeout_s(declared_sec: float | None = None) -> float:
+    """Wall-clock bound for ONE yt-dlp run (QK-1). ``TIMEOUT`` for an unknown, zero, negative
+    or NaN length; else ``TIMEOUT + TIMEOUT_PER_DECLARED_MIN_S`` per declared minute, capped at
+    ``max(TIMEOUT, TIMEOUT_CEILING_S)``. Never below ``TIMEOUT``."""
+    d = _declared(declared_sec)
+    if not d:  # None, 0, negative, NaN (inf falls through to the ceiling)
+        return float(TIMEOUT)
+    scaled = TIMEOUT + TIMEOUT_PER_DECLARED_MIN_S * d / 60.0
+    return min(scaled, max(float(TIMEOUT), TIMEOUT_CEILING_S))
 
 
 def _take_stall_cut() -> bool:
@@ -673,7 +730,9 @@ def fetch_audio_file(youtube_url: str) -> str:
     cmd += ["--", youtube_url]
 
     deadline = first_byte_deadline_s() if stall_cut else None
-    r = _run_download(cmd, TIMEOUT, deadline)
+    timeout_s = attempt_timeout_s()
+    ours_if_cut = bound_is_fit()
+    r = _run_download(cmd, timeout_s, deadline)
     if r.first_byte_at is not None:
         _attempt.ms_first_byte = max(0, int((r.first_byte_at - _attempt.t0) * 1000))
 
@@ -691,6 +750,13 @@ def fetch_audio_file(youtube_url: str) -> str:
         # The final attempt is never cut (B-1): if it never got a byte, it fails exactly as
         # before (DOWNLOAD_TIMEOUT), with the stall recorded as the reason for observability.
         stalled = r.first_byte_at is None
+        if proxy and not stalled and ours_if_cut:
+            # QK-1: media was flowing and a bound sized for this video's declared length cut
+            # it -- ours, not the user's. Retried like proxy_connect; as a final error the
+            # allowance is given back (OUR_FAULT). A ceiling-capped or unknown-length bound
+            # falls through to DOWNLOAD_TIMEOUT (review F1: no refund for over length).
+            log_structured("WARN", "ytdlp_download_timeout", timeout_s=timeout_s, proxied=True)
+            raise FetchProxyFailedError(DOWNLOAD_TIMEOUT_CAUSE)
         raise DownloadTimeoutError(
             "yt-dlp timed out", failure_reason=FIRST_BYTE_STALL if stalled else None
         )

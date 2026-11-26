@@ -1788,33 +1788,39 @@ async def _run_pipeline(job_id: str) -> None:
             if os.environ.get("ALLOW_YOUTUBE_INPUT", "").lower() != "true":
                 raise YoutubeInputDisabledError("YouTube ingestion is disabled on this worker")
             link_meta: dict = {}
-            dl_result, _source = await asyncio.to_thread(
-                download_audio, url, job_id, _max_upload_duration_sec(), meta=link_meta
-            )
-            title = link_meta.get("title")
-            # R2 fix (found in staging E2E test — T12 was never actually run before):
-            # Cobalt's success path returns an already-public stream URL (Replicate can
-            # fetch it directly), but yt-dlp's success path returns a LOCAL file path
-            # (same shape as override_file/upload) — Replicate's API 422'd on it because
-            # it can't read a local path (r2_uploader.upload_input's own docstring: "it
-            # cannot read a local path"). Stage local results to R2 exactly like the
-            # override_file/upload paths already do; leave an already-a-URL result alone.
-            if _source == "ytdlp":
-                # The ceiling, applied to the bytes themselves and BEFORE submit_or_reattach
-                # below, i.e. before a single billed GPU-second: a track over the cap is cut
-                # to its first MAX_UPLOAD_DURATION_SEC seconds, and one that cannot be cut or
-                # measured fails closed (LinkUnmeasurableError).
-                staged, trim = await asyncio.to_thread(_trim_link_source, job_id, dl_result)
-                audio_src = await asyncio.to_thread(upload_input, job_id, staged)
-            else:
-                # Cobalt returns a public tunnel URL and no local bytes, so there is nothing
-                # here to measure OR to trim. The ceiling for this leg is therefore enforced
-                # UPSTREAM, in download_audio: it only tries Cobalt when gate 0c READ the
-                # video's length and found it at or under the cap. An unreadable or
-                # over-cap length never reaches this arm (yt-dlp is the only leg that can
-                # trim). If a future change lets one through, this line is the only trace.
-                log_structured("WARN", "link_duration_unenforced_source", job_id=job_id)
-                audio_src = dl_result
+            # QK-1 review F2 (#477): fetch + trim + R2 staging run with nothing else bumping
+            # updated_at, and their paper worst case (probe 15 + 2 x (live 15 + bound 120 +
+            # kill waits 15) + 2 + trim 30+120+30 + an R2 PUT with no wall bound) is past the
+            # reaper's 300 s stale window. Heartbeated like every other long stage; a hang
+            # here is still cut by the consumer's per-job wall deadline.
+            async with _stage_heartbeat(job_id):
+                dl_result, _source = await asyncio.to_thread(
+                    download_audio, url, job_id, _max_upload_duration_sec(), meta=link_meta
+                )
+                title = link_meta.get("title")
+                # R2 fix (found in staging E2E test — T12 was never actually run before):
+                # Cobalt's success path returns an already-public stream URL (Replicate can
+                # fetch it directly), but yt-dlp's success path returns a LOCAL file path
+                # (same shape as override_file/upload) — Replicate's API 422'd on it because
+                # it can't read a local path (r2_uploader.upload_input's own docstring: "it
+                # cannot read a local path"). Stage local results to R2 exactly like the
+                # override_file/upload paths already do; leave an already-a-URL result alone.
+                if _source == "ytdlp":
+                    # The ceiling, applied to the bytes themselves and BEFORE submit_or_reattach
+                    # below, i.e. before a single billed GPU-second: a track over the cap is cut
+                    # to its first MAX_UPLOAD_DURATION_SEC seconds, and one that cannot be cut or
+                    # measured fails closed (LinkUnmeasurableError).
+                    staged, trim = await asyncio.to_thread(_trim_link_source, job_id, dl_result)
+                    audio_src = await asyncio.to_thread(upload_input, job_id, staged)
+                else:
+                    # Cobalt returns a public tunnel URL and no local bytes, so there is nothing
+                    # here to measure OR to trim. The ceiling for this leg is therefore enforced
+                    # UPSTREAM, in download_audio: it only tries Cobalt when gate 0c READ the
+                    # video's length and found it at or under the cap. An unreadable or
+                    # over-cap length never reaches this arm (yt-dlp is the only leg that can
+                    # trim). If a future change lets one through, this line is the only trace.
+                    log_structured("WARN", "link_duration_unenforced_source", job_id=job_id)
+                    audio_src = dl_result
         # P5.1: name the song now, so the library and the job page show it while it processes.
         await asyncio.to_thread(_record_title, job_id, title)
         # `trim` is None for an untouched track (detail stays NULL, as before), else

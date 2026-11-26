@@ -13,9 +13,17 @@ staging (Vercel + Supabase + Stripe BC sandbox). Zero npm dependencies (Node 18+
 | 4 | `POST /api/users/me/trial/grant` twice | PASS/FAIL |
 | 5 | `GET /api/entitlements` -> `plan_code: free`, `services: [youtube]`, `jobs_quota: 5` | PASS/FAIL |
 | 6 | `GET /api/billing/credits/balance` -> `credits_remaining: 0` | PASS/FAIL |
-| 7 | `POST /api/billing/checkout {pack_code:'credits_20'}` -> `checkout_url`, GET it for 200 | PASS/FAIL, card submit SKIP |
-| 8 | `POST /api/billing/checkout {plan_code:'pro'}` -> same | PASS/FAIL, card submit SKIP |
+| 7 | `POST /api/billing/checkout {pack_code:'credits_20'}` -> `400 BOT_CHALLENGE_FAILED` (the hCaptcha gate is armed). **Beta:** `403 CHECKOUT_DISABLED` = "checkout hidden (beta) — OK" (PASS), bot gate SKIP | PASS/FAIL, purchase SKIP |
+| 8 | `POST /api/billing/checkout {plan_code:'pro'}` -> `checkout_url`, GET it for 200. **Beta:** `403 CHECKOUT_DISABLED` = PASS; must match step 7's posture | PASS/FAIL, card submit SKIP |
 | 9 | Expire Stripe sessions, delete Stripe customer, delete user, verify absent from `auth.users` and no rows left in dependent public tables | PASS/FAIL |
+
+**Beta checkout posture (#453).** While checkout is hidden (web env
+`BILLING_CHECKOUT_ENABLED` not exactly `true`, PR #455) the route refuses with
+`403 {code:"CHECKOUT_DISABLED"}` before auth and the hCaptcha gate. Only that
+exact shape passes (`scripts/lib/smoke_checkout.mjs`); any other 403, a non-JSON
+body, a 5xx, or steps 7 and 8 disagreeing about the posture still FAIL. With
+checkout enabled, steps 7-8 assert exactly what they did before. Tests:
+`node --test scripts/smoke_staging_checkout.test.mjs`.
 
 Cleanup (step 9) always runs once a user was created. If it fails, the output
 prints the email and id for manual deletion.

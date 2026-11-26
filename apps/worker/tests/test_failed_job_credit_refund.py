@@ -195,3 +195,62 @@ def test_job_that_spent_no_credit_gets_no_adjustment(conn, _pipeline_db):
     _fail(_pipeline_db, jid, "SEPARATION_FAILED")
     assert _refund_rows(conn, jid) == 0
     assert _balance(conn, uid) == 20
+
+
+# --------------------------------------------------------------------------- QK-2
+def _drive_to_retention(monkeypatch, pipeline, report):
+    """The real _run_pipeline on a real job row; every external edge stubbed, the job's
+    status writes and its failure (and so the refund) real."""
+    from worker import replicate_client
+
+    monkeypatch.delenv("STUB_MODE", raising=False)
+    monkeypatch.delenv("STEMLOOPS_AUDIO_URL", raising=False)
+    monkeypatch.delenv("STEMLOOPS_AUDIO_FILE", raising=False)
+    monkeypatch.setattr(pipeline, "_prepare_upload_source", lambda *a: ("https://in", None))
+    monkeypatch.setattr(pipeline, "_record_title", lambda *a: None)
+    monkeypatch.setattr(pipeline, "submit_or_reattach", lambda *a: "pred_abc")
+    monkeypatch.setattr(pipeline, "poll_until_done", lambda *a: ({"drums": "u"}, 0.01))
+    monkeypatch.setattr(pipeline, "_fetch_stems", lambda *a: {"drums": "/x/drums.wav"})
+    monkeypatch.setattr(pipeline, "extract_and_tag", lambda *a, **k: ([], {}, None, None))
+    monkeypatch.setattr(pipeline, "_maybe_run_chord_recognition", lambda *a: None)
+    monkeypatch.setattr(pipeline, "record_loops", lambda *a, **k: 0)
+    monkeypatch.setattr(pipeline, "retain_stems", lambda *a: report)
+    monkeypatch.setattr(pipeline.sentry_sdk, "capture_exception", lambda *a, **k: None)
+    monkeypatch.setattr(replicate_client, "_heartbeat", lambda *_: None)
+
+
+def test_qk2_zero_playable_stems_fails_and_returns_the_credit_once(conn, _pipeline_db, monkeypatch):
+    """Paid separation succeeded, every stem PUT failed: UPLOAD_FAILED, the credit comes back,
+    and a second failure path (reaper rerun, consumer) refunds nothing more."""
+    from worker.errors import UploadFailedError
+
+    uid = _user(conn)
+    jid = _job(conn, uid, pred="pred_abc")
+    assert _balance(conn, uid) == 19
+    _drive_to_retention(monkeypatch, _pipeline_db, {"play": [], "download": []})
+    with pytest.raises(UploadFailedError):
+        asyncio.run(_pipeline_db._run_pipeline(str(jid)))
+    assert conn.execute("SELECT status, error_code FROM jobs WHERE id=%s", (jid,)).fetchone() == (
+        "failed",
+        "UPLOAD_FAILED",
+    )
+    assert _balance(conn, uid) == 20
+    _fail(_pipeline_db, jid, "UPLOAD_FAILED")
+    _fail(_pipeline_db, jid, "INTERNAL_ERROR")
+    assert _refund_rows(conn, jid) == 1
+    assert _balance(conn, uid) == 20
+
+
+def test_qk2_a_partial_stem_set_still_finishes_done_and_keeps_the_credit(
+    conn, _pipeline_db, monkeypatch
+):
+    uid = _user(conn)
+    jid = _job(conn, uid, pred="pred_abc")
+    _drive_to_retention(monkeypatch, _pipeline_db, {"play": ["drums"], "download": ["drums"]})
+    asyncio.run(_pipeline_db._run_pipeline(str(jid)))
+    assert conn.execute("SELECT status, error_code FROM jobs WHERE id=%s", (jid,)).fetchone() == (
+        "done",
+        None,
+    )
+    assert _refund_rows(conn, jid) == 0
+    assert _balance(conn, uid) == 19

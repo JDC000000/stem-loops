@@ -820,7 +820,7 @@ EXPECTED_DEPLOY_WEB = [
     "- name: Install deps",
     "run: pnpm install --frozen-lockfile",
     "- name: Deploy to Vercel",
-    'run: npx vercel deploy --prod --token="$VERCEL_TOKEN"',
+    'run: npx vercel@66.6.0 deploy --prod --token="$VERCEL_TOKEN"',
     "env:",
     "VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}",
     "VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}",
@@ -1179,6 +1179,22 @@ class DeployWorkflowWiring(unittest.TestCase):
                 continue
             with self.subTest(uses=ref):
                 self.assertRegex(ref, r"@[0-9a-f]{40}$")
+
+    def test_npx_packages_pinned_to_exact_version(self):
+        # #465 F2: every npx call names an exact x.y.z version (no bare package, no
+        # @latest/@^/@~ ranges), so a deploy never runs an unreviewed CLI with the token.
+        code = "\n".join(l for l in self.text.splitlines() if not l.lstrip().startswith("#"))
+        calls = re.findall(r"\bnpx\s+((?:-\S+\s+)*)(\S+)", code)
+        self.assertTrue(calls, "expected at least one npx call (the Vercel deploy)")
+        for flags, pkg in calls:
+            with self.subTest(npx=pkg):
+                self.assertEqual(flags, "")
+                self.assertRegex(pkg, r"^(@[a-z0-9._-]+/)?[a-z0-9._-]+@[0-9]+\.[0-9]+\.[0-9]+$")
+
+    def test_vercel_cli_version_pinned(self):
+        code = "\n".join(l for l in self.text.splitlines() if not l.lstrip().startswith("#"))
+        self.assertIn('run: npx vercel@66.6.0 deploy --prod --token="$VERCEL_TOKEN"', code)
+        self.assertNotRegex(code, r"\bnpx\s+vercel(?!@[0-9])")
 
 
 # --- PR445 R2 follow-up (A2 step 5 prep): quoted/spaced keys + column-0 comments ---

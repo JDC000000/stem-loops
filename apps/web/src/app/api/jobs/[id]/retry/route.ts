@@ -13,7 +13,7 @@ import {
   RETRY_LIMIT_MSG,
   RETRY_COOLDOWN_MSG,
   UPLOAD_AGAIN_MSG,
-  RETRY_TRIAL_USED_MSG,
+  retryTrialUsedMessage,
 } from '@/lib/error-copy';
 import {
   checkBurstLimit,
@@ -161,7 +161,7 @@ export async function GET(_request: NextRequest, { params }: { params: { id: str
       const trial = c.trialSong && user ? await trialState(user.user_id) : 'none';
       if (trial === 'used') {
         body.action = 'trial_used';
-        body.message = RETRY_TRIAL_USED_MSG;
+        body.message = retryTrialUsedMessage();
         delete body.retries_left;
       } else {
         body.charge = c.unit || trial === 'active' ? 'charged' : 'free';
@@ -220,7 +220,7 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
         stems,
         loopLengthBars: job.loop_length_bars ?? undefined,
         clientIpHash: () => clientIpHashOf(request),
-        funding: { mode: 'mirror_restore', parentJobId: job.id, limitMessage: RETRY_LIMIT_MSG, trialUsedMessage: RETRY_TRIAL_USED_MSG },
+        funding: { mode: 'mirror_restore', parentJobId: job.id, limitMessage: RETRY_LIMIT_MSG, trialUsedMessage: retryTrialUsedMessage() },
       },
       linkJobDeps(),
     );

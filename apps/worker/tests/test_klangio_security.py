@@ -14,7 +14,7 @@ M6 — KLANGIO_API_BASE must be https:// at module import time. The provider
 from __future__ import annotations
 
 import hashlib
-import importlib
+import importlib.util
 import json
 import re
 from unittest.mock import MagicMock, patch
@@ -131,54 +131,76 @@ def test_m5_terminal_job_message_omits_body() -> None:
 
 
 # ────────────────────────── M6: https-only at import ──────────────────────────
+#
+# #462: these tests used to ``importlib.reload`` the shared ``worker.chord_providers.klangio``.
+# A reload rebinds every class in it (ChordProviderError, KlangioChordSource, ...) and its
+# process-wide state (the K-2 breaker, the throttle lock), so any module that had imported the
+# old objects -- test_chord_source.py imports them at collection -- then failed 8 isinstance /
+# pytest.raises checks when it ran later in the same process. Instead, execute the module
+# source as a private throwaway copy: the import-time check still runs for real, and the
+# shared module object is never touched.
+
+
+def _import_klangio_copy():
+    """Run klangio.py's module code under a private name; return the fresh module.
+
+    The copy shares the ``worker.chord_providers`` package (so its relative imports resolve)
+    but is removed from ``sys.modules`` afterwards; ``worker.chord_providers.klangio`` stays
+    the same object before and after."""
+
+    import sys
+
+    from worker.chord_providers import klangio as shared
+
+    name = "worker.chord_providers._klangio_m6_probe"
+    spec = importlib.util.spec_from_file_location(name, shared.__file__)
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[name] = mod  # dataclasses resolve string annotations via sys.modules
+    try:
+        spec.loader.exec_module(mod)
+    finally:
+        sys.modules.pop(name, None)
+    assert sys.modules["worker.chord_providers.klangio"] is shared
+    return mod
 
 
 def test_m6_module_import_rejects_http_base(monkeypatch: pytest.MonkeyPatch) -> None:
     """Setting KLANGIO_API_BASE to an http:// URL must raise at module load."""
-    from worker.chord_providers import klangio as kg
-
     monkeypatch.setenv("KLANGIO_API_BASE", "http://insecure.example.com")
-    try:
-        with pytest.raises(ValueError, match="must use https"):
-            importlib.reload(kg)
-    finally:
-        monkeypatch.delenv("KLANGIO_API_BASE", raising=False)
-        importlib.reload(kg)
+    with pytest.raises(ValueError, match="must use https"):
+        _import_klangio_copy()
 
 
 def test_m6_module_import_rejects_empty_scheme(monkeypatch: pytest.MonkeyPatch) -> None:
-    from worker.chord_providers import klangio as kg
-
     monkeypatch.setenv("KLANGIO_API_BASE", "//schemaless.example.com")
-    try:
-        with pytest.raises(ValueError, match="must use https"):
-            importlib.reload(kg)
-    finally:
-        monkeypatch.delenv("KLANGIO_API_BASE", raising=False)
-        importlib.reload(kg)
+    with pytest.raises(ValueError, match="must use https"):
+        _import_klangio_copy()
 
 
 def test_m6_module_import_accepts_https_base(monkeypatch: pytest.MonkeyPatch) -> None:
     """https:// is explicitly allowed; the module loads cleanly."""
-    from worker.chord_providers import klangio as kg
-
     monkeypatch.setenv("KLANGIO_API_BASE", "https://api.klang.io")
-    try:
-        mod = importlib.reload(kg)
-        assert mod.API_BASE == "https://api.klang.io"
-    finally:
-        monkeypatch.delenv("KLANGIO_API_BASE", raising=False)
-        importlib.reload(kg)
+    mod = _import_klangio_copy()
+    assert mod.API_BASE == "https://api.klang.io"
 
 
 def test_m6_module_import_strips_trailing_slash(monkeypatch: pytest.MonkeyPatch) -> None:
     """Trailing slashes are stripped after the scheme check."""
+    monkeypatch.setenv("KLANGIO_API_BASE", "https://api.klang.io/")
+    mod = _import_klangio_copy()
+    assert mod.API_BASE == "https://api.klang.io"
+
+
+def test_m6_probe_leaves_the_shared_module_and_its_classes_alone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#462 regression: probing the import-time check must not rebind the shared module's
+    classes or reset its breaker object (other test modules hold references to them)."""
     from worker.chord_providers import klangio as kg
 
+    before = (kg.ChordProviderError, kg.KlangioChordSource, kg._BREAKER, kg.API_BASE)
     monkeypatch.setenv("KLANGIO_API_BASE", "https://api.klang.io/")
-    try:
-        mod = importlib.reload(kg)
-        assert mod.API_BASE == "https://api.klang.io"
-    finally:
-        monkeypatch.delenv("KLANGIO_API_BASE", raising=False)
-        importlib.reload(kg)
+    copy = _import_klangio_copy()
+    assert copy.KlangioChordSource is not kg.KlangioChordSource  # it really was a fresh exec
+    assert (kg.ChordProviderError, kg.KlangioChordSource, kg._BREAKER, kg.API_BASE) == before

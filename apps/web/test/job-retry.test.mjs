@@ -532,7 +532,7 @@ test('(h1, exhausted) the given-back trial song was spent since → existing TRI
   const w = W0({ restore: { restored_at: 'x', allowance_restored: false, trial_restored: true }, trial: { used: 3, limit: 3 } });
   const r = await post(w);
   assert.equal(r.status, 402);
-  assert.deepEqual(r.body, { error_code: 'TRIAL_EXHAUSTED', message: copy.RETRY_TRIAL_USED_MSG });
+  assert.deepEqual(r.body, { error_code: 'TRIAL_EXHAUSTED', message: copy.retryTrialUsedMessage() });
   assert.doesNotMatch(copy.RETRY_TRIAL_USED_MSG, /credit/i, 'credit packs never fund a link');
   assert.deepEqual(counts(w), { jobs: 1, jobsUsed: 0, songsUsed: 3, debits: 0, burst: 1 });
   assert.equal(w.st.jobs.get(PARENT).retried_at, null);
@@ -899,7 +899,7 @@ test('GET says free for an expired trial, and refuses (no button) for a used-up 
   assert.equal((await get(W0({ restore: TRIAL_ONLY, trial: { used: 1, limit: 3 } }))).body.charge, 'charged');
   assert.equal((await get(W0({ restore: TRIAL_ONLY, trial: { used: 1, limit: 3, expired: true } }))).body.charge, 'free');
   const used = (await get(W0({ restore: TRIAL_ONLY, trial: { used: 3, limit: 3 } }))).body;
-  assert.deepEqual(used, { action: 'trial_used', retry_of: null, message: copy.RETRY_TRIAL_USED_MSG });
+  assert.deepEqual(used, { action: 'trial_used', retry_of: null, message: copy.retryTrialUsedMessage() });
   // a unit + trial restore with an expired trial is still charged (the unit)
   assert.equal((await get(W0({ restore: { restored_at: 'x', allowance_restored: true, trial_restored: true }, trial: { used: 1, limit: 3, expired: true } }))).body.charge, 'charged');
 }));

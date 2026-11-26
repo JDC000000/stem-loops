@@ -516,3 +516,54 @@ test('account deletion signs out and clears the saved link too', () => {
   const src = code('src/components/DeleteAccountForm.tsx');
   assert.match(src, /clearPendingLink\(window\.localStorage\);[\s\S]*auth\.signOut\(\{ scope: 'local' \}\)/);
 });
+
+// ── Beta QA S1/S2 (QW-1): a refused start shows the server's reason ─────────────────────────
+const QUOTA_BODY = {
+  error: 'monthly quota reached', code: 'quota_exceeded', resets_at: '2026-12-01T00:00:00Z',
+  error_code: 'FREE_MONTHLY_QUOTA_EXHAUSTED',
+  message: "You've used all your free tracks this month. Your allowance resets at the start of next month.",
+};
+const ctaText = (dom) => dom.find('#cta')?.textContent ?? '';
+
+test('mounted S1: a link refused for quota (402) shows the server sentence and offers no "Try again"', async () => {
+  let cta = '';
+  const r = await mountForm({
+    cookie: true,
+    job: { status: 402, body: QUOTA_BODY },
+    after: async (dom) => { await submit(dom, 'https://youtu.be/dQw4w9WgXcQ'); cta = ctaText(dom); },
+  });
+  assert.equal(r.posts.length, 1);
+  assert.deepEqual(r.assigns, []);
+  assert.match(r.error, /We couldn’t start that job\./);
+  assert.match(r.error, /You've used all your free tracks this month\. Your allowance resets at the start of next month\./);
+  assert.doesNotMatch(r.error, /on our end/);
+  assert.doesNotMatch(cta, /Try again/, 'a 402 cannot pass by pressing again');
+  assert.match(cta, /Separate and play/);
+});
+
+test('mounted S1: a 402 with no message (an older server) still gets the quota sentence by its code', async () => {
+  const r = await mountForm({
+    cookie: true,
+    job: { status: 402, body: { error: 'monthly quota reached', code: 'quota_exceeded', resets_at: '' } },
+    after: (dom) => submit(dom, 'https://youtu.be/dQw4w9WgXcQ'),
+  });
+  assert.match(r.error, /You've used all your free tracks this month\./);
+  assert.doesNotMatch(r.error, /on our end/);
+});
+
+test('mounted S2: the burst limit (429) shows the per-client sentence and keeps "Try again"', async () => {
+  let cta = '';
+  const r = await mountForm({
+    cookie: true,
+    job: { status: 429, body: { error: 'too many requests', code: 'rate_limit_burst', retry_after_s: 60, error_code: 'RATE_LIMITED', message: "You're sending requests too fast. Wait a minute and try again." } },
+    after: async (dom) => { await submit(dom, 'https://youtu.be/dQw4w9WgXcQ'); cta = ctaText(dom); },
+  });
+  assert.match(r.error, /You're sending requests too fast\. Wait a minute and try again\./);
+  assert.doesNotMatch(r.error, /on our end/);
+  assert.match(cta, /Try again/, 'a rate limit passes with time');
+});
+
+test('mounted: an unnamed 500 still gets the generic line (the fallback is unchanged)', async () => {
+  const r = await mountForm({ cookie: true, job: { status: 500, body: {} }, after: (dom) => submit(dom, 'https://youtu.be/dQw4w9WgXcQ') });
+  assert.match(r.error, /Something went wrong on our end\. Please try again\./);
+});

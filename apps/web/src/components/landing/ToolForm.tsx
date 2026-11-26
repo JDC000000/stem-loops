@@ -29,6 +29,7 @@ import {
 } from '@/lib/pending-link';
 import { hasSessionCookie } from '@/components/chrome/SignedInNav';
 import { MAX_TRACK_SEC, PLAYABLE_STEMS } from '@/lib/play/types';
+import { isFinalStartRefusal, startRefusalMessage } from '@/lib/error-copy';
 import { Ic } from './Icons';
 
 /** The mixer order (lib/play/types.ts). A phone always asks for all six. */
@@ -122,9 +123,14 @@ type Phase =
   | { kind: 'idle' }
   | { kind: 'busy'; isFile: boolean; now: Stage | null; done: Stage | null; pct: number; label: string; msg: string }
   | { kind: 'done'; jobId: string }
-  | { kind: 'failed'; head: string; body: string };
+  // `final`: a refusal that trying again cannot get past (402: the month's songs are used up).
+  | { kind: 'failed'; head: string; body: string; final?: boolean };
 
-class ApiError extends Error {}
+class ApiError extends Error {
+  constructor(message: string, readonly final = false) {
+    super(message);
+  }
+}
 
 // "5 MB" / "200 MB" (no ".0"); one decimal under 10 MB.
 function fmtSize(b: number): string {
@@ -141,7 +147,14 @@ async function postJson<T>(url: string, body: unknown, f: typeof fetch = fetch):
     throw new ApiError('We couldn’t reach stem-loops. Check your connection and try again.');
   }
   const json = await res.json().catch(() => ({}));
-  if (!res.ok) throw new ApiError(json.message ?? 'Something went wrong on our end. Please try again.');
+  // Beta QA S1/S2: the server's sentence (quota, burst) and, for a body without one, the same
+  // sentence by its `code`; the generic line only for a refusal nothing names.
+  if (!res.ok) {
+    throw new ApiError(
+      startRefusalMessage(json, 'Something went wrong on our end. Please try again.'),
+      isFinalStartRefusal(res.status),
+    );
+  }
   return json as T;
 }
 
@@ -380,6 +393,7 @@ export function ToolForm({ deps = browserDeps }: { deps?: ToolFormDeps } = {}) {
         kind: 'failed',
         head: 'We couldn’t start that job.',
         body: e instanceof Error ? e.message : 'Something went wrong. Please try again.',
+        final: e instanceof ApiError && e.final,
       });
       return false;
     }
@@ -560,7 +574,7 @@ export function ToolForm({ deps = browserDeps }: { deps?: ToolFormDeps } = {}) {
     : checking
       ? 'Checking the track\u2026'
       : phase.kind === 'failed'
-        ? 'Try again'
+        ? (phase.final ? 'Separate and play' : 'Try again')
         : 'Separate and play';
   const errText = err ? ERR[err.code] : null;
   const formCls = ['tool', err ? 'is-invalid' : '', dragging ? 'is-dragging' : ''].filter(Boolean).join(' ');

@@ -697,13 +697,23 @@ def test_harness_sees_the_bug_with_stock_uvicorn():
 @pytest.mark.parametrize("sig", [signal.SIGINT, signal.SIGTERM], ids=["SIGINT", "SIGTERM"])
 @pytest.mark.parametrize("long_job", [False, True], ids=["job-finishes", "job-released"])
 def test_clean_drain_sends_no_sentry_event_and_exits_zero(sig, long_job):
+    t0 = time.monotonic()
     if long_job:
         code, out, err = _run_harness(sig, job_s=60.0, drain_s="0.5", in_thread=True, sentry=True)
+        # #449 F-1: the released job's thread sleeps 60 s. `sys.exit(0)` (or a return) in
+        # main._exit_drained would join it in interpreter teardown; only `os._exit(0)` leaves
+        # well inside the bound. Without this, that regression still exits 0 with no event.
+        assert time.monotonic() - t0 < 30, "the exit waited on the orphaned pipeline thread"
     else:
         code, out, err = _run_harness(sig, job_s=1.0, sentry=True)
     assert "worker_exit_drained" in err, err
     assert "SENTRY_EVENT" not in out, out
-    # Exit status unchanged since #309: 0 (Fly restarts the Machine on deploy regardless).
+    # Exit status unchanged since #309: 0. Fly's default Machine restart policy is `on-fail`
+    # (restart only on a non-zero exit; fly.io/docs/machines/guides-examples/
+    # machine-restart-policy) and apps/worker/fly.toml sets no [[restart]], so Fly does NOT
+    # restart a Machine for this exit by itself. Platform stops (deploy, `fly secrets set`,
+    # config change) start the new Machine version anyway; a drain from any other signal
+    # leaves the Machine stopped. Tracked in #449 (decision on fly.toml restart policy).
     assert code == 0, (code, out, err)
 
 

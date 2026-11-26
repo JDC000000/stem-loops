@@ -12,6 +12,11 @@
 // SAFETY: refuses to run against stem-loops.com unless SMOKE_ALLOW_PROD=1.
 // Stripe card entry is NOT bypassed; that step is reported SKIP.
 //
+// BETA (#453): while checkout is hidden (web env BILLING_CHECKOUT_ENABLED unset, PR #455)
+// steps 7-8 get 403 CHECKOUT_DISABLED. That exact refusal is the expected beta posture and
+// PASSes as "checkout hidden (beta) — OK"; anything else still FAILs. With checkout enabled
+// the original assertions run unchanged. See scripts/lib/smoke_checkout.mjs.
+//
 // Supabase Auth's built-in captcha protection (Dashboard > Authentication >
 // Attack Protection) stays ON. Step 3b mints its session through the Admin
 // API, which is not captcha-gated. NB: admin credentials also skip captcha on
@@ -25,6 +30,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { mintServiceRoleSession } from './lib/smoke_session.mjs';
+import { CHECKOUT_HIDDEN_OK, isCheckoutHidden, postureMismatch } from './lib/smoke_checkout.mjs';
 
 // ---------------------------------------------------------------- env loading
 const here = dirname(fileURLToPath(import.meta.url));
@@ -371,11 +377,21 @@ try {
     }
   }
 
-  // Steps 7-8: checkout (credits, subscription)
+  // Steps 7-8: checkout (credits, subscription).
+  // checkoutPosture records what step 7 saw ('hidden' | 'open'); step 8 must agree, since
+  // the switch is one server-wide env value (#453).
+  let checkoutPosture = null;
   const checkout = async (label, body, expect) => {
     if (!needAuth(label)) return;
     try {
       const r = await http(`${BASE}/api/billing/checkout`, { method: 'POST', ...authed({ 'Content-Type': 'application/json' }), body: JSON.stringify(body) });
+      const hidden = isCheckoutHidden(r);
+      const mismatch = postureMismatch(checkoutPosture, hidden ? 'hidden' : r.status === 200 ? 'open' : null);
+      if (mismatch) throw new Error(`${mismatch} (HTTP ${r.status} body=${r.text.slice(0, 160)})`);
+      if (hidden) {
+        pass(label, `${CHECKOUT_HIDDEN_OK}: HTTP 403 CHECKOUT_DISABLED (BILLING_CHECKOUT_ENABLED off)`);
+        return;
+      }
       const url = r.json?.checkout_url;
       if (r.status !== 200 || typeof url !== 'string' || !url.startsWith('https://')) throw new Error(`HTTP ${r.status} body=${r.text.slice(0, 160)}`);
       const sid = (url.match(/\/(cs_(?:test|live)_[A-Za-z0-9]+)/) || [])[1];
@@ -429,12 +445,20 @@ try {
         ...authed({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ pack_code: 'credits_20' }),
       });
-      if (r.status === 200) {
-        throw new Error(
-          `pack checkout SUCCEEDED with no hCaptcha token (HTTP 200). The V3-C1 bot ` +
-          `gate is DISARMED: credit packs can be bought by a script. See ` +
-          `api/billing/checkout/route.ts:131-140. body=${r.text.slice(0, 160)}`,
-        );
+      // Beta posture (#453): checkout hidden refuses BEFORE the hCaptcha gate, so the gate
+      // cannot be observed this run. Report the posture as PASS and the gate as SKIP --
+      // never as a PASS it did not earn.
+      if (isCheckoutHidden(r)) {
+        checkoutPosture = 'hidden';
+        pass('7. Checkout: credits_20', `${CHECKOUT_HIDDEN_OK}: HTTP 403 CHECKOUT_DISABLED (BILLING_CHECKOUT_ENABLED off)`);
+        skip('7. Credit-pack bot gate armed', 'not observable while checkout is hidden (403 CHECKOUT_DISABLED precedes the hCaptcha check)');
+      } else {
+        if (r.status === 200) {
+          throw new Error(
+            `pack checkout SUCCEEDED with no hCaptcha token (HTTP 200). The V3-C1 bot ` +
+            `gate is DISARMED: credit packs can be bought by a script. See ` +
+            `api/billing/checkout/route.ts:131-140. body=${r.text.slice(0, 160)}`,
+          );
       }
       if (r.status !== 400 || r.json?.code !== 'BOT_CHALLENGE_FAILED') {
         throw new Error(
@@ -442,8 +466,10 @@ try {
           `code=${r.json?.code} body=${r.text.slice(0, 160)}`,
         );
       }
+      checkoutPosture = 'open';
       pass('7. Credit-pack bot gate armed', 'unsolved pack checkout correctly refused: 400 BOT_CHALLENGE_FAILED');
       skip('7. Checkout: credits_20 (purchase)', 'manual step: hCaptcha challenge not scriptable (V3-C1)');
+      }
     } catch (e) {
       fail('7. Credit-pack bot gate armed', e.message);
     }

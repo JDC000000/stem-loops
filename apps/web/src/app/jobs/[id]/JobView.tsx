@@ -39,7 +39,7 @@ import {
   RETRY_LIMIT_MSG,
   RETRY_OF_LABEL,
   RETRY_OF_LINK_TEXT,
-  RETRY_TRIAL_USED_MSG,
+  retryTrialUsedMessage,
   UPLOAD_AGAIN_LABEL,
 } from '@/lib/error-copy';
 import { jobTrimNote } from '@/lib/input-trim';
@@ -561,7 +561,7 @@ export function RetryActions({
         <p data-testid="job-retry-cooldown" style={{ margin: '12px 0 0' }}>{RETRY_COOLDOWN_MSG}</p>
       ) : null}
       {info?.action === 'trial_used' ? (
-        <p data-testid="job-retry-trial-used" style={{ margin: '12px 0 0' }}>{info.message ?? RETRY_TRIAL_USED_MSG}</p>
+        <p data-testid="job-retry-trial-used" style={{ margin: '12px 0 0' }}>{info.message ?? retryTrialUsedMessage()}</p>
       ) : null}
       {info?.action === 'already_retried' ? (
         <p data-testid="job-retry-already" style={{ margin: '12px 0 0' }}>

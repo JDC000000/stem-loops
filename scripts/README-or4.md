@@ -210,3 +210,39 @@ Never pass the new head as `<reviewed-sha>` with the old review file; check 1/2
 will refuse it and that is the point.
 
 `OR4_REPO` (test clone override) is honoured only with `DRY_RUN=1` AND `OR4_TEST=1`; set in any other run the gate exits 1 (`FAIL: OR4_REPO set outside test mode`).
+
+## session-merge.sh — the one session wrapper (A and B; replaces per-session copies such as merge1-B.sh v2.5)
+
+`scripts/session-merge.sh` claims a merge window on #414, un-drafts, updates the branch, waits for green CI, re-fetches **this gate**
+from `origin/v3/main`, runs `DRY_RUN=1` first, posts both reviews + the dry run on the PR, runs the real gate, and RELEASEs on #414.
+It adds **no merge route** and loosens no gate check: every merge still goes through `or4-merge.sh`. Orchestrators only; run in the foreground.
+
+```sh
+SESSION_TAG=23A scripts/session-merge.sh <pr> <reviewed_sha_full> <review-1.md> <review-2.md>   # two different review files (A1)
+SESSION_TAG=23B scripts/session-merge.sh ack <comment-id>...                                   # post one "ACK 23B <id>,<id>" line on #414
+```
+
+- **Protocol** (one marked CONFIG section in the script; `PROTOCOL 2026-11-25`, valid to 2026-12-03T01:00Z = 2026-12-02 18:00 Vancouver,
+  after which every claim is refused until the section is renewed by PR): an **A** session claims only when its whole 40-min window fits
+  inside an A block (15:00–17:00Z, 21:00–22:00Z); a **B** session only when its window touches no A block; **both** refuse a window touching
+  a DEPLOY slot (18:00–18:30Z, 23:00–23:30Z) and any other session's live CLAIM/DEPLOY (untagged lines count as another session's).
+  Freeze: any session's PR with an `apps/` file after 2026-11-27T23:00Z unless `BLOCKER=<issue>`; a listing of 100+ files counts as apps (fail closed).
+- **Unread-note guard:** before claiming and again before the gate, every comment of #414's last two pages whose first line starts with
+  `NOTE`, `PROTOCOL` or `QUEUE` (case-insensitive, after markdown markup), posted at/after the cutoff, not by this session (first-line
+  token 2 is exactly the own tag: write notes as `NOTE <author-tag> …`, e.g. `NOTE 23B hold #500`; `NOTE 23B: …` is not exempt for 23B) and not covered by an `ACK <own tag> <id>[,<id>…]` line (any line of any comment) stops the run with **exit 13**,
+  printing id + first line. Read it, then `ack` it. An ACK of another id, or another session's ACK, does not count.
+  `ack` refuses (exit 2, nothing posted) any id that is not a NOTE/PROTOCOL/QUEUE comment of the last two pages. The trap's
+  `INFO <tag> #P window abandoned …` post is neither a protocol line nor a note, so it needs no ACK.
+- **First adoption:** the first run exits 13 until every older NOTE/PROTOCOL/QUEUE line in the two-page window is ACKed. Either read and
+  `ack` them, or, once they are read, run with `ACK_SINCE=<ISO time of adoption>` (e.g. `ACK_SINCE=2026-11-25T23:00:00Z`) so only later notes count.
+- The dry run passes only if the gate exits 0 **and** prints the exact line `DRY_RUN fail=0 (no merge)`.
+- **Env:** `SESSION_TAG` (required, `^[0-9]{2}[AB]$`) · `BASE` (default `/home/claude/s23`) · `JON_ROW` (default 95) ·
+  `ALLOW_WINDOW=<#414 comment id>` where the other session agreed (waives only the A/B block rule, never a DEPLOY slot, the freeze or a live claim) ·
+  `BLOCKER=<issue>` · `ACK_SINCE=<ISO time>` (note cutoff; default = oldest comment in the two-page window).
+- **Exit codes:** 0 merged and main CI green (`ack`: posted) · 2 usage · 3 window busy / protocol / freeze · 4 un-draft refused ·
+  5 update-branch · 6 PR CI not green · 7 DRY_RUN fail or gate fetch failed · 8 merge failed · 9 main CI RED (stop all merges, M-5) ·
+  10 main CI unknown · 11 #414 unreadable or a #414 post failed · 12 merged but RELEASE post failed (post by hand) · 13 unread #414 note.
+- #414 pages are written to files, never argv; every #414 post reads back after an error before retrying (no double CLAIM/RELEASE/ACK);
+  a trap RELEASEs the claim on any exit (not on kill -9 or a restart: release by hand).
+- Tests: `python3 -m pytest scripts/test_session_merge.py -q` (offline; `gh`, `date`, `sleep` stubbed via PATH; A/B block boundaries,
+  DEPLOY slots, live/untagged claims, unread notes + ACK, `ack` 5xx read-back, freeze with/without `apps/` files, protocol expiry).

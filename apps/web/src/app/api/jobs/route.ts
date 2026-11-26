@@ -39,7 +39,7 @@ import {
 import { consumeTrialInTx } from '@/lib/trial';
 import { consumeCreditInTx } from '@/lib/billing/credits';
 import { BAD_ORIGIN, crossOriginRefusal } from '@/lib/same-origin';
-import { createAuthedLinkJob, type LinkJobDeps } from '@/lib/jobs/create-link-job';
+import { createAuthedLinkJob, burstRefusalBody, quotaRefusalBody, type LinkJobDeps } from '@/lib/jobs/create-link-job';
 import { pasteHooks } from '@/lib/library-server';
 
 // QA-64: recordAllowanceDebit() returns false only when migration 042 is not applied yet (the
@@ -223,11 +223,7 @@ export async function POST(request: NextRequest) {
         const burst = await checkBurstLimit(user.user_id);
         if (burst) {
           return new NextResponse(
-            JSON.stringify({
-              error: 'too many requests',
-              code: 'rate_limit_burst',
-              retry_after_s: burst.retry_after_s,
-            }),
+            JSON.stringify(burstRefusalBody(burst.retry_after_s, RATE_LIMIT_MSG)),
             {
               status: 429,
               headers: {
@@ -239,14 +235,9 @@ export async function POST(request: NextRequest) {
         }
         const quota = await checkMonthlyQuota(user.user_id);
         if (quota) {
-          return NextResponse.json(
-            {
-              error: 'monthly quota reached',
-              code: 'quota_exceeded',
-              resets_at: quota.resets_at,
-            },
-            { status: 402 },
-          );
+          // Beta QA S1: the sentence, not a bare code (a paid plan is the one that is not on
+          // the free allowance; freeAllowance was set from the same snapshot above).
+          return NextResponse.json(quotaRefusalBody(quota.resets_at, !freeAllowance, entitlementMessage), { status: 402 });
         }
       }
 

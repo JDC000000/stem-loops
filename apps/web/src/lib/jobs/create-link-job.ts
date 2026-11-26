@@ -115,6 +115,30 @@ export const LINK_VALID_BARS: ReadonlySet<number> = new Set([1, 2, 4, 8]);
 export const LINK_DEFAULT_STEMS: readonly string[] = ['drums', 'bass', 'vocals', 'guitar', 'keys', 'other'];
 const LINK_VALID_STEMS: ReadonlySet<string> = new Set(LINK_DEFAULT_STEMS);
 
+// Beta QA S1/S2 (QW-1): the 402 quota and 429 burst refusals carry the user-facing sentence and
+// an `error_code`, the same ones an upload refused by enforceEntitlement gets. The old fields
+// (`error`, `code`, `resets_at` / `retry_after_s`) stay for compatibility. Status codes and the
+// gates that decide them are unchanged. Shared with app/api/jobs/route.ts's upload path.
+type MessageFn = (code: string, detail?: string) => string;
+
+/** checkMonthlyQuota's 402 body. `paid` → the plan-allowance sentence; else the free one. */
+export function quotaRefusalBody(resetsAt: string, paid: boolean, entitlementMessage: MessageFn) {
+  return {
+    error: 'monthly quota reached',
+    code: 'quota_exceeded',
+    resets_at: resetsAt,
+    error_code: paid ? 'ENTITLEMENT_UNAVAILABLE' : 'FREE_MONTHLY_QUOTA_EXHAUSTED',
+    message: paid
+      ? entitlementMessage('ENTITLEMENT_UNAVAILABLE', 'quota exhausted')
+      : entitlementMessage('FREE_MONTHLY_QUOTA_EXHAUSTED'),
+  };
+}
+
+/** checkBurstLimit's 429 body (3 starts per 60 s). `message` is RATE_LIMITED_PER_CLIENT_MSG. */
+export function burstRefusalBody(retryAfterS: number, message: string) {
+  return { error: 'too many requests', code: 'rate_limit_burst', retry_after_s: retryAfterS, error_code: 'RATE_LIMITED', message };
+}
+
 /** Everything the path touches outside itself. The route passes its own imports. */
 export interface LinkJobDeps {
   db: LinkJobDb;
@@ -430,14 +454,14 @@ async function run(input: CreateAuthedLinkJobInput, deps: LinkJobDeps): Promise<
   if (burst) {
     return {
       status: 429,
-      body: { error: 'too many requests', code: 'rate_limit_burst', retry_after_s: burst.retry_after_s },
+      body: burstRefusalBody(burst.retry_after_s, deps.RATE_LIMIT_MSG),
       headers: { 'content-type': 'application/json', 'Retry-After': String(burst.retry_after_s) },
       raw: true,
     };
   }
   const quota = await deps.checkMonthlyQuota(user.user_id);
   if (quota) {
-    return json(402, { error: 'monthly quota reached', code: 'quota_exceeded', resets_at: quota.resets_at });
+    return json(402, quotaRefusalBody(quota.resets_at, subscribed, deps.entitlementMessage));
   }
 
   // V3-C4 (TSD §1.4): tx + jobs_used bump so the counter is consistent with the real insert.
@@ -660,7 +684,7 @@ async function runMirrorRestore(
     if (burst) {
       return {
         status: 429,
-        body: { error: 'too many requests', code: 'rate_limit_burst', retry_after_s: burst.retry_after_s },
+        body: burstRefusalBody(burst.retry_after_s, deps.RATE_LIMIT_MSG),
         headers: { 'content-type': 'application/json', 'Retry-After': String(burst.retry_after_s) },
         raw: true,
       };
@@ -670,7 +694,7 @@ async function runMirrorRestore(
   if (charge.unit) {
     const quota = await deps.checkMonthlyQuota(user.user_id);
     if (quota) {
-      return json(402, { error: 'monthly quota reached', code: 'quota_exceeded', resets_at: quota.resets_at });
+      return json(402, quotaRefusalBody(quota.resets_at, linkPaid, deps.entitlementMessage));
     }
   }
 

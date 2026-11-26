@@ -55,13 +55,14 @@ from .downloader import download_audio
 from .dsp.seamless import apply as seamless_apply
 from .encoder.wav_encoder import encode_24bit, waveform_peaks
 from .errors import (
-    DownloadBlockedError,
     ExtractionFailedError,
     InternalError,
     LinkUnmeasurableError,
     SeparationFailedError,
     StemLoopsError,
+    UploadFailedError,
     UploadInvalidError,
+    YoutubeInputDisabledError,
 )
 from .extractor import loop_extractor
 from .extractor.beat_grid import detect_music_start, estimate_beat_grid
@@ -1781,8 +1782,11 @@ async def _run_pipeline(job_id: str) -> None:
             # SECURITY / A1 (review #7): stay fully inert unless explicitly enabled, so a
             # youtube job that slips past the API gate can't trigger the real Cobalt/yt-dlp
             # path (STUB_MODE is not set in prod env). Defense-in-depth behind route.ts.
+            # QK-4: reaching here with the flag off means the web accepted a link this worker
+            # refuses (a Fly/Vercel env split): OUR configuration, so INTERNAL_ERROR (the song
+            # comes back, Sentry once per process), never the user-fault DOWNLOAD_BLOCKED.
             if os.environ.get("ALLOW_YOUTUBE_INPUT", "").lower() != "true":
-                raise DownloadBlockedError("YouTube ingestion is disabled pre-launch")
+                raise YoutubeInputDisabledError("YouTube ingestion is disabled on this worker")
             link_meta: dict = {}
             # QK-1 review F2 (#477): fetch + trim + R2 staging run with nothing else bumping
             # updated_at, and their paper worst case (probe 15 + 2 x (live 15 + bound 120 +
@@ -1927,6 +1931,7 @@ async def _run_pipeline(job_id: str) -> None:
         # loops, so a stem-upload problem can never cost us the loops.
         async with _stage_heartbeat(job_id):
             stem_report = await asyncio.to_thread(retain_stems, job_id, stem_paths)
+        _require_a_playable_stem(stem_report)
         await emit_event(job_id, "uploading", "completed", pct=100, detail={"stems": stem_report})
 
         await set_status(job_id, "done")
@@ -1963,10 +1968,43 @@ async def _run_pipeline(job_id: str) -> None:
         raise
 
 
+def _require_a_playable_stem(stem_report: dict) -> None:
+    """QK-2: a job whose stem retention saved NO playable (Opus) stem is not 'done'.
+
+    ``retain_stems`` swallows each failed R2 PUT / encode, so an R2 outage or rotated
+    credentials used to end the job ``done`` with 0/6 stems: the mixer had nothing to play
+    and the credit / monthly song was kept. Zero playable stems now raises
+    ``UploadFailedError`` (UPLOAD_FAILED, in OUR_FAULT_CODES): the job fails through the
+    normal path, the credit or allowance unit is returned (idempotent, job_failure), and the
+    failure is reported to Sentry by ``_report_our_fault``.
+
+    Playable, not downloadable: the mixer streams the Opus ``play`` artifact only, so six WAVs
+    with zero Opus (the encoder case) is still a song the player cannot present.
+
+    Unchanged on purpose: a PARTIAL set (1-5 playable) still finishes ``done``, as before,
+    with retain_stems' own "stem retention incomplete" Sentry error. A report marked
+    ``abandoned`` (QA-63: a drain put the job back in the queue and is deleting its scratch
+    files) is never failed here: the rerun uploads all six again.
+    """
+    if stem_report.get("abandoned"):
+        return
+    if not stem_report.get("play"):
+        downloadable = len(stem_report.get("download") or [])
+        raise UploadFailedError(
+            f"no playable stem retained (0 playable, {downloadable} downloadable)",
+            failure_reason="no_playable_stems",
+        )
+
+
 # Failures that are OUR fault: the credit the web route debited for this job is returned.
 # The policy, the SQL and its idempotency live in job_failure.py, shared with the reaper and
 # the consumer (QA C-05: every path that fails a job refunds the same way).
 _OUR_FAULT_CODES = OUR_FAULT_CODES
+
+# QK-4: our-fault causes that are a standing configuration state rather than a per-job event.
+# Reported to Sentry once per process each (the WARN log still records every job).
+_ONCE_PER_PROCESS_REASONS = frozenset({"fetch_paused", "youtube_input_disabled"})
+_reported_once: set[str] = set()
 
 
 def _report_our_fault(exc: StemLoopsError) -> None:
@@ -1991,8 +2029,15 @@ def _report_our_fault(exc: StemLoopsError) -> None:
         except Exception as report_exc:  # noqa: BLE001
             log_structured("WARN", "sentry_report_failed", error=str(report_exc)[:120])
         return
-    tags = {"error_code": exc.error_code}
     reason = getattr(exc, "failure_reason", None)
+    if reason in _ONCE_PER_PROCESS_REASONS:
+        # QK-4: a standing state (kill switch engaged, worker flag off), not a per-job event:
+        # every link job fails the same way until it changes, so one event per process.
+        if reason in _reported_once:
+            log_structured("WARN", "our_fault_repeat_not_reported", failure_reason=reason)
+            return
+        _reported_once.add(reason)
+    tags = {"error_code": exc.error_code}
     if reason:
         tags["failure_reason"] = str(reason)[:64]
     try:

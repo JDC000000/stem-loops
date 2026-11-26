@@ -64,7 +64,7 @@ const STUBS = {
   '@/lib/billing/rate-limit': dataUrl(`
     const L = (n) => globalThis.__lr.log.push(n);
     export const checkBurstLimit = async () => { L('checkBurstLimit'); return globalThis.__lr.burst; };
-    export const checkMonthlyQuota = async () => { L('checkMonthlyQuota'); return null; };
+    export const checkMonthlyQuota = async () => { L('checkMonthlyQuota'); return globalThis.__lr.quota ?? null; };
     export const bumpJobsUsed = async () => { L('bumpJobsUsed'); };
     export const bumpJobsUsedWithinQuota = async () => { L('bumpJobsUsedWithinQuota'); return true; };
     export const recordAllowanceDebit = async () => { L('recordAllowanceDebit'); return true; };
@@ -96,7 +96,7 @@ async function post(body, state = {}) {
   globalThis.__lr = {
     log: [], inserts: [], sentry: [],
     admission: { allowed: true, error_code: null },
-    burst: null, plan: 'free', ipThrows: false,
+    burst: null, quota: null, plan: 'free', ipThrows: false,
     ...state,
   };
   const prev = process.env.ALLOW_YOUTUBE_INPUT;
@@ -134,7 +134,10 @@ test('signed-in burst → the raw NextResponse 429 with Retry-After and content-
   const res = await post({ url: URL_OK }, { burst: { retry_after_s: 7 } });
   assert.equal(res.kind, 'raw', 'built with new NextResponse(JSON.stringify(...)), as before B0');
   assert.equal(res.status, 429);
-  assert.equal(res.body, JSON.stringify({ error: 'too many requests', code: 'rate_limit_burst', retry_after_s: 7 }));
+  assert.equal(res.body, JSON.stringify({
+    error: 'too many requests', code: 'rate_limit_burst', retry_after_s: 7,
+    error_code: 'RATE_LIMITED', message: "You're sending requests too fast. Wait a minute and try again.",
+  }));
   assert.equal(res.headers.get('Retry-After'), '7');
   assert.equal(res.headers.get('content-type'), 'application/json');
 });
@@ -187,4 +190,39 @@ test('signed-in link: 403 / 400 stay 403 / 400 when clientIpHashOf throws (IP ha
   const i = S().log.indexOf('clientIpHashOf');
   assert.equal(S().log.filter((s) => s === 'clientIpHashOf').length, 1);
   assert.equal(S().log[i + 1], 'checkAdmission:iphash');
+});
+
+// ── Beta QA S1/S2 (QW-1): the refusals carry the real sentence ─────────────────────────────
+// The REAL error-copy module, checkout OFF (BILLING_CHECKOUT_ENABLED unset, the beta posture).
+const FREE_QUOTA_SENTENCE = "You've used all your free tracks this month. Your allowance resets at the start of next month.";
+const NO_BUY = /\bbuy\b|purchase|credit pack|pick a plan|upgrade/i;
+
+test('S1: a free user out of songs pastes a link → 402 with the upload path\'s code and sentence', async () => {
+  assert.notEqual(process.env.BILLING_CHECKOUT_ENABLED, 'true', 'beta posture: checkout hidden');
+  const res = await post({ url: URL_OK }, { quota: { kind: 'quota_exceeded', resets_at: '2026-12-01T00:00:00Z' } });
+  assert.equal(res.status, 402, 'status code unchanged');
+  assert.equal(res.body.code, 'quota_exceeded', 'old field kept');
+  assert.equal(res.body.resets_at, '2026-12-01T00:00:00Z');
+  assert.equal(res.body.error_code, 'FREE_MONTHLY_QUOTA_EXHAUSTED');
+  assert.equal(res.body.message, FREE_QUOTA_SENTENCE);
+  assert.doesNotMatch(res.body.message, NO_BUY);
+  assert.doesNotMatch(res.body.message, /on our end/);
+  assert.equal(S().inserts.length, 0, 'nothing created');
+});
+
+test('S1: a paid plan refused by checkMonthlyQuota gets the plan-allowance sentence, not the free one', async () => {
+  const res = await post({ url: URL_OK }, { plan: 'pro', quota: { kind: 'quota_exceeded', resets_at: '' } });
+  assert.equal(res.status, 402);
+  assert.equal(res.body.error_code, 'ENTITLEMENT_UNAVAILABLE');
+  assert.equal(res.body.message, "You've used this month's allowance on your plan. Your account page shows when the period ends.");
+  assert.doesNotMatch(res.body.message, NO_BUY);
+});
+
+test('S2: the 3-starts-per-60-s burst limit → 429 with the per-client sentence', async () => {
+  const res = await post({ url: URL_OK }, { burst: { retry_after_s: 60 } });
+  assert.equal(res.status, 429);
+  const body = JSON.parse(res.body);
+  assert.equal(body.error_code, 'RATE_LIMITED');
+  assert.equal(body.message, "You're sending requests too fast. Wait a minute and try again.");
+  assert.equal(res.headers.get('Retry-After'), '60');
 });

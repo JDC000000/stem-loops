@@ -83,14 +83,6 @@ class FetchProxyFailedError(StemLoopsError):
         return self.cause != "proxy_auth"
 
 
-class FetchPausedError(DownloadBlockedError):
-    """SL21 kill switch (fetch_global / fetch_youtube) is engaged: no outbound fetch is made.
-    Same error_code as its parent (still one of the typed classes); the message keeps the
-    drop-a-file path in front of the user."""
-
-    user_message = "YouTube links are paused right now. Upload the audio file instead."
-
-
 class DownloadInvalidUrlError(StemLoopsError):
     error_code = "DOWNLOAD_INVALID_URL"
     user_message = (
@@ -231,6 +223,45 @@ class LinkUnmeasurableError(InternalError):
         "We couldn't read the audio in that video, so we didn't process it. "
         "Try another link, or upload the audio file instead."
     )
+
+
+class FetchPausedError(InternalError):
+    """SL21 kill switch (fetch_global / fetch_youtube) is engaged: no outbound fetch is made.
+
+    QK-4 (2026-11-26): OUR decision, not the user's and not YouTube's. It was a
+    DownloadBlockedError subclass (DOWNLOAD_BLOCKED: user-fault, no allowance restore, no
+    Sentry), so a link job queued before the switch was engaged cost the user a monthly or
+    trial song. It is now an ``InternalError`` (INTERNAL_ERROR, in
+    ``job_failure.OUR_FAULT_CODES``): the song comes back and the failure is reported. Same
+    precedent as LinkUnmeasurableError: no new code, so the web copy, retry policy and
+    migration 042's restore need no change. The message keeps the drop-a-file path in front
+    of the user. Raised before any fetch, so it never feeds the burst detector or the
+    outage attribution (``downloader._attribute_block_to_outage`` matches the exact
+    DownloadBlockedError type only)."""
+
+    user_message = "YouTube links are paused right now. Upload the audio file instead."
+    failure_reason = "fetch_paused"
+
+
+class BlocklistUnavailableError(InternalError):
+    """QK-4: the blocklist read (``fetch_gates.is_blocklisted``) failed, so the fetch is refused
+    (fail-closed: a takedown can never be bypassed by a DB blip). The refusal is right; the
+    FAULT is ours (our database), so INTERNAL_ERROR, not DOWNLOAD_BLOCKED: the song comes back
+    and the failure reaches Sentry."""
+
+    user_message = (
+        "Something went wrong on our end checking this video. Try again in a few minutes."
+    )
+    failure_reason = "blocklist_read_failed"
+
+
+class YoutubeInputDisabledError(InternalError):
+    """QK-4: the worker's ``ALLOW_YOUTUBE_INPUT`` is not ``true`` but a link job reached it, i.e.
+    the web accepted a link the worker refuses (a Fly/Vercel env split). Our configuration,
+    never the user's: INTERNAL_ERROR (song returned, reported to Sentry once per process)."""
+
+    user_message = "YouTube links aren't available right now. Upload the audio file instead."
+    failure_reason = "youtube_input_disabled"
 
 
 _ALL_ERROR_CLASSES = [

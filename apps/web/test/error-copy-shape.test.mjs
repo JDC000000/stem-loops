@@ -12,18 +12,20 @@ const WEB = join(dirname(fileURLToPath(import.meta.url)), '..');
 const js = ts.transpileModule(readFileSync(join(WEB, 'src/lib/error-copy.ts'), 'utf8'), {
   compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
 }).outputText;
-const { ERROR_COPY, entitlementMessage } = await import('data:text/javascript;base64,' + Buffer.from(js).toString('base64'));
+const { ERROR_COPY, CHECKOUT_OFF_COPY, errorCopy, entitlementMessage } = await import('data:text/javascript;base64,' + Buffer.from(js).toString('base64'));
 
 // Sentence ends: . ! ? followed by a space and a capital. "e.g." style abbreviations are not used.
 const sentences = (s) => s.split(/(?<=[.!?])\s+(?=[A-Z])/).filter(Boolean);
 
 test('every error: one sentence of what happened, one sentence of what to do', () => {
-  for (const [code, { headline, action }] of Object.entries(ERROR_COPY)) {
+  // CHECKOUT_OFF_COPY (#453) is held to the same rule: it replaces two entries during the beta.
+  for (const [code, { headline, action }] of [...Object.entries(ERROR_COPY), ...Object.entries(CHECKOUT_OFF_COPY)]) {
     assert.ok(headline && headline.trim(), `${code}: empty headline`);
     assert.ok(action && action.trim(), `${code}: empty action — say what to do`);
     assert.equal(sentences(headline).length, 1, `${code}: headline is ${sentences(headline).length} sentences: ${headline}`);
     assert.equal(sentences(action).length, 1, `${code}: action is ${sentences(action).length} sentences: ${action}`);
     assert.doesNotMatch(`${headline} ${action}`, /demucs|replicate|klangio|\bmono\b|\bkHz\b/i, code);
-    assert.equal(entitlementMessage(code), `${headline} ${action}`, `${code}: rendered as the two lines`);
+    const shown = errorCopy(code);
+    assert.equal(entitlementMessage(code), `${shown.headline} ${shown.action}`, `${code}: rendered as the two lines`);
   }
 });

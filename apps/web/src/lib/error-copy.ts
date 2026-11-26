@@ -108,6 +108,39 @@ export const ERROR_COPY: Record<string, { headline: string; action: string }> = 
 
 export const DEFAULT_ERROR = ERROR_COPY.INTERNAL_ERROR;
 
+// ── Beta: checkout hidden (#453, follows B-8w "P" / #455) ─────────────────────────────────
+// While checkout is off, nothing may tell a user to buy. ERROR_COPY above keeps the
+// checkout-ON sentences (they come back on their own when checkout reopens); these replace
+// them while it is off. Same one-sentence + one-sentence shape (test/error-copy-shape).
+export const CHECKOUT_OFF_COPY: Readonly<Record<string, { headline: string; action: string }>> = {
+  TRIAL_EXHAUSTED: {
+    headline: "You've used all the tracks in your free trial.",
+    action: "Plans aren't on sale during the beta, so check back after it ends.",
+  },
+  CREDIT_BALANCE_INSUFFICIENT: {
+    headline: "You're out of credits.",
+    action: "Credit packs aren't on sale during the beta, so check back after it ends.",
+  },
+};
+
+/**
+ * Whether checkout is on, read per call. The SAME rule as lib/billing/checkout-switch.ts
+ * isCheckoutEnabled(): only the exact string 'true' in BILLING_CHECKOUT_ENABLED. Inlined, not
+ * imported, because this module is loaded standalone by a dozen tests (transpiled into a
+ * data: URL, where a relative import cannot resolve); test/error-copy-checkout-off.test.mjs
+ * pins it to checkout-switch.ts. A server variable: in a browser bundle it reads as off,
+ * and no client component renders these two codes (they come from API routes).
+ */
+export function checkoutEnabledNow(): boolean {
+  return typeof process !== 'undefined' && process.env?.BILLING_CHECKOUT_ENABLED === 'true';
+}
+
+/** The copy for a code in the current checkout posture. */
+export function errorCopy(code: string, checkoutEnabled: boolean = checkoutEnabledNow()): { headline: string; action: string } {
+  if (!checkoutEnabled && CHECKOUT_OFF_COPY[code]) return CHECKOUT_OFF_COPY[code];
+  return ERROR_COPY[code] ?? DEFAULT_ERROR;
+}
+
 // F72 (copy audit v1.3.1): RATE_LIMITED has two causes, and each gets its own sentence.
 // Per-client: this visitor started jobs, uploads or stem fetches too quickly (lib/admission.ts
 // gate 1, checkUploadRate, checkStemListRate, and the atomic INSERT's per-IP WHERE).
@@ -154,7 +187,7 @@ export function entitlementMessage(code: string, detail?: string): string {
   if (code === 'FREE_MONTHLY_QUOTA_EXHAUSTED' && detail === LINK_CAP_CREDITS_DETAIL) {
     return LINK_CAP_CREDITS_MSG;
   }
-  const c = ERROR_COPY[code] ?? DEFAULT_ERROR;
+  const c = errorCopy(code);
   return c.action ? `${c.headline} ${c.action}` : c.headline;
 }
 

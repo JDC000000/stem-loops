@@ -48,7 +48,7 @@ class FakeKlangioServer:
     def __init__(self, result: object = RESULT) -> None:
         self.requests: list[httpx.Request] = []
         self.result = result
-        self.kill_on: str | None = None  # "post" | "status"
+        self.kill_on: str | None = None  # "post" | "post_no_answer" | "status"
         self.on_status = None  # optional callback, runs when a status GET arrives
 
     @property
@@ -62,6 +62,10 @@ class FakeKlangioServer:
             if self.kill_on == "post":
                 self.kill_on = None
                 raise _Killed  # request was sent (and billed); we die before reading the reply
+            if self.kill_on == "post_no_answer":
+                self.kill_on = None
+                # #462: sent (maybe billed), Klangio never answers; the process lives on.
+                raise httpx.ReadTimeout("no answer", request=request)
             return httpx.Response(200, json={"job_id": JOB})
         if request.method == "GET" and path == f"/job/{JOB}/status":
             if self.on_status:
@@ -269,6 +273,109 @@ def test_death_between_post_and_recording_the_id_never_posts_again(
         "status": "unavailable",
         "reason": "provider_failed",
     }
+
+
+class _FakeJobsTable:
+    """``psycopg.connect`` stand-in for the four ``jobs.klangio_job_id`` statements the real
+    ``pipeline._KlangioJobLedger`` issues, so its own claim/existing logic runs without a DB."""
+
+    def __init__(self) -> None:
+        self.klangio_job_id: dict[str, str | None] = {}
+
+    def __call__(self):
+        return self
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_a) -> bool:
+        return False
+
+    def commit(self) -> None:
+        pass
+
+    def execute(self, sql: str, params: tuple):
+        rows = self.klangio_job_id
+        cur = MagicMock()
+        sql = " ".join(sql.split())
+        if sql.startswith("SELECT klangio_job_id FROM jobs WHERE id="):
+            (jid,) = params
+            cur.fetchone.return_value = (rows[jid],) if jid in rows else None
+        elif sql.endswith("AND klangio_job_id IS NULL"):  # claim
+            value, jid = params
+            hit = rows.get(jid) is None
+            if hit:
+                rows[jid] = value
+            cur.rowcount = int(hit)
+        elif sql.startswith("UPDATE jobs SET klangio_job_id=%s"):  # record
+            value, jid, expect = params
+            hit = rows.get(jid) == expect
+            if hit:
+                rows[jid] = value
+            cur.rowcount = int(hit)
+        elif sql.startswith("UPDATE jobs SET klangio_job_id=NULL"):  # release
+            jid, expect = params
+            hit = rows.get(jid) == expect
+            if hit:
+                rows[jid] = None
+            cur.rowcount = int(hit)
+        else:  # pragma: no cover - a new statement must be modelled here
+            raise AssertionError(f"unmodelled SQL: {sql}")
+        return cur
+
+
+@pytest.mark.parametrize("ledger_kind", ["memory", "real-class-fake-sql"])
+def test_unanswered_post_then_rerun_is_blocked_by_the_ledger(
+    ledger_kind: str,
+    stems: dict[str, str],
+    env: FakeKlangioServer,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#462 item 2 (non-DB): POST /chord-recognition never answers (the 11-24 incident), the
+    process survives and the job is later rerun (reaper / Try again). The ledger keeps the
+    'submitting' sentinel, so the rerun must NOT POST again and must NOT reserve another quota
+    slot; it reports submit_uncertain. The real-ledger DB variant of the death case is
+    test_death_between_post_and_recording_the_id_never_posts_again[postgres]."""
+    job = f"job-{uuid.uuid4()}"
+    if ledger_kind == "memory":
+        MemoryLedger.rows = {}
+        monkeypatch.setattr(pipeline, "_KlangioJobLedger", MemoryLedger)
+    else:
+        table = _FakeJobsTable()
+        table.klangio_job_id[job] = None
+        monkeypatch.setattr(pipeline, "_db", table)
+        monkeypatch.setattr(pipeline, "_drain_abandoned", lambda: False)
+    reserves: list[int] = []
+    real_reserve = kg._reserve_quota
+
+    def counted_reserve(store):
+        reserves.append(1)
+        return real_reserve(store)
+
+    monkeypatch.setattr(kg, "_reserve_quota", counted_reserve)
+    env.kill_on = "post_no_answer"
+    r2 = _FakeR2()
+
+    def run():
+        with patch("worker.storage.r2_uploader._r2", return_value=r2):
+            return pipeline._maybe_run_chord_recognition(job, stems, list(stems))
+
+    first = run()
+    assert first == {"chords": "unavailable", "reason": "submit_unanswered"}
+    assert env.posts == 1 and len(reserves) == 1
+    assert pipeline._KlangioJobLedger.SENTINEL in (
+        MemoryLedger.rows.get(job) if ledger_kind == "memory" else table.klangio_job_id[job],
+    )
+    # The tombstone does not count as an existing artifact, so the rerun really reaches the
+    # provider: only the ledger stands between it and a second $0.20.
+    with patch("worker.storage.r2_uploader._r2", return_value=r2):
+        assert pipeline._existing_play_chords(job) is False
+
+    second = run()
+    assert second == {"chords": "unavailable", "reason": "submit_uncertain"}
+    assert env.posts == 1, "the rerun must not POST again"
+    assert len(reserves) == 1, "the rerun must not reserve another quota slot"
+    assert _artifact(r2, job) == {"status": "unavailable", "reason": "provider_failed"}
 
 
 def test_job_id_is_recorded_before_polling_starts(

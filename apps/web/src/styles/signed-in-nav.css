@@ -149,6 +149,15 @@
   .sin-item {
     padding: 0 10px;
   }
+  /* QA-78: on /loops the "Download loops" pill is the widest item AND the product tag beside
+     the wordmark repeats it (~120px together), so even with the trim above the row needs about
+     780px with Arial metrics, ~800px with a 15-17px scrollbar or SF Pro: the bar wrapped to two
+     lines at 760-800px. In this band the tag stacks under the wordmark, exactly as on a phone
+     (below), which frees ~120px: the /loops row then needs ~600px (Arial metrics, ~660px with a
+     wide fallback font), inside the 696px a 760px viewport leaves. Bar height is unchanged
+     (44px wordmark + 16px tag < the 64px min-height). Only /loops: no other page carries this tag. */
+  .sin-brand:has(.sin-product[data-product="Download loops"]) { flex-direction: column; align-items: flex-start; gap: 0; }
+  .sin-product[data-product="Download loops"] { min-height: 0; padding: 0 6px; font-size: 12px; line-height: 16px; }
 }
 
 /* ── Phone ──────────────────────────────────────────────

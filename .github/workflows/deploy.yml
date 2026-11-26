@@ -136,8 +136,11 @@ jobs:
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4 -- version from package.json packageManager
       - name: Install deps
         run: pnpm install --frozen-lockfile
+      # #465 F2: exact CLI version, not "latest" (vercel is not a repo dependency, so a bare
+      # `npx vercel` fetches whatever is current and runs it with VERCEL_TOKEN). 66.6.0 is the
+      # version the green production deploy of 2026-11-25 ran (run 45686599428). Bump deliberately.
       - name: Deploy to Vercel
-        run: npx vercel deploy --prod --token="$VERCEL_TOKEN"
+        run: npx vercel@66.6.0 deploy --prod --token="$VERCEL_TOKEN"
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}

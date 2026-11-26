@@ -14,6 +14,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { renderPricingPage, limeFills, pricingPageTree } from './helpers/render-pricing-page.mjs';
 import { featuredPlan, planCta } from '../src/lib/pricing-copy.ts';
+// B-8w "P": checkout is OFF unless BILLING_CHECKOUT_ENABLED is exactly 'true' (lib/billing/
+// checkout-switch.ts). These cases pin the ENABLED behaviour; the OFF state is pinned in
+// test/checkout-switch.test.mjs.
+process.env.BILLING_CHECKOUT_ENABLED = 'true';
 
 const USER = { user_id: '22222222-2222-2222-2222-222222222222', email: 'u@x.co' };
 const PLANS = [
@@ -182,11 +186,11 @@ test('A-10: the decision table (pure)', () => {
   assert.equal(featuredPlan(codes, true, 'pro'), null);
   assert.equal(featuredPlan(codes, true, 'studio'), null);
   assert.equal(featuredPlan(codes, true, null), null);
-  assert.deepEqual(planCta('free', true, 'free', 'pro'), { kind: 'current' });
-  assert.deepEqual(planCta('pro', true, 'studio', null), { kind: 'change' });
-  assert.deepEqual(planCta('studio', true, 'pro', null), { kind: 'change' });
-  assert.deepEqual(planCta('free', true, 'pro', null), { kind: 'manage' });
-  assert.deepEqual(planCta('pro', true, null, null), { kind: 'manage' });
-  assert.deepEqual(planCta('studio', true, 'free', 'pro'), { kind: 'checkout', primary: false });
-  assert.deepEqual(planCta('free', false, null, 'pro'), { kind: 'start-free' });
+  assert.deepEqual(planCta('free', true, 'free', 'pro', true), { kind: 'current' });
+  assert.deepEqual(planCta('pro', true, 'studio', null, true), { kind: 'change' });
+  assert.deepEqual(planCta('studio', true, 'pro', null, true), { kind: 'change' });
+  assert.deepEqual(planCta('free', true, 'pro', null, true), { kind: 'manage' });
+  assert.deepEqual(planCta('pro', true, null, null, true), { kind: 'manage' });
+  assert.deepEqual(planCta('studio', true, 'free', 'pro', true), { kind: 'checkout', primary: false });
+  assert.deepEqual(planCta('free', false, null, 'pro', true), { kind: 'start-free' });
 });

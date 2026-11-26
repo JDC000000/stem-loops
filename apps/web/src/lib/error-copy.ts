@@ -57,6 +57,11 @@ export const ERROR_COPY: Record<string, { headline: string; action: string }> = 
   // Decision 1A: a plan checkout refused because a subscription is live (HTTP 409).
   // Mirrors lib/billing/checkout-guard.ts PLAN_ALREADY_ACTIVE_COPY.live (pinned by
   // test/checkout-live-sub-block.test.mjs).
+  // B-8w "P": POST /api/billing/checkout while BILLING_CHECKOUT_ENABLED is not 'true' (HTTP 403).
+  CHECKOUT_DISABLED: {
+    headline: 'Checkout is not open during the beta.',
+    action: 'Keep using the app for free while the beta runs.',
+  },
   PLAN_ALREADY_ACTIVE: {
     headline: 'You already have a plan.',
     action: 'To change or cancel it, use Manage subscription on your Account page.',

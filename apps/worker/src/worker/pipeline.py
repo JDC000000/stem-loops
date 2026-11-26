@@ -42,7 +42,12 @@ import sentry_sdk
 from psycopg.types.json import Json
 
 from . import fetch_canary, tmpdirs
-from .chord_source import ChordQuotaExceeded, ChordSubmitUncertain
+from .chord_source import (
+    ChordProviderPaused,
+    ChordQuotaExceeded,
+    ChordSubmitUnanswered,
+    ChordSubmitUncertain,
+)
 from .classifier.energy_classifier import classify_energy
 from .classifier.section_labeler import label_sections
 from .cleanup import PURGED_MARKER, RETAINED_UNTIL_SQL
@@ -1216,8 +1221,69 @@ class _KlangioJobLedger:
             c.commit()
 
 
-def _maybe_run_chord_recognition(job_id: str, stem_paths: dict, requested_stems) -> None:
+# B-8c: the chords marker. ``_maybe_run_chord_recognition`` returns one of these and
+# ``_run_pipeline`` adds it to the detail of the EXISTING extracting/completed job_events
+# row (chords run inside 'extracting'; no new row, stage or phase). Reasons are fixed
+# machine codes, never upstream text. A new no-chords branch must go through
+# ``_chords_unavailable`` with a code listed here (tests/test_chords_marker.py enforces it).
+CHORDS_OK = "ok"
+CHORDS_UNAVAILABLE = "unavailable"
+CHORDS_UNAVAILABLE_REASONS = frozenset(
+    {
+        "disabled",  # CHORDS_PROVIDER='' (no tombstone)
+        "too_long",  # tombstone too_long
+        "no_harmonic_stem",  # tombstone not_attempted
+        "quota",  # Klangio monthly cap / HTTP 402; tombstone not_attempted
+        "provider_paused",  # K-2 submit circuit breaker open, nothing sent; tombstone not_attempted
+        "submit_uncertain",  # ledger sentinel / claim held; tombstone provider_failed
+        "submit_unanswered",  # the billable POST got no answer; tombstone provider_failed
+        "provider_failed",  # any other provider error; tombstone provider_failed
+        "upload_failed",  # recognised, but the R2 upload failed (no tombstone)
+    }
+)
+
+
+def _chords_ok() -> dict:
+    return {"chords": CHORDS_OK, "reason": None}
+
+
+def _chords_unavailable(job_id: str, reason: str, tombstone: str | None = None, **detail) -> dict:
+    """Write the tombstone (when the branch has one) and return the ``unavailable`` marker.
+    The ONLY caller of ``_write_chords_tombstone``, so no tombstone can lack a marker."""
+    if tombstone is not None:
+        _write_chords_tombstone(job_id, tombstone, **detail)
+    return {"chords": CHORDS_UNAVAILABLE, "reason": reason}
+
+
+def _with_chords_marker(job_id: str, detail: dict | None, outcome: object) -> dict | None:
+    """``detail`` plus the chords marker as ``chords`` (+ ``chords_reason`` when unavailable).
+
+    The reason is stored as ``chords_reason`` because ``detail.reason`` already means
+    ``no_reliable_beat`` on this row (B5). ``None`` outcome (drain abandon) adds nothing.
+    Best-effort: any problem returns ``detail`` unchanged; it never fails the job.
+    """
+    if outcome is None:
+        return detail
+    try:
+        status = outcome["chords"]  # type: ignore[index]
+        reason = outcome.get("reason")  # type: ignore[union-attr]
+        if status == CHORDS_OK:
+            marker: dict = {"chords": CHORDS_OK}
+        elif status == CHORDS_UNAVAILABLE and reason in CHORDS_UNAVAILABLE_REASONS:
+            marker = {"chords": CHORDS_UNAVAILABLE, "chords_reason": reason}
+        else:
+            raise ValueError("unrecognised chords outcome")
+        return {**(detail or {}), **marker}
+    except Exception as exc:  # noqa: BLE001 — a marker must never fail the job
+        log_structured("WARN", "chords_marker_failed", job_id=job_id, error=str(exc)[:200])
+        return detail
+
+
+def _maybe_run_chord_recognition(job_id: str, stem_paths: dict, requested_stems) -> dict | None:
     """Y1.1 feature-flag entry point. Uploads ``play.chords.json`` to R2 or no-ops.
+
+    Returns the B-8c chords outcome (``_chords_ok()`` / ``_chords_unavailable(...)``), or
+    ``None`` only when the job is being abandoned for a drain (the rerun does the chords).
 
     Guard: ``CHORDS_PROVIDER`` empty string (explicit disable) short-circuits
     without importing the provider — important for Gate-2 fixture runs that
@@ -1231,7 +1297,7 @@ def _maybe_run_chord_recognition(job_id: str, stem_paths: dict, requested_stems)
     provider_name = os.environ.get("CHORDS_PROVIDER", "klangio")
     if not provider_name:
         log_structured("INFO", "chords_skipped_disabled", job_id=job_id)
-        return
+        return _chords_unavailable(job_id, "disabled")
     # Idempotency gate: BEFORE stem selection (which may run an ffmpeg mix) and before the
     # provider, whose recognize() is where the Klangio quota is reserved. Returning here means
     # no ffmpeg, no quota increment, no billed request on a reaper rerun.
@@ -1242,7 +1308,7 @@ def _maybe_run_chord_recognition(job_id: str, stem_paths: dict, requested_stems)
             job_id=job_id,
             r2_key=f"jobs/{job_id}/play.chords.json",
         )
-        return
+        return _chords_ok()
     # Duration gate: BEFORE stem selection so an over-length track also skips the ffmpeg
     # harmonic mix. The track is still accepted (stems/loops are the product); only the
     # optional chord overlay is skipped, with a specific reason for the UI.
@@ -1260,8 +1326,9 @@ def _maybe_run_chord_recognition(job_id: str, stem_paths: dict, requested_stems)
             duration_sec=round(duration, 1),
             max_sec=max_sec,
         )
-        _write_chords_tombstone(job_id, "too_long", duration_sec=round(duration, 1))
-        return
+        return _chords_unavailable(
+            job_id, "too_long", tombstone="too_long", duration_sec=round(duration, 1)
+        )
     chosen = _choose_chord_input(stem_paths, preferred=CHORDS_DEFAULT_STEM)
     if not chosen:
         log_structured(
@@ -1272,8 +1339,7 @@ def _maybe_run_chord_recognition(job_id: str, stem_paths: dict, requested_stems)
             stems=sorted(stem_paths.keys()),
             preferred=CHORDS_DEFAULT_STEM,
         )
-        _write_chords_tombstone(job_id, "not_attempted")
-        return
+        return _chords_unavailable(job_id, "no_harmonic_stem", tombstone="not_attempted")
     stem_name, audio_path = chosen
     log_structured(
         "INFO",
@@ -1329,10 +1395,16 @@ def _maybe_run_chord_recognition(job_id: str, stem_paths: dict, requested_stems)
             stem=stem_name,
             r2_key=r2_key,
         )
+        if r2_key:
+            return _chords_ok()
+        # Recognised but not stored: the job has no chords file. No tombstone (the write
+        # just failed), the marker says so.
+        return _chords_unavailable(job_id, "upload_failed")
     except _ChordSubmitAbandonedForDrain:
         # Not a failure and not a skip: the job is going back to the queue and the rerun does
         # the chords. No tombstone (it would tell the user chords failed) and no Sentry event.
         log_structured("WARN", "chords_abandoned_for_drain", job_id=job_id)
+        return None  # B-8c: no marker at all; the rerun's extracting/completed row has it
     except ChordQuotaExceeded as exc:
         # Klangio monthly cap (klangio._reserve_quota) or a 402: NO request was sent for this
         # track, so do not tell the user detection "failed for this track" -- that invites a
@@ -1341,7 +1413,15 @@ def _maybe_run_chord_recognition(job_id: str, stem_paths: dict, requested_stems)
         # klangio_quota (provider), this WARN, and Sentry.
         log_structured("WARN", "chords_skipped_quota", job_id=job_id, error=str(exc)[:200])
         sentry_sdk.capture_exception(exc)
-        _write_chords_tombstone(job_id, "not_attempted")
+        return _chords_unavailable(job_id, "quota", tombstone="not_attempted")
+    except ChordProviderPaused as exc:
+        # K-2: the Klangio submit breaker is open (recent submits went unanswered). Nothing was
+        # claimed, reserved or sent for this track. The breaker's own open/half-open/closed
+        # logs + the Sentry event on open carry the incident; no per-job Sentry event here.
+        log_structured(
+            "INFO", "chords_skipped_provider_paused", job_id=job_id, error=str(exc)[:200]
+        )
+        return _chords_unavailable(job_id, "provider_paused", tombstone="not_attempted")
     except ChordSubmitUncertain as exc:
         # A previous run may already have paid for this job but lost the id: skip rather than
         # risk a second $0.20. Tombstone reason stays one the web loader maps.
@@ -1349,7 +1429,7 @@ def _maybe_run_chord_recognition(job_id: str, stem_paths: dict, requested_stems)
             "WARN", "chords_skipped_submit_uncertain", job_id=job_id, error=str(exc)[:200]
         )
         sentry_sdk.capture_exception(exc)
-        _write_chords_tombstone(job_id, "provider_failed")
+        return _chords_unavailable(job_id, "submit_uncertain", tombstone="provider_failed")
     except Exception as exc:  # noqa: BLE001 — chords are optional
         log_structured(
             "WARN",
@@ -1360,8 +1440,13 @@ def _maybe_run_chord_recognition(job_id: str, stem_paths: dict, requested_stems)
         )
         # Also tell Sentry so the Y1 bridge visibility doesn't die silently.
         sentry_sdk.capture_exception(exc)
-        # We tried and it failed: tell the user that, not the generic text.
-        _write_chords_tombstone(job_id, "provider_failed")
+        # We tried and it failed: tell the user that, not the generic text. The tombstone
+        # reason stays one the web loader maps; the marker separates an unanswered submit
+        # (Klangio not answering POST /chord-recognition; the ledger keeps 'submitting').
+        reason = (
+            "submit_unanswered" if isinstance(exc, ChordSubmitUnanswered) else "provider_failed"
+        )
+        return _chords_unavailable(job_id, reason, tombstone="provider_failed")
 
 
 @contextlib.asynccontextmanager
@@ -1797,18 +1882,15 @@ async def _run_pipeline(job_id: str) -> None:
         # Otherwise a second machine's reaper (deploy overlap) requeues a LIVE job and
         # the rerun submits a second billed request before the first artifact exists.
         async with _stage_heartbeat(job_id):
-            await asyncio.to_thread(
+            chords_outcome = await asyncio.to_thread(
                 _maybe_run_chord_recognition, job_id, stem_paths, requested_stems
             )
 
-        await emit_event(
-            job_id,
-            "extracting",
-            "completed",
-            pct=100,
-            # B5: say WHY there are no loops, so the job page can explain it.
-            detail=None if loops else {"loops": 0, "reason": "no_reliable_beat"},
-        )
+        # B5: say WHY there are no loops, so the job page can explain it.
+        extracting_detail = None if loops else {"loops": 0, "reason": "no_reliable_beat"}
+        # B-8c: chords ok/unavailable on this same row (best-effort, never raises).
+        extracting_detail = _with_chords_marker(job_id, extracting_detail, chords_outcome)
+        await emit_event(job_id, "extracting", "completed", pct=100, detail=extracting_detail)
 
         await set_status(job_id, "uploading")
         await emit_event(job_id, "uploading", "started", pct=90)

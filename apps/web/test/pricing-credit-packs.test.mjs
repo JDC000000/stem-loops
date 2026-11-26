@@ -15,6 +15,10 @@ import { readdirSync, statSync } from 'node:fs';
 import { relative } from 'node:path';
 import ts from 'typescript';
 import { renderPricingPage, loadBillingButton, limeFills } from './helpers/render-pricing-page.mjs';
+// B-8w "P": checkout is OFF unless BILLING_CHECKOUT_ENABLED is exactly 'true' (lib/billing/
+// checkout-switch.ts). These cases pin the ENABLED behaviour; the OFF state is pinned in
+// test/checkout-switch.test.mjs.
+process.env.BILLING_CHECKOUT_ENABLED = 'true';
 
 const WEB = join(dirname(fileURLToPath(import.meta.url)), '..');
 const PRICING_SRC = join(WEB, 'src/app/pricing/page.tsx');
@@ -121,6 +125,7 @@ async function loadPricing({ user = null, plans = null, packs = null, throwPlans
     // features()/quotaLine() itself. Inline the REAL module rather than a stub —
     // these tests render the page, and stubbing the bullets would make the
     // rendered output stop being the page's own.
+    .replace(/from ['"]@\/lib\/billing\/checkout-switch['"]/g, `from '${dataUrl(toJs(readFileSync(join(WEB, 'src/lib/billing/checkout-switch.ts'), 'utf8')))}'`)
     .replace(/from ['"]@\/lib\/pricing-copy['"]/g, `from '${pricingCopyModule()}'`);
   // Cache-bust so successive tests get fresh module state.
   return await import(dataUrl(js) + '#' + Math.random());

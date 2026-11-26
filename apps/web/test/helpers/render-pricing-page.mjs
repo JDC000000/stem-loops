@@ -35,6 +35,8 @@ async function build() {
 
   const formStyles = put('form-styles.mjs', toJs(read('src/lib/ui/form-styles.ts')));
   const pricingCopy = put('pricing-copy.mjs', toJs(read('src/lib/pricing-copy.ts')));
+  // B-8w "P": the REAL switch; it reads process.env.BILLING_CHECKOUT_ENABLED per render.
+  const checkoutSwitch = put('checkout-switch.mjs', toJs(read('src/lib/billing/checkout-switch.ts')));
   const hcaptcha = put('hcaptcha.mjs', 'export default function HCaptcha() { return null; }');
   // The DB stub also answers lib/billing/pricing-plan-state.ts's read (R2-2) from
   // `subs` (subscriptions rows: { provider, status }) and `entPlan` (entitlements.plan_code,
@@ -83,6 +85,7 @@ async function build() {
     .replace(/from ['"]@\/lib\/billing\/entitlements['"]/g, `from '${ents}'`)
     .replace(/from ['"]@\/lib\/billing\/pricing-plan-state['"]/g, `from '${planState}'`)
     .replace(/from ['"]@\/components\/BillingButton['"]/g, `from '${billing}'`)
+    .replace(/from ['"]@\/lib\/billing\/checkout-switch['"]/g, `from '${checkoutSwitch}'`)
     .replace(/from ['"]@\/lib\/pricing-copy['"]/g, `from '${pricingCopy}'`));
 
   const React = (await import('react')).default;

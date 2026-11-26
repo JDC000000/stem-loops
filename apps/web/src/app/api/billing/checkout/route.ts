@@ -34,6 +34,7 @@ import {
   planAlreadyActiveBody,
   type LiveSubscriptionFinding,
 } from '@/lib/billing/checkout-guard';
+import { CHECKOUT_DISABLED, isCheckoutEnabled } from '@/lib/billing/checkout-switch';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -120,6 +121,16 @@ export async function POST(req: NextRequest) {
   const originRefusal = crossOriginRefusal(req);
   if (originRefusal) {
     return NextResponse.json({ error: originRefusal, code: BAD_ORIGIN }, { status: 403 });
+  }
+  // B-8w "P" (Jon, 2026-11-25): checkout is off during the beta unless
+  // BILLING_CHECKOUT_ENABLED=true (lib/billing/checkout-switch.ts; default off). Refused
+  // before auth, the body, the database and any billing-provider call, so no purchase of a
+  // plan or a credit pack can start while it is off, whoever calls.
+  if (!isCheckoutEnabled()) {
+    return NextResponse.json(
+      { error: 'Checkout is not open during the beta.', code: CHECKOUT_DISABLED },
+      { status: 403 },
+    );
   }
   const user = await getUser();
   if (!user) {

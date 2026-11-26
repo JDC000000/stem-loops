@@ -11,8 +11,8 @@ export const CONTACT_LABEL = CONTACT_EMAIL;
 // No imports beyond that relative one, so lib/seo (loaded directly by node in tests) can read this.
 import { legalUpdated } from '../../lib/chords-claim.ts';
 
-export const TERMS_UPDATED_ON = '2026-11-22';
-export const PRIVACY_UPDATED_ON = '2026-11-22';
+export const TERMS_UPDATED_ON = '2026-11-25';
+export const PRIVACY_UPDATED_ON = '2026-11-25';
 
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 /** '2026-11-21' -> '21 November 2026'. */

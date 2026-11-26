@@ -90,3 +90,27 @@ test('the switch is read per call, not cached at import', () => {
   setSwitch(undefined);
   assert.equal(copy.entitlementMessage('CREDIT_BALANCE_INSUFFICIENT'), off);
 });
+
+test('retry refusal for a used-up trial: no "Pick a plan" while checkout is hidden, back when on', () => {
+  for (const v of [undefined, '', 'TRUE', '1']) {
+    setSwitch(v);
+    const msg = copy.retryTrialUsedMessage();
+    assert.equal(msg, copy.RETRY_TRIAL_USED_MSG_CHECKOUT_OFF, JSON.stringify(v));
+    assert.doesNotMatch(msg, BUY_RE, `tells the user to buy while checkout is off: ${msg}`);
+    assert.doesNotMatch(msg, /credit/i, 'credit packs never fund a link');
+    assert.match(msg, /during the beta/);
+  }
+  setSwitch('true');
+  assert.equal(copy.retryTrialUsedMessage(), copy.RETRY_TRIAL_USED_MSG);
+  assert.match(copy.RETRY_TRIAL_USED_MSG, /Pick a plan/);
+  assert.equal(copy.retryTrialUsedMessage(false), copy.RETRY_TRIAL_USED_MSG_CHECKOUT_OFF);
+  assert.equal(copy.retryTrialUsedMessage(true), copy.RETRY_TRIAL_USED_MSG);
+});
+
+test('no server route or view renders the checkout-ON retry constant directly', () => {
+  for (const p of ['src/app/api/jobs/[id]/retry/route.ts', 'src/app/jobs/[id]/JobView.tsx']) {
+    const src = read(p);
+    assert.doesNotMatch(src, /\bRETRY_TRIAL_USED_MSG\b/, `${p} must go through retryTrialUsedMessage()`);
+    assert.match(src, /retryTrialUsedMessage\(\)/, p);
+  }
+});

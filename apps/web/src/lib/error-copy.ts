@@ -259,3 +259,10 @@ export const RETRY_COOLDOWN_MSG = 'Wait a minute, then try this song again.';
 /** 402 from a retry whose given-back trial song has been used since. Credit packs never fund a
  *  link (013 trigger), so this does not offer one, unlike the generic TRIAL_EXHAUSTED line. */
 export const RETRY_TRIAL_USED_MSG = "The trial song we gave back has been used since, so this one can't be tried again. Pick a plan to keep adding songs.";
+/** The same refusal while checkout is hidden (#453): no "Pick a plan" when nothing can be bought. */
+export const RETRY_TRIAL_USED_MSG_CHECKOUT_OFF =
+  "The trial song we gave back has been used since, so this one can't be tried again. Plans aren't on sale during the beta, so check back after it ends.";
+/** RETRY_TRIAL_USED_MSG in the current checkout posture (read per call, like errorCopy()). */
+export function retryTrialUsedMessage(checkoutEnabled: boolean = checkoutEnabledNow()): string {
+  return checkoutEnabled ? RETRY_TRIAL_USED_MSG : RETRY_TRIAL_USED_MSG_CHECKOUT_OFF;
+}

@@ -114,3 +114,22 @@ test('no server route or view renders the checkout-ON retry constant directly', 
     assert.match(src, /retryTrialUsedMessage\(\)/, p);
   }
 });
+
+// Beta QA S1/S2 (QW-1): the start-refusal helpers the home form and the job page use.
+test('startRefusalMessage: server sentence first, then the quota / burst sentence by code, then the fallback', () => {
+  delete process.env.BILLING_CHECKOUT_ENABLED;
+  const F = 'FALLBACK';
+  assert.equal(copy.startRefusalMessage({ message: 'From the server.' , code: 'quota_exceeded' }, F), 'From the server.');
+  const quota = copy.startRefusalMessage({ code: 'quota_exceeded' }, F);
+  assert.equal(quota, "You've used all your free tracks this month. Your allowance resets at the start of next month.");
+  assert.doesNotMatch(quota, /\bbuy\b|purchase|credit pack|pick a plan/i, 'beta: no buy wording');
+  assert.equal(copy.startRefusalMessage({ code: 'rate_limit_burst' }, F), copy.RATE_LIMITED_PER_CLIENT_MSG);
+  for (const b of [null, undefined, 'x', {}, { message: '' }, { message: '  ' }, { code: 'other' }]) {
+    assert.equal(copy.startRefusalMessage(b, F), F, JSON.stringify(b));
+  }
+});
+
+test('isFinalStartRefusal: only 402 drops the retry; 429 and 503 pass with time', () => {
+  assert.equal(copy.isFinalStartRefusal(402), true);
+  for (const s of [400, 401, 403, 429, 500, 503]) assert.equal(copy.isFinalStartRefusal(s), false, String(s));
+});

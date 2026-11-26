@@ -152,7 +152,7 @@ def _drive(monkeypatch, extract):
     monkeypatch.setattr(
         pipeline,
         "retain_stems",
-        lambda _j, paths: seen["calls"].append(("stems", len(paths))) or {"played": list(paths)},
+        lambda _j, paths: seen["calls"].append(("stems", len(paths))) or {"play": list(paths)},
     )
     monkeypatch.setattr(pipeline, "_fail", _async(lambda *a: seen["failed"].append(a)))
     monkeypatch.setattr(replicate_client, "_heartbeat", lambda *_: None)

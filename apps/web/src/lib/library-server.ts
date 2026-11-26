@@ -15,6 +15,7 @@
 import { JOB_RETAINED_UNTIL_SQL } from '@/lib/retention';
 import { IN_FLIGHT_STATUSES } from '@/lib/admission';
 import { LINK_DEFAULT_STEMS } from '@/lib/jobs/create-link-job';
+import { hasPlayableStems } from '@/lib/jobs/stem-artifacts';
 
 /** True for "relation does not exist": migration 043 not applied yet. */
 export const isUnmigrated = (err: unknown): boolean => (err as { code?: string } | null)?.code === '42P01';
@@ -49,10 +50,13 @@ export function normaliseStems(stems: readonly string[] | null | undefined): str
  * this request asks for — the SAME stem set (order, duplicates and "default = all six" ignored;
  * a stored '{}' counts as all six) and the SAME loop length. A different selection is a
  * different product (the worker cuts loops only for requested_stems), so it is a new job.
- * Params [userId, url, IN_FLIGHT_STATUSES, normalisedStems, loopLengthBars, defaultStems].
+ * Params [userId, url, IN_FLIGHT_STATUSES, normalisedStems, loopLengthBars, defaultStems,
+ * skippedIds]. QW-2: `skippedIds` are DONE jobs already found unplayable (see pasteHooks); the
+ * row carries `status` so the caller knows whether a hit is done (probe it) or in flight (reuse).
  */
-export const LIVE_JOB_BY_URL_AND_SELECTION_SQL = `SELECT jobs.id::text AS id FROM jobs
+export const LIVE_JOB_BY_URL_AND_SELECTION_SQL = `SELECT jobs.id::text AS id, jobs.status FROM jobs
   WHERE jobs.user_id = $1::uuid AND jobs.youtube_url = $2 AND ${liveJobPredicate('$3')}
+    AND NOT (jobs.id = ANY($7::uuid[]))
     AND jobs.loop_length_bars = $5::int
     AND ARRAY(SELECT DISTINCT s FROM unnest(CASE WHEN COALESCE(cardinality(jobs.requested_stems), 0) = 0
                                                  THEN $6::text[] ELSE jobs.requested_stems END) AS u(s)
@@ -150,13 +154,56 @@ export function remakeHooks(entryId: string, userId: string) {
 
 type HookCtx = { userId: string; canonicalUrl: string; requestedStems: readonly string[]; loopLengthBars: number };
 
-/** The paste lookup: live job of this user + URL with the same stem set and loop length. */
-export async function findLiveJobForPaste(db: Queryable, ctx: HookCtx): Promise<string | null> {
+/** The paste lookup: live job of this user + URL with the same stem set and loop length,
+ *  other than the `skipped` ids (QW-2). */
+export async function findLiveJobForPaste(
+  db: Queryable,
+  ctx: HookCtx,
+  skipped: readonly string[] = [],
+): Promise<{ id: string; status: string } | null> {
   const r = await db.query(LIVE_JOB_BY_URL_AND_SELECTION_SQL, [
     ctx.userId, ctx.canonicalUrl, IN_FLIGHT_STATUSES, normaliseStems(ctx.requestedStems), ctx.loopLengthBars,
-    [...LINK_DEFAULT_STEMS],
+    [...LINK_DEFAULT_STEMS], [...skipped],
   ]);
-  return (r.rows[0] as { id: string } | undefined)?.id ?? null;
+  return (r.rows[0] as { id: string; status: string } | undefined) ?? null;
+}
+
+/** QW-2: at most this many unplayable done jobs are skipped per lookup; past it, a new job. */
+export const PASTE_MAX_SKIPPED = 3;
+
+/** true = playable; false = cannot play; null = could not tell (treated as playable). */
+export type StemProbe = (jobId: string) => Promise<boolean | null>;
+
+/**
+ * QW-2: the paste's reuse decision. An IN-FLIGHT hit is reused as before. A DONE hit is reused
+ * only if it can still play: the probe lists its play-along stems in R2; a job whose encoder
+ * failed (`encode_failed`: downloads, no playback) or whose objects are gone answers false, is
+ * skipped, and the lookup repeats for an older live job of the same selection. None left → null
+ * → a new job, funded and metered exactly like any new paste (no retry_of: "Try again" is only
+ * for FAILED jobs, which the predicate already never reuses). `verdicts` caches per request, so
+ * beforeInsert's repeat costs no second probe for a job findExisting already judged.
+ */
+async function findUsableJobForPaste(
+  db: Queryable,
+  ctx: HookCtx,
+  probe: StemProbe,
+  verdicts: Map<string, boolean>,
+): Promise<string | null> {
+  const skipped: string[] = [];
+  for (;;) {
+    const hit = await findLiveJobForPaste(db, ctx, skipped);
+    if (!hit) return null;
+    if (hit.status !== 'done') return hit.id;
+    let ok = verdicts.get(hit.id);
+    if (ok === undefined) {
+      ok = (await probe(hit.id)) !== false; // null (could not tell) → reuse: never a double charge
+      verdicts.set(hit.id, ok);
+      if (!ok) console.warn('paste dedupe: skipping a done job with no playable stems', { jobId: hit.id });
+    }
+    if (ok) return hit.id;
+    skipped.push(hit.id);
+    if (skipped.length >= PASTE_MAX_SKIPPED) return null;
+  }
 }
 
 /**
@@ -165,7 +212,8 @@ export async function findLiveJobForPaste(db: Queryable, ctx: HookCtx): Promise<
  * that is in flight (IN_FLIGHT_STATUSES) or done and retained (JOB_RETAINED_UNTIL_SQL > now())
  * AND asks for the same loops (same stem set, same loop length; R2 MF-1). A FAILED (or expired,
  * or cancelled) job is NOT live, so a re-paste after a failure is a fresh, normally charged job;
- * so is a re-paste with a different stem selection.
+ * so is a re-paste with a different stem selection. QW-2: neither is a DONE job that cannot
+ * play (encoder failed, or its stems are gone; findUsableJobForPaste above).
  *   findExisting: read-only, lock-free. A hit answers 200 { id, existing: true } before every
  *     gate that writes (no burst row, quota, trial or debit).
  *   beforeInsert: inside the insert tx, immediately before the INSERT: take LINK_DEDUPE_LOCK_SQL
@@ -178,12 +226,16 @@ export async function findLiveJobForPaste(db: Queryable, ctx: HookCtx): Promise<
  * / recordAllowanceDebit take the entitlements / quota locks. Re-make takes it after its entry
  * row; a paste never takes an entry row and nothing else takes this key, so there is no cycle.
  */
-export function pasteHooks() {
+export function pasteHooks(opts: { clientIpHash?: () => string; probe?: StemProbe } = {}) {
+  const ipHash = opts.clientIpHash ?? (() => { throw new Error('no client IP hash'); });
+  const probe: StemProbe = opts.probe ?? ((jobId) => hasPlayableStems(jobId, ipHash));
+  const verdicts = new Map<string, boolean>();
   return {
-    findExisting: async (db: Queryable, ctx: HookCtx): Promise<string | null> => findLiveJobForPaste(db, ctx),
+    findExisting: async (db: Queryable, ctx: HookCtx): Promise<string | null> =>
+      findUsableJobForPaste(db, ctx, probe, verdicts),
     beforeInsert: async (client: Queryable, ctx: HookCtx): Promise<string | null> => {
       await client.query(LINK_DEDUPE_LOCK_SQL, [ctx.userId, ctx.canonicalUrl]);
-      return findLiveJobForPaste(client, ctx);
+      return findUsableJobForPaste(client, ctx, probe, verdicts);
     },
   };
 }

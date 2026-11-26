@@ -254,6 +254,10 @@ export const RETRY_OF_LINK_TEXT = 'your earlier try';
 /** A failed upload: its file is gone with the job, so the way back is a fresh upload. */
 export const UPLOAD_AGAIN_LABEL = 'Upload again';
 export const UPLOAD_AGAIN_MSG = "We can't try an uploaded file again. Upload it again to start over.";
+/** QW-3: storage (R2) answered the upload PUT with an error status (expired presign, CORS 403,
+ *  SignatureDoesNotMatch, a 5xx). Shown under the ToolForm upload-failed head. The raw
+ *  provider body is never shown; it goes to the browser console only (lib/upload-client.ts). */
+export const UPLOAD_STORAGE_REJECTED_MSG = 'Choose the file again and retry.';
 /** RATE_LIMITED parent still cooling down. */
 export const RETRY_COOLDOWN_MSG = 'Wait a minute, then try this song again.';
 /** 402 from a retry whose given-back trial song has been used since. Credit packs never fund a

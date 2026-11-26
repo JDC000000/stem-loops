@@ -414,8 +414,8 @@ export async function POST(request: NextRequest) {
     // upload jobs only, migration 013); that file meters a link with bumpJobsUsed /
     // bumpJobsUsedWithinQuota instead.
     // NO DOUBLE CHARGE (#372): pasteHooks() reuses this user's live job for the same canonical
-    // URL AND the same loops (stem set + loop length; in flight, or done and retained; never a
-    // failed one) — 200 { id, existing: true } with nothing spent — and repeats that lookup
+    // URL AND the same loops (stem set + loop length; in flight, or done and retained and still
+    // playable (QW-2); never a failed one) — 200 { id, existing: true } with nothing spent — and repeats that lookup
     // under a per-(user, URL) advisory lock in the insert tx, so two concurrent pastes (or a
     // paste and a Re-make) make one job and one debit (lib/library-server.ts). The lib answers
     // 200 ONLY for such a hit; a new job stays 201 { id, status: 'queued' }. ToolForm opens the
@@ -428,7 +428,9 @@ export async function POST(request: NextRequest) {
           stems: bodyObj.stems,
           loopLengthBars: bodyObj.loop_length_bars,
           clientIpHash: () => clientIpHashOf(request),
-          ...pasteHooks(),
+          // QW-2: a done hit is reused only if it can still play (lib/jobs/stem-artifacts.ts);
+          // the probe spends this caller's per-IP stem-list budget.
+          ...pasteHooks({ clientIpHash: () => clientIpHashOf(request) }),
         },
         linkJobDeps(),
       );

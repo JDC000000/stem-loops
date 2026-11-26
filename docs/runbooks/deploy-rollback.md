@@ -121,6 +121,14 @@ fly status --app stem-loops && fly logs --app stem-loops   # one Machine; job cl
   action and who (Vercel deployment / Fly image), revert PR + merge SHA, redeploy run URL,
   final check, and whether Vercel auto-assignment was restored (promote done).
 
+## 6 · Related runbooks
+
+- [Spend brake (`spend_global`)](spend-brake.md): stop all new paid work (Replicate and
+  Klangio) without a deploy. Jon only.
+- [Chords `submitting` sentinel and Klangio breaker](chords-submitting-sentinel.md): stuck
+  chord submits, the double-bill caveat, and what to do in a Klangio outage.
+- [Account deletion and billing](account-deletion-billing.md).
+
 ## Sources (read 2026-11-25)
 - [V1] Vercel, Instant Rollback: https://vercel.com/docs/instant-rollback
 - [V2] Vercel, Promoting Deployments: https://vercel.com/docs/deployments/promoting-a-deployment

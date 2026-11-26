@@ -6,14 +6,19 @@ import { createBrowserClient } from '@/lib/auth/supabase';
 import { sanitizeReturnTo } from '@/lib/auth/return-to';
 import { PASSWORD_MIN_LENGTH, PASSWORD_RULE_TEXT, suggestEmailFix, validatePassword, validateSignupEmail } from '@/lib/auth/password-rules';
 import { PasswordField } from '@/components/PasswordField';
-import { appCopyError, authErrorMessage, loginErrorMessage } from '@/lib/auth/login-errors';
+import {
+  appCopyError, authErrorMessage, isEmailNotConfirmed, loginErrorMessage,
+  LINK_FAILED_CODES, LINK_FAILED_LINK_KEPT, LINK_FAILED_REPASTE,
+  RESEND_CAPTCHA_HINT, RESEND_CONFIRMATION_FAILED, RESEND_CONFIRMATION_LABEL, RESEND_CONFIRMATION_SENT,
+} from '@/lib/auth/login-errors';
+import { forgetEmail, recallEmail, rememberEmail } from '@/lib/auth/remembered-email';
 import { sendMagicLink } from '@/lib/auth/magic-link';
 import { navigationGrace, trackEvent } from '@/lib/analytics';
 import { fieldStyle, buttonBase, primaryButton, secondaryButton, secondaryEmphasisButton, textButton } from '@/lib/ui/form-styles';
-import { clearPendingLink, isPendingReturnTo } from '@/lib/pending-link';
+import { clearPendingLink, hasPendingLink, isPendingReturnTo, resumeNonce } from '@/lib/pending-link';
 
 type Mode = 'signin' | 'signup' | 'reset';
-type BusyAction = Mode | 'magic' | 'google';
+type BusyAction = Mode | 'magic' | 'google' | 'resend';
 
 const input = fieldStyle;
 const btn = buttonBase;
@@ -61,6 +66,16 @@ export default function LoginForm({
   const typoFix = mode === 'signup' && typoChecked !== null && typoChecked === email ? suggestEmailFix(email) : null;
   const [captchaToken, setCaptchaToken] = useState<string | null>(null);
   const captchaRef = useRef<HCaptcha>(null);
+  // QW-7: a password sign-in refused as "email not confirmed" offers a resend, behind its own
+  // hCaptcha (the route verifies it, like sign-up).
+  const [offerResend, setOfferResend] = useState(false);
+  const [resendToken, setResendToken] = useState<string | null>(null);
+  const resendCaptchaRef = useRef<HCaptcha>(null);
+  // QW-6: an email link that could not finish in this browser (LINK_FAILED_CODES). Set from the
+  // callback's ?error= or by the mount check below for a /login?code= that produced no session.
+  const [linkFailed, setLinkFailed] = useState<boolean>(!!initialError && LINK_FAILED_CODES.has(initialError));
+  // What happened to a waiting song link, once a link failed: still saved here, or in the other browser.
+  const [linkNote, setLinkNote] = useState<string | null>(null);
   const siteKey = process.env.NEXT_PUBLIC_HCAPTCHA_SITE_KEY;
 
   // Password-reset emails go through the server callback so the user lands on
@@ -85,6 +100,7 @@ export default function LoginForm({
         // A sign-in that is NOT the pending-link round trip, and any sign-out, drops a saved link
         // (lib/pending-link.ts): another person signing in on this device never inherits it.
         if (event === 'SIGNED_OUT' || (event === 'SIGNED_IN' && !isPendingReturnTo(dest))) clearPendingLink(safeStorage());
+        if (event === 'SIGNED_OUT' || event === 'SIGNED_IN') forgetEmail(safeStorage());
         if (event === 'SIGNED_IN' && session) window.location.assign(dest);
       });
       unsub = () => data.subscription.unsubscribe();
@@ -93,6 +109,56 @@ export default function LoginForm({
     }
     return () => unsub?.();
   }, [dest]);
+
+  // QW-6: a one-time link or the Google return lands here as /login?code=...; the browser client
+  // exchanges it while it initialises. When that produces no session (no PKCE verifier in this
+  // browser: the link was requested in another one), nothing fired and the visitor saw a blank
+  // form. Now: wait for initialisation, and with no session say what happened, open the email
+  // options and drop the dead code from the address bar (return_to stays).
+  useEffect(() => {
+    let cancelled = false;
+    let hadCode = false;
+    try {
+      hadCode = new URLSearchParams(window.location.search).has('code');
+    } catch {
+      hadCode = false;
+    }
+    if (!hadCode) return;
+    void (async () => {
+      let session: unknown = null;
+      try {
+        const { data } = await createBrowserClient().auth.getSession();
+        session = data?.session ?? null;
+      } catch {
+        session = null;
+      }
+      if (cancelled || session) return;
+      setError(loginErrorMessage('auth_signin_link_failed'));
+      setLinkFailed(true);
+      setEmailOpen(true);
+      try {
+        const url = new URL(window.location.href);
+        url.searchParams.delete('code');
+        window.history.replaceState(window.history.state, '', url.toString());
+      } catch {
+        /* the copy is shown either way */
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  // QW-6: once a link has failed, put back the address typed here when the link was asked for
+  // (same browser only; lib/auth/remembered-email.ts) and say whether a waiting song survives.
+  useEffect(() => {
+    if (!linkFailed) return;
+    const remembered = recallEmail(safeStorage());
+    if (remembered) setEmail((cur) => cur || remembered);
+    if (isPendingReturnTo(dest)) {
+      setLinkNote(hasPendingLink(safeStorage(), resumeNonce(dest.slice(1))) ? LINK_FAILED_LINK_KEPT : LINK_FAILED_REPASTE);
+    } else {
+      setLinkNote(null);
+    }
+  }, [linkFailed, dest]);
 
   // QA A-11: an error is about what was submitted; once the person edits a field it
   // describes, it goes, so it never sits beside a fresh browser validation bubble.
@@ -106,13 +172,17 @@ export default function LoginForm({
     setError(null);
     setNotice(null);
     setOfferSignIn(false);
+    setLinkFailed(false);
+    setLinkNote(null);
+    if (action !== 'resend') setOfferResend(false);
     try {
       const msg = await fn();
       if (msg) setNotice(msg);
     } catch (e) {
       // QA A-08: never e.message from fetch or supabase-js ("Failed to fetch"): one copy map.
-      setError(authErrorMessage(e, action === 'signin' ? LOGIN_FAILED : undefined));
+      setError(authErrorMessage(e, action === 'signin' ? LOGIN_FAILED : action === 'resend' ? RESEND_CONFIRMATION_FAILED : undefined));
       setOfferSignIn(e instanceof Error && (e as Error & { signIn?: boolean }).signIn === true);
+      if (action === 'signin' && isEmailNotConfirmed(e)) setOfferResend(true);
     } finally {
       setBusyAction(null);
     }
@@ -123,6 +193,7 @@ export default function LoginForm({
     // Same rule the server enforces (/api/auth/signup), so the form never
     // accepts a password the server will reject. Sign-in is never checked:
     // existing accounts may predate these rules.
+    rememberEmail(safeStorage(), email);
     if (mode === 'signup') {
       // A likely typo is pointed out, never blocked (QA A-09): the address as typed is sent.
       setTypoChecked(email);
@@ -176,8 +247,29 @@ export default function LoginForm({
 
   function magicLink() {
     if (!email) { setError('Enter your email first.'); return; }
+    rememberEmail(safeStorage(), email);
     void run('magic', async () => {
       return sendMagicLink(createBrowserClient(), email, callbackUrl());
+    });
+  }
+
+  // QW-7: send the confirmation email again. Same reply whether or not the address has an
+  // account waiting (the route never says), so the notice is the same line every time.
+  function resendConfirmation() {
+    if (!email) { setError('Enter your email first.'); return; }
+    void run('resend', async () => {
+      const res = await fetch('/api/auth/resend-confirmation', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ email, hcaptcha_token: resendToken, return_to: dest }),
+      });
+      const json = (await res.json().catch(() => ({}))) as { ok?: boolean; message?: string };
+      // Tokens are single-use: always demand a fresh challenge after an attempt.
+      setResendToken(null);
+      resendCaptchaRef.current?.resetCaptcha();
+      if (!res.ok || !json.ok) throw appCopyError(json.message || RESEND_CONFIRMATION_FAILED);
+      setOfferResend(false);
+      return RESEND_CONFIRMATION_SENT;
     });
   }
 
@@ -203,6 +295,26 @@ export default function LoginForm({
           onClick={() => { setError(null); setOfferSignIn(false); setMode('signin'); }}>
           Sign in
         </button>
+      )}
+      {error && linkNote && (
+        <p data-testid="login-link-note" style={{ margin: 0, fontSize: 14, color: 'var(--text-secondary)' }}>{linkNote}</p>
+      )}
+      {offerResend && mode === 'signin' && (
+        <div data-testid="login-resend" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {siteKey && (
+            <HCaptcha ref={resendCaptchaRef} sitekey={siteKey}
+              onVerify={(t) => setResendToken(t)}
+              onExpire={() => setResendToken(null)}
+              onError={() => setResendToken(null)} />
+          )}
+          {siteKey && !resendToken && (
+            <p role="status" style={{ color: 'var(--text-muted)', margin: 0, fontSize: 13 }}>{RESEND_CAPTCHA_HINT}</p>
+          )}
+          <button type="button" onClick={resendConfirmation} disabled={busy || !siteKey || !resendToken}
+            data-testid="login-resend-button" style={{ ...btn, ...secondaryButton }}>
+            {busyAction === 'resend' ? 'Sending…' : RESEND_CONFIRMATION_LABEL}
+          </button>
+        </div>
       )}
       {notice && <p role="status" style={{ color: 'var(--status-done, #6c6)', margin: 0, fontSize: 14 }}>{notice}</p>}
     </>

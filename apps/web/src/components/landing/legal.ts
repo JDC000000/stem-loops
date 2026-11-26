@@ -2,6 +2,10 @@
 export const CONTACT_EMAIL = 'joncartwright00@gmail.com';
 export const CONTACT_URL = `mailto:${CONTACT_EMAIL}`;
 export const CONTACT_LABEL = CONTACT_EMAIL;
+// Beta feedback (QA S4 / G5): the same inbox, with a subject so it can be filtered. Rendered by
+// components/AccountActions.tsx (/account) and app/(landing)/help/page.tsx. No backend.
+export const FEEDBACK_SUBJECT = 'stem-loops beta feedback';
+export const FEEDBACK_URL = `${CONTACT_URL}?subject=${encodeURIComponent(FEEDBACK_SUBJECT)}`;
 // "Last updated" on each legal page, kept SEPARATE so each date moves only when that page's text
 // does (QA C-12 follow-up, 2026-11-18). ISO days: lib/seo/pages.ts builds each page's lastModified
 // from the same constant, and the copy-truth surfaces test pins that the two agree.

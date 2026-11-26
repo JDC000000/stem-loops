@@ -32,8 +32,14 @@ grants nothing. **Jon only** writes the brake. Sessions and subagents never writ
 - **In-flight jobs are not stopped.** A job already claimed runs to completion; `cli.py
   test-job` is not gated (`spend_gate.py:39-42`).
 - **Logs.** `WARN spend_brake_engaged reason=<…>` on every change, then at most once a minute
-  while engaged; `INFO spend_brake_released` when it releases (`spend_gate.py:66-67`,
-  `spend_gate.py:112-125`).
+  while engaged; `INFO spend_brake_released` when it releases (`apps/worker/src/worker/spend_gate.py`,
+  `_note`).
+- **What Jon sees (Sentry, QK-3).** One **error** event "spend brake ENGAGED: …" when the brake
+  engages, tag `spend_brake` = `engaged` (switch on) / `missing_row` (row absent) /
+  `unreadable` (read failed or timed out), fingerprint `spend-brake/<reason>`; repeated at most
+  once an hour per reason while it stays engaged. One **info** event "spend brake RELEASED" when
+  it releases after such an event. Rate-limited per worker process (a restart re-sends), so a
+  flapping brake cannot spam; the WARN log above is unchanged (`spend_gate.py`, `_report`).
 - **Long brake = refunds.** A job left `queued` past its `expires_at` (created_at + 24 h) is
   failed with a refund by the reaper (`apps/worker/src/worker/reaper.py:37-42`). Engaging for
   more than a day fails waiting jobs; it does not keep them.
@@ -74,8 +80,9 @@ UPDATE kill_switches SET enabled = false, reason = '<why>', set_by = '<you>', se
 
 1. Run the §2 SELECT. Expect one row with the `enabled` value you set, your `reason`,
    `set_by`, and a fresh `set_at`. An `UPDATE 0` result from §3 means nothing changed.
-2. Worker logs within ~10 s: engage → `WARN spend_brake_engaged reason=switch_engaged`;
-   release → `INFO spend_brake_released`. Engaged with `reason=row_absent` / `read_failed`
+2. Worker logs within ~10 s: engage → `WARN spend_brake_engaged reason=switch_engaged`
+   (and a Sentry error `spend_brake=engaged`); release → `INFO spend_brake_released` (and a
+   Sentry info "spend brake RELEASED"). Engaged with `reason=row_absent` / `read_failed`
    means the worker cannot see the row (§1 table): fix that, do not just re-run the UPDATE.
 3. After release: the next `queued` job is claimed (`INFO job_claimed`, `consumer.py:139`).
 

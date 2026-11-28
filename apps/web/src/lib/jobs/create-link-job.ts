@@ -85,6 +85,26 @@
 // The decisions are unchanged: the cap and owner checks still run under the parent lock, and
 // the funding is still decided from the locked debit read, after those checks.
 //
+// FREE RE-PASTE (#494 item 1; Jon 11-26, E1 = (a): no migration). The paste hooks' probe found
+// one or more DONE jobs of this user + URL + selection that cannot play (our encoder failed, or
+// their objects are gone) and skipped them; findExisting missed. `repasteSources()` lists them.
+// If the newest one whose job_allowance_debits row is still UNCLAIMED exists, the new job is
+// funded by that row instead of a new debit:
+//
+//   … → [findExisting miss] → lock-free source read (none / 42P01 → B0's charged path, unchanged)
+//   → checkAdmission → checkBurstLimit
+//   → db.tx { [beforeInsert] (link-dedupe lock + in-tx lookup; a hit → 200, nothing spent)
+//             → claim the source's row: restored_at = now(), nothing given back (0 rows → 409)
+//             → INSERT (per-IP window refused → roll back: the claim is undone) → rollPeriodIfStale }
+//
+// No paid entitlement, trial, quota, bump or debit row for the new job. ABUSE BOUND: one free
+// re-paste per CHARGED job. The claim (FOR UPDATE + restored_at IS NULL) happens once per row;
+// the free job has no row, so it can never fund another (a third paste after it is charged as
+// B0). A playable job, or one the probe could not judge, is reused and never a source. A worker
+// restore never targets a done job, and the free job, having no row, gets nothing back if it
+// later fails. LOCK ORDER: link-dedupe → the source's debit row (a DONE job's row; the B3 retry
+// and the worker's restore only lock a FAILED job's row, so the orders never meet).
+//
 // THE BURST ROW (#345). checkBurstLimit records one usage_events row per call. A FundingChanged
 // re-run is the same request, already counted by its first pass, so the re-run does not call
 // it again: one Try again tap = one burst row.
@@ -199,6 +219,11 @@ export interface CreateAuthedLinkJobInput {
    * has used its retries (error-copy.ts RETRY_LIMIT_MSG; this file has no runtime imports).
    */
   funding?: MirrorRestoreFunding;
+  /**
+   * #494 item 1 (paste only; lib/library-server.ts pasteHooks): the DONE jobs findExisting
+   * skipped as unplayable, read once after it misses. See "FREE RE-PASTE" above.
+   */
+  repasteSources?: () => readonly string[];
 }
 
 export interface MirrorRestoreFunding {
@@ -334,6 +359,14 @@ async function run(input: CreateAuthedLinkJobInput, deps: LinkJobDeps): Promise<
   // B3: a retry is funded by mirroring its parent's restore. Absent → B0, unchanged below.
   if (input.funding && input.funding.mode === 'mirror_restore') {
     return runMirrorRestore(input, input.funding, deps, ctx, bars);
+  }
+
+  // #494 item 1: a re-paste after our encode failure is funded by the failed job's debit.
+  const sources = input.repasteSources ? [...input.repasteSources()] : [];
+  if (sources.length) {
+    const source = await readRepasteSource(db, sources, user.user_id);
+    if (source) return runFreeRepaste(input, deps, ctx, bars, sources, source);
+    // No unclaimed source: charged exactly as any new paste (below).
   }
 
   // Link-ingest entitlement (TSD-V3-DELTA §1.2a REVERSED by Jon, 2026-11-16: Pro and Studio
@@ -794,5 +827,112 @@ async function runMirrorRestore(
     throw err;
   }
   if (!inserted) return json(429, { error_code: 'RATE_LIMITED', message: deps.RATE_LIMIT_MSG });
+  return json(201, { id, status: 'queued' });
+}
+
+// ── #494 item 1: FREE RE-PASTE ──────────────────────────────────────────────────────────────
+
+// The newest of $1 (unplayable DONE jobs) owned by $2 whose debit row is still unclaimed.
+const REPASTE_SOURCE_SQL = `SELECT d.job_id::text AS job_id
+             FROM public.job_allowance_debits d
+             JOIN jobs j ON j.id = d.job_id
+            WHERE d.job_id = ANY($1::uuid[]) AND d.user_id = $2::uuid AND j.user_id = $2::uuid
+              AND j.status = 'done' AND d.restored_at IS NULL
+            ORDER BY j.created_at DESC LIMIT 1`;
+
+// The same source, claimed under its row lock (restore_job_allowance()'s exactly-once rule):
+// restored_at set, nothing given back. A concurrent claimer waits, then finds it claimed.
+const CLAIM_REPASTE_SOURCE_SQL = `WITH src AS (
+           SELECT d.job_id
+             FROM public.job_allowance_debits d
+             JOIN jobs j ON j.id = d.job_id
+            WHERE d.job_id = ANY($1::uuid[]) AND d.user_id = $2::uuid AND j.user_id = $2::uuid
+              AND j.status = 'done' AND d.restored_at IS NULL
+            ORDER BY j.created_at DESC LIMIT 1
+              FOR UPDATE OF d)
+         UPDATE public.job_allowance_debits d
+            SET restored_at = now(), allowance_restored = false, trial_restored = false
+           FROM src WHERE d.job_id = src.job_id AND d.restored_at IS NULL
+         RETURNING d.job_id::text AS job_id`;
+
+/** The lock-free source read: a job id, or null (none, or migration 042 not applied → charged). */
+async function readRepasteSource(db: LinkJobDb, sources: readonly string[], userId: string): Promise<string | null> {
+  try {
+    const r = await db.query(REPASTE_SOURCE_SQL, [[...sources], userId]);
+    return (r.rows[0] as { job_id: string } | undefined)?.job_id ?? null;
+  } catch (err) {
+    if ((err as { code?: string } | null)?.code === '42P01') return null;
+    throw err;
+  }
+}
+
+async function runFreeRepaste(
+  input: CreateAuthedLinkJobInput,
+  deps: LinkJobDeps,
+  ctx: LinkJobHookContext,
+  bars: number,
+  sources: readonly string[],
+  sourceJobId: string,
+): Promise<LinkJobResult> {
+  const { user } = input;
+  const { db } = deps;
+
+  // Admission and the burst limit apply to a free re-paste exactly as to a free retry (B3).
+  const clientIpHash = input.clientIpHash();
+  const adm = await deps.checkAdmission(clientIpHash);
+  if (!adm.allowed) {
+    if (adm.error_code === 'AT_CAPACITY') {
+      return json(
+        503,
+        { error_code: adm.error_code, message: adm.message },
+        { 'Retry-After': String(adm.retry_after_s) },
+      );
+    }
+    return json(429, { error_code: adm.error_code, message: adm.message });
+  }
+  const burst = await deps.checkBurstLimit(user.user_id);
+  if (burst) {
+    return {
+      status: 429,
+      body: burstRefusalBody(burst.retry_after_s, deps.RATE_LIMIT_MSG),
+      headers: { 'content-type': 'application/json', 'Retry-After': String(burst.retry_after_s) },
+      raw: true,
+    };
+  }
+
+  const id = deps.randomUUID();
+  const RATE_SENTINEL = Symbol('rate_limited');
+  const INSERT_SQL = `INSERT INTO jobs (id, youtube_url, requested_stems, loop_length_bars, status, client_ip_hash, client_fingerprint, user_id)
+             SELECT $1, $2, $3, $4, 'queued', $5, '', $8::uuid
+             WHERE (SELECT COUNT(*) FROM jobs WHERE client_ip_hash = $5
+                    AND created_at >= NOW() - ($6::int * INTERVAL '1 millisecond')) < $7
+             RETURNING id`;
+  let claimed: string;
+  try {
+    claimed = await db.tx(async (client) => {
+      // 1. The link-dedupe lock and the in-tx lookup: a concurrent re-paste that won made a
+      //    queued job, which this answers (200, nothing claimed).
+      await runBeforeInsert(input, client, ctx);
+      // 2. The claim. 0 rows: the source was claimed since the lock-free read.
+      const c = await client.query(CLAIM_REPASTE_SOURCE_SQL, [[...sources], user.user_id]);
+      const got = (c.rows[0] as { job_id: string } | undefined)?.job_id;
+      if (!got) {
+        throw new MirrorRefusal(json(409, { error_code: 'RETRY_CONFLICT', message: 'Something changed while starting this. Try again.' }));
+      }
+      // 3. The job. A refused per-IP window rolls the claim back with it.
+      const r = await client.query(INSERT_SQL, [
+        id, ctx.canonicalUrl, ctx.requestedStems, bars, clientIpHash, deps.RATE_WINDOW_MS, deps.RATE_LIMIT, user.user_id,
+      ]);
+      if (!r.rowCount) throw RATE_SENTINEL;
+      await deps.rollPeriodIfStale(client, user.user_id);
+      return got;
+    });
+  } catch (err) {
+    if (err === RATE_SENTINEL) return json(429, { error_code: 'RATE_LIMITED', message: deps.RATE_LIMIT_MSG });
+    if (err instanceof ExistingJobHit) return json(200, { id: err.id });
+    if (err instanceof MirrorRefusal) return err.result;
+    throw err;
+  }
+  console.info('paste dedupe: free re-paste after an unplayable done job', { jobId: id, sourceJobId: claimed, readSource: sourceJobId });
   return json(201, { id, status: 'queued' });
 }

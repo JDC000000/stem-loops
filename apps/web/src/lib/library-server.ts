@@ -188,8 +188,8 @@ async function findUsableJobForPaste(
   ctx: HookCtx,
   probe: StemProbe,
   verdicts: Map<string, boolean>,
+  skipped: string[] = [],
 ): Promise<string | null> {
-  const skipped: string[] = [];
   for (;;) {
     const hit = await findLiveJobForPaste(db, ctx, skipped);
     if (!hit) return null;
@@ -226,13 +226,26 @@ async function findUsableJobForPaste(
  * / recordAllowanceDebit take the entitlements / quota locks. Re-make takes it after its entry
  * row; a paste never takes an entry row and nothing else takes this key, so there is no cycle.
  */
+/*
+ * #494 item 1 (Jon, 11-26: no charge for a re-paste after our own encode failure; E1 = (a), no
+ * migration). `repasteSources` hands createAuthedLinkJob the DONE jobs findExisting skipped as
+ * unplayable (probe === false only; "could not tell" is reused, never skipped), newest first. The
+ * lib funds the new job from the newest of them whose job_allowance_debits row is still unclaimed
+ * (lib/jobs/create-link-job.ts, FREE RE-PASTE). Empty when findExisting hit or skipped nothing.
+ */
 export function pasteHooks(opts: { clientIpHash?: () => string; probe?: StemProbe } = {}) {
   const ipHash = opts.clientIpHash ?? (() => { throw new Error('no client IP hash'); });
   const probe: StemProbe = opts.probe ?? ((jobId) => hasPlayableStems(jobId, ipHash));
   const verdicts = new Map<string, boolean>();
+  let unplayable: string[] = [];
   return {
-    findExisting: async (db: Queryable, ctx: HookCtx): Promise<string | null> =>
-      findUsableJobForPaste(db, ctx, probe, verdicts),
+    findExisting: async (db: Queryable, ctx: HookCtx): Promise<string | null> => {
+      const skipped: string[] = [];
+      const hit = await findUsableJobForPaste(db, ctx, probe, verdicts, skipped);
+      unplayable = hit ? [] : skipped;
+      return hit;
+    },
+    repasteSources: (): readonly string[] => [...unplayable],
     beforeInsert: async (client: Queryable, ctx: HookCtx): Promise<string | null> => {
       await client.query(LINK_DEDUPE_LOCK_SQL, [ctx.userId, ctx.canonicalUrl]);
       return findUsableJobForPaste(client, ctx, probe, verdicts);

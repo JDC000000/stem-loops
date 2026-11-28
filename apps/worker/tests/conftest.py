@@ -60,6 +60,23 @@ def _quiet_fetch_alerting(monkeypatch: pytest.MonkeyPatch) -> None:
     fetch_canary.reset_state()
 
 
+@pytest.fixture(autouse=True)
+def _fresh_ytdlp_attempt_state(monkeypatch: pytest.MonkeyPatch) -> None:
+    """#513: ``ytdlp_client._attempt`` is process-wide (thread-local) per-attempt state.
+
+    ``download_audio()`` arms ``stall_cut=True`` (and ``set_declared_duration``) before a
+    non-final attempt; the real ``fetch_audio_file`` consumes it at once, but a test that
+    fakes ``fetch_audio_file`` (test_fetch_chain, test_link_duration_cap, ...) leaves it
+    armed, so a later direct ``fetch_audio_file`` call got a 15 s stall cut it never asked
+    for. Give every test a fresh, unarmed attempt; monkeypatch restores the original after.
+    """
+    import threading
+
+    from worker.downloader import ytdlp_client
+
+    monkeypatch.setattr(ytdlp_client, "_attempt", threading.local())
+
+
 # This file only PARSES URLs and hands them to child pytest processes (which have this guard
 # themselves); exempting it lets it assert, without being skipped, that the guard ALLOWS a
 # local database. It opens no connection.

@@ -250,7 +250,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--provider",
         default=os.environ.get("CHORDS_PROVIDER", "klangio"),
-        help="ChordSource provider name (klangio | replicate | internal).",
+        help="ChordSource provider name (klangio | btc | replicate | internal).",
     )
     parser.add_argument(
         "--manifest", type=Path, default=MANIFEST_PATH, help="chord_eval_songs.json path"

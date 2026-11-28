@@ -168,9 +168,6 @@ export async function findLiveJobForPaste(
   return (r.rows[0] as { id: string; status: string } | undefined) ?? null;
 }
 
-/** QW-2: at most this many unplayable done jobs are skipped per lookup; past it, a new job. */
-export const PASTE_MAX_SKIPPED = 3;
-
 /** true = playable; false = cannot play; null = could not tell (treated as playable). */
 export type StemProbe = (jobId: string) => Promise<boolean | null>;
 
@@ -182,6 +179,13 @@ export type StemProbe = (jobId: string) => Promise<boolean | null>;
  * → a new job, funded and metered exactly like any new paste (no retry_of: "Try again" is only
  * for FAILED jobs, which the predicate already never reuses). `verdicts` caches per request, so
  * beforeInsert's repeat costs no second probe for a job findExisting already judged.
+ * #494 item 3: NO skip cap (it was 3, so with 4+ unplayable done jobs an older playable one was
+ * never looked at and the paste was charged). The scan is bounded by (a) the live done jobs of
+ * this user + URL + selection (each one a job that was created and metered; the SQL excludes
+ * every skipped id, so each step is a different, older row), and (b) the probe's own per-IP
+ * budget (checkPasteProbeRate, 30/min): once refused, the probe answers null and the scanned
+ * job is reused, which ends the scan with nothing charged. One paste therefore lists R2 at most
+ * PASTE_PROBE_RATE_LIMIT times, and every IP at most that many times a minute.
  */
 async function findUsableJobForPaste(
   db: Queryable,
@@ -202,7 +206,6 @@ async function findUsableJobForPaste(
     }
     if (ok) return hit.id;
     skipped.push(hit.id);
-    if (skipped.length >= PASTE_MAX_SKIPPED) return null;
   }
 }
 

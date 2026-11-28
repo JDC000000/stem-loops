@@ -150,7 +150,7 @@ const graph = buildModuleGraph({
     // QW-2: the R2 stem probe. __dd.broken: ids with no playable stems; __dd.probeNull: could not tell.
     'lib/jobs/stem-artifacts.ts': `export const hasPlayableStems = async (id, ipHash) => {
       const s = globalThis.__dd; s.probes.push([id, ipHash()]);
-      if (s.probeNull) return null;
+      if (s.probeNull || (s.probeNullAfter != null && s.probes.length > s.probeNullAfter)) return null;
       return !s.broken.includes(id); };`,
     'lib/auth/supabase.ts': `export const getUser = async () => globalThis.__dd.user;`,
     'lib/billing/rate-limit.ts': `
@@ -454,13 +454,33 @@ test('QW-2: a newer broken done job is skipped for an OLDER playable one of the 
   assert.deepEqual(S().lookups.map((l) => l.params[6]), [[], ['newer']]);
 });
 
-test('QW-2: at most PASTE_MAX_SKIPPED (3) broken jobs are probed per lookup, then a new job', async () => {
+test('#494-3: no 3-skip cap — 4 newer broken done jobs are skipped for an OLDER playable one (reused, no charge)', async () => {
   const ids = ['b1', 'b2', 'b3', 'b4'];
+  reset({ broken: ids, rows: [
+    { id: 'good', user_id: USER_ID, url: CANON, status: 'done', created: 0 },
+    ...ids.map((id, i) => ({ id, user_id: USER_ID, url: CANON, status: 'done', created: i + 1 })),
+  ] });
+  const r = await paste();
+  assert.deepEqual([r.status, r.body], [200, HIT('good')]);
+  assert.deepEqual(S().probes.map((p) => p[0]), ['b4', 'b3', 'b2', 'b1', 'good']);
+  assert.deepEqual(charged(), []);
+});
+
+test('#494-3: every live done job broken (6) → each probed once, then a new job', async () => {
+  const ids = ['b1', 'b2', 'b3', 'b4', 'b5', 'b6'];
   reset({ broken: ids, rows: ids.map((id, i) => ({ id, user_id: USER_ID, url: CANON, status: 'done', created: i })) });
   const r = await paste();
   assert.equal(r.status, 201, JSON.stringify(r.body));
-  assert.deepEqual(S().probes.map((p) => p[0]), ['b4', 'b3', 'b2']);
+  assert.deepEqual(S().probes.map((p) => p[0]), ['b6', 'b5', 'b4', 'b3', 'b2', 'b1'], 'beforeInsert re-probes none');
   assert.deepEqual(charged(), NEW_JOB_CHARGES);
+});
+
+test('#494-3: the probe budget runs out mid-scan (null) → that job is reused, never a new charge', async () => {
+  const ids = ['b1', 'b2', 'b3', 'b4', 'b5'];
+  reset({ broken: ids, probeNullAfter: 4, rows: ids.map((id, i) => ({ id, user_id: USER_ID, url: CANON, status: 'done', created: i })) });
+  const r = await paste();
+  assert.deepEqual([r.status, r.body], [200, HIT('b1')]);
+  assert.deepEqual(charged(), []);
 });
 
 // ── #494 item 1 (Jon, 11-26): a re-paste after OUR encode failure is not charged again ─────────

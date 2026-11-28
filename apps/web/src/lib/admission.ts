@@ -324,6 +324,27 @@ export async function checkStemListRate(clientIpHash: string): Promise<Admission
   );
 }
 
+// #494 item 4: the signed-in paste dedupe probe (lib/jobs/stem-artifacts.ts hasPlayableStems)
+// has its OWN per-IP counter. It used to spend checkStemListRate, so on a shared IP (NAT)
+// re-pastes used up the player's budget (GET /api/jobs/:id/stems answered 429) and a busy
+// player made the probe answer "could not tell" (the paste then reused an unplayable job).
+// Same table and atomic statement, a `paste-probe:` key: no migration.
+// COST BOUND: each admitted probe is one R2 ListObjectsV2 (Class A), so per IP and minute R2
+// lists are at most STEM_LIST_RATE_LIMIT (60) + PASTE_PROBE_RATE_LIMIT (30). 30 is far above a
+// human's re-pastes (a probe runs only when the paste's live hit is a DONE job), and a paste
+// scans newest-first until a playable job, so this budget is also what bounds one paste's scan
+// (#494 item 3: a refused probe answers null, and the scanned job is reused).
+export const DEFAULT_PASTE_PROBE_RATE_LIMIT = 30;
+const PASTE_PROBE_RATE_WINDOW_MS = 60_000;
+const pasteProbeRateKey = (clientIpHash: string) => `paste-probe:${clientIpHash}`;
+export async function checkPasteProbeRate(clientIpHash: string): Promise<AdmissionResult> {
+  return rollingWindowAdmission(
+    pasteProbeRateKey(clientIpHash),
+    PASTE_PROBE_RATE_WINDOW_MS,
+    positiveIntEnv('PASTE_PROBE_RATE_LIMIT', DEFAULT_PASTE_PROBE_RATE_LIMIT),
+  );
+}
+
 // READ-ONLY sibling of checkStemListRate, for the demo-song reads (design v1.5 P3.1 "Abuse
 // limits": a per-IP limit on the app routes for is_demo ids). It COUNTS the caller's
 // `stems:` window and records nothing, so a GET that passes through it writes no row

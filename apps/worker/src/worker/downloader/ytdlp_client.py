@@ -18,6 +18,7 @@ is ever flipped on in prod.
 import base64
 import contextlib
 import hashlib
+import math
 import os
 import re
 import secrets
@@ -212,11 +213,13 @@ def begin_attempt(*, stall_cut: bool | None = None) -> None:
         _attempt.stall_cut = stall_cut
 
 
-def set_declared_duration(duration_sec: float | None) -> None:
-    """QK-1: the length gate 0c read for the video about to be fetched (None = unknown).
-    download_audio() sets it before its attempts and clears it after, so a pooled thread never
-    carries one job's length into the next."""
+def set_declared_duration(duration_sec: float | None, max_sec: float | None = None) -> None:
+    """QK-1: the length gate 0c read for the video about to be fetched (None = unknown), and
+    (#491) the trim length in force (None = no cap). download_audio() sets both before its
+    attempts and clears both after, so a pooled thread never carries one job's length or cap
+    into the next."""
     _attempt.declared_sec = duration_sec
+    _attempt.max_sec = max_sec
 
 
 def _declared(declared_sec: float | None) -> float:
@@ -249,6 +252,31 @@ def attempt_timeout_s(declared_sec: float | None = None) -> float:
         return float(TIMEOUT)
     scaled = TIMEOUT + TIMEOUT_PER_DECLARED_MIN_S * d / 60.0
     return min(scaled, max(float(TIMEOUT), TIMEOUT_CEILING_S))
+
+
+def download_trim_sec(
+    declared_sec: float | None = None, max_sec: float | None = None
+) -> float | None:
+    """#491: the length to cut a video to AT DOWNLOAD, or None to fetch it in full.
+
+    Only a video whose full fetch cannot fit the per-attempt ceiling (declared length KNOWN,
+    over the cap, and ``bound_is_fit`` False: past 36 min at the shipped values) is cut at
+    download. Its full fetch failed DOWNLOAD_TIMEOUT every time, against Jon's rule (a long song
+    is converted from its first 5 minutes, never refused). Every other video keeps the proven
+    full fetch + ``pipeline._trim_link_source``. None for an unknown length, no cap, or a cap
+    that is not a positive finite number."""
+    d = _declared(declared_sec)
+    if max_sec is None:
+        max_sec = getattr(_attempt, "max_sec", None)
+    try:
+        cap = float(max_sec) if max_sec is not None else 0.0
+    except (TypeError, ValueError):
+        return None
+    if not d or not (cap > 0 and math.isfinite(cap)):
+        return None
+    if d <= cap or bound_is_fit(d):
+        return None
+    return cap
 
 
 def _take_stall_cut() -> bool:
@@ -721,6 +749,14 @@ def fetch_audio_file(youtube_url: str) -> str:
         "--break-match-filters",
         "!is_live",
     ]
+    # #491: a video too long for its full fetch to fit the ceiling is cut AT DOWNLOAD to its
+    # first ``trim_sec`` seconds. It stays ONE yt-dlp run with the SAME ``--proxy`` string:
+    # yt-dlp hands that string to its ffmpeg sub-download (as http_proxy), and the sticky
+    # session id lives in the string, so every request of the attempt keeps one exit IP.
+    # pipeline._trim_link_source still measures (and, if it overshot, re-cuts) the result.
+    trim_sec = download_trim_sec()
+    if trim_sec is not None:
+        cmd += ["--download-sections", f"*0-{trim_sec:g}"]
     cf = _pick_cookie_file()
     if cf:
         cmd += ["--cookies", cf]
@@ -729,7 +765,11 @@ def fetch_audio_file(youtube_url: str) -> str:
     # `--` ends option parsing (QA track B, B-09): the URL can never be read as a flag.
     cmd += ["--", youtube_url]
 
-    deadline = first_byte_deadline_s() if stall_cut else None
+    # #491: ffmpeg's section download reports no progress until it ends, so it is never
+    # first-byte cut (it would always look stalled). Its bound is attempt_timeout_s(), which is
+    # the ceiling for such a video, and bound_is_fit() is False for it: a timeout stays
+    # DOWNLOAD_TIMEOUT exactly as before (no new refund route).
+    deadline = first_byte_deadline_s() if stall_cut and trim_sec is None else None
     timeout_s = attempt_timeout_s()
     ours_if_cut = bound_is_fit()
     r = _run_download(cmd, timeout_s, deadline)
@@ -749,7 +789,8 @@ def fetch_audio_file(youtube_url: str) -> str:
     if r.ended == TIMED_OUT:
         # The final attempt is never cut (B-1): if it never got a byte, it fails exactly as
         # before (DOWNLOAD_TIMEOUT), with the stall recorded as the reason for observability.
-        stalled = r.first_byte_at is None
+        # A cut-at-download run shows no progress by design: not a first-byte stall (#491).
+        stalled = r.first_byte_at is None and trim_sec is None
         if proxy and not stalled and ours_if_cut:
             # QK-1: media was flowing and a bound sized for this video's declared length cut
             # it -- ours, not the user's. Retried like proxy_connect; as a final error the

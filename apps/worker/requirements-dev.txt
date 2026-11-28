@@ -26,3 +26,11 @@
 # newest, because constraints-prod.txt describes the production image and moto is not in
 # it. Freezing those needs a separate constraints file generated from a known-good install.
 moto[s3,server]==5.2.5
+
+# mir_eval scores chord predictions against a reference .lab in the chord eval harness
+# (src/worker/chord_eval.py, `python -m worker.chord_eval`) and its tests
+# (tests/test_chord_eval.py; they SKIP locally without it and FAIL when CI=true). Eval
+# tooling only: never imported by the pipeline, so it stays out of the production image.
+# Pinned exactly because the tests assert the exact scores this version computes. Its
+# dependencies (numpy, scipy, decorator) are all pinned in constraints-prod.txt already.
+mir_eval==0.8.2

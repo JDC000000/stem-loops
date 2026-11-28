@@ -2,7 +2,9 @@
 
 QK-2: a job whose stem retention saved no playable stem used to end ``done`` with 0/6 stems
 (credit / monthly song kept). It now fails UPLOAD_FAILED (in OUR_FAULT_CODES), reported to
-Sentry. A partial set and a drain-abandoned report keep today's behaviour.
+Sentry. #490 (Jon E2 = a): so does a PARTIAL set (1-5 of the six htdemucs_6s stems playable),
+and the stem objects that did upload are deleted so a failed job leaves no orphaned WAV / Opus.
+A drain-abandoned report keeps today's behaviour (the job is requeued, not failed).
 
 QK-4: the kill switch, a failed blocklist read and a worker with ALLOW_YOUTUBE_INPUT off were
 DOWNLOAD_BLOCKED (user fault: no song back, no Sentry). They are now INTERNAL_ERROR
@@ -135,7 +137,7 @@ def _drive(monkeypatch, *, kind="upload", download=None, retained=None):
     monkeypatch.delenv("STUB_MODE", raising=False)
     monkeypatch.delenv("STEMLOOPS_AUDIO_URL", raising=False)
     monkeypatch.delenv("STEMLOOPS_AUDIO_FILE", raising=False)
-    seen: dict = {"status": [], "events": [], "failed": [], "downloads": 0}
+    seen: dict = {"status": [], "events": [], "failed": [], "downloads": 0, "deleted": []}
     if kind == "upload":
         row = ("", ["drums"], 4, "upload", "uploads/x", "song.mp3")
     else:
@@ -174,7 +176,9 @@ def _drive(monkeypatch, *, kind="upload", download=None, retained=None):
     monkeypatch.setattr(pipeline, "record_loops", lambda *a, **k: 0)
     report = retained if retained is not None else {"play": list(SIX), "download": list(SIX)}
     monkeypatch.setattr(pipeline, "retain_stems", lambda _j, _p: report)
-    monkeypatch.setattr(pipeline, "_fail", _async(lambda *a: seen["failed"].append(a)))
+    monkeypatch.setattr(pipeline, "delete_objects", lambda keys: seen["deleted"].extend(keys))
+    # fail_job's contract: True when THIS call marked the job failed.
+    monkeypatch.setattr(pipeline, "_fail", _async(lambda *a: seen["failed"].append(a) or True))
     monkeypatch.setattr(replicate_client, "_heartbeat", lambda *_: None)
     return seen
 
@@ -205,32 +209,145 @@ def test_six_wavs_but_no_playable_opus_still_fails(monkeypatch, sentry):
     assert [f[1] for f in seen["failed"]] == ["UPLOAD_FAILED"]
 
 
-@pytest.mark.parametrize("played", [["drums"], ["drums", "bass", "vocals"], list(SIX)])
-def test_a_partial_or_full_set_still_finishes_done(monkeypatch, sentry, played):
-    seen = _drive(monkeypatch, retained={"play": played, "download": played})
+def _keys(played, downloadable):
+    return sorted(
+        [f"{JOB}/_stems/play/{n}.opus" for n in played]
+        + [f"{JOB}/_stems/dl/{n}.wav" for n in downloadable]
+    )
+
+
+@pytest.mark.parametrize(
+    "played", [["drums"], ["drums", "bass", "vocals"], [n for n in SIX if n != "keys"]]
+)
+def test_a_partial_set_fails_upload_failed_and_is_refunded(monkeypatch, sentry, played):
+    # #490, Jon E2 = (a): fewer than the six stems htdemucs_6s produces is not 'done'.
+    seen = _drive(monkeypatch, retained={"play": played, "download": list(SIX)})
+    with pytest.raises(UploadFailedError) as ei:
+        asyncio.run(pipeline._run_pipeline(JOB))
+    assert [f[1] for f in seen["failed"]] == ["UPLOAD_FAILED"]
+    assert "done" not in seen["status"]
+    assert ("uploading", "completed") not in seen["events"]
+    assert ei.value.failure_reason == "partial_stem_set"
+    assert f"{len(played)}/6 playable" in str(ei.value)
+    assert [s["tags"] for s in sentry] == [
+        {"error_code": "UPLOAD_FAILED", "failure_reason": "partial_stem_set"}
+    ]
+
+
+def test_a_full_set_still_finishes_done_and_deletes_nothing(monkeypatch, sentry):
+    seen = _drive(monkeypatch, retained={"play": list(SIX), "download": list(SIX)})
     asyncio.run(pipeline._run_pipeline(JOB))
     assert seen["failed"] == []
     assert seen["status"][-1] == "done"
+    assert seen["deleted"] == []
     assert sentry == []
 
 
+def test_a_full_playable_set_with_a_missing_wav_still_finishes_done(monkeypatch, sentry):
+    # The threshold counts PLAYABLE (Opus) stems, the artifact the mixer streams (#490 text:
+    # "partial stem sets (1-5 Opus)"); a missing WAV keeps retain_stems' own Sentry error.
+    seen = _drive(monkeypatch, retained={"play": list(SIX), "download": list(SIX[:5])})
+    asyncio.run(pipeline._run_pipeline(JOB))
+    assert seen["failed"] == []
+    assert seen["status"][-1] == "done"
+
+
+def test_duplicate_or_unknown_names_cannot_make_a_partial_set_look_full():
+    report = {"play": ["drums"] * 6, "download": []}
+    with pytest.raises(UploadFailedError):
+        pipeline._require_a_full_stem_set(report)
+    report = {"play": ["drums", "bass", "vocals", "other", "guitar", "piano"], "download": []}
+    with pytest.raises(UploadFailedError):
+        pipeline._require_a_full_stem_set(report)
+
+
+@pytest.mark.parametrize(
+    "played,downloadable",
+    [([], []), ([], list(SIX)), (["drums"], ["drums", "bass"]), (list(SIX[:5]), list(SIX))],
+)
+def test_a_failed_stem_set_deletes_every_object_it_uploaded(
+    monkeypatch, sentry, played, downloadable
+):
+    # #490: the WAVs (and Opus) of a failed job used to stay in R2 until the retention sweep.
+    seen = _drive(monkeypatch, retained={"play": played, "download": downloadable})
+    with pytest.raises(UploadFailedError):
+        asyncio.run(pipeline._run_pipeline(JOB))
+    assert sorted(seen["deleted"]) == _keys(played, downloadable)
+
+
+def test_the_stems_are_deleted_only_after_this_run_failed_the_job(monkeypatch, sentry):
+    # Review B-1 (R1): deleting first let a zombie run remove the stems of a job another run
+    # had already ended 'done'. Now: fail first, and delete only if THIS run marked it.
+    order: list[str] = []
+    _drive(monkeypatch, retained={"play": ["drums"], "download": ["drums"]})
+    monkeypatch.setattr(pipeline, "delete_objects", lambda keys: order.append("delete"))
+    monkeypatch.setattr(pipeline, "_fail", _async(lambda *a: order.append("fail") or True))
+    with pytest.raises(UploadFailedError):
+        asyncio.run(pipeline._run_pipeline(JOB))
+    assert order == ["fail", "delete", "delete"]
+
+
+def test_a_run_that_did_not_mark_the_job_deletes_nothing(monkeypatch, sentry):
+    # The job was already terminal ('done' by another run, or failed by the reaper): its
+    # objects may be the other run's, so they are left alone (retention sweep's job).
+    seen = _drive(monkeypatch, retained={"play": list(SIX[:5]), "download": list(SIX)})
+    monkeypatch.setattr(pipeline, "_fail", _async(lambda *a: seen["failed"].append(a) or False))
+    with pytest.raises(UploadFailedError):
+        asyncio.run(pipeline._run_pipeline(JOB))
+    assert [f[1] for f in seen["failed"]] == ["UPLOAD_FAILED"]
+    assert seen["deleted"] == []
+
+
+def test_other_failures_never_delete_stems(monkeypatch, sentry):
+    seen = _drive(monkeypatch, retained={"play": list(SIX), "download": list(SIX)})
+    monkeypatch.setattr(pipeline, "record_loops", lambda *a, **k: 1 / 0)
+    with pytest.raises(ZeroDivisionError):
+        asyncio.run(pipeline._run_pipeline(JOB))
+    assert seen["deleted"] == []
+
+
+def test_a_delete_error_never_masks_the_failure_or_skips_other_keys(monkeypatch, sentry):
+    seen = _drive(monkeypatch, retained={"play": ["drums", "bass"], "download": []})
+    tried: list = []
+
+    def flaky(keys):
+        tried.extend(keys)
+        if keys == [f"{JOB}/_stems/play/bass.opus"]:
+            raise RuntimeError("R2 500")
+
+    monkeypatch.setattr(pipeline, "delete_objects", flaky)
+    with pytest.raises(UploadFailedError):
+        asyncio.run(pipeline._run_pipeline(JOB))
+    assert [f[1] for f in seen["failed"]] == ["UPLOAD_FAILED"]
+    assert sorted(tried) == _keys(["drums", "bass"], [])
+
+
 def test_a_drain_abandoned_report_is_not_failed(monkeypatch, sentry):
-    # QA-63: the job is back in the queue and the rerun uploads all six; never fail it here.
+    # QA-63: the job is back in the queue and the rerun uploads all six; never fail it here,
+    # and never delete what it uploaded (the rerun overwrites the same deterministic keys).
     seen = _drive(
         monkeypatch,
-        retained={"play": [], "download": [], "complete": False, "abandoned": True},
+        retained={"play": ["drums"], "download": ["drums"], "complete": False, "abandoned": True},
     )
     asyncio.run(pipeline._run_pipeline(JOB))
     assert seen["failed"] == []
+    assert seen["deleted"] == []
 
 
-def test_require_a_playable_stem_reads_the_real_report_shape():
-    pipeline._require_a_playable_stem({"play": ["drums"], "download": []})
-    pipeline._require_a_playable_stem({"play": [], "abandoned": True})
+def test_require_a_full_stem_set_reads_the_real_report_shape():
+    pipeline._require_a_full_stem_set({"play": list(SIX), "download": []})
+    pipeline._require_a_full_stem_set({"play": [], "abandoned": True})
     with pytest.raises(UploadFailedError) as ei:
-        pipeline._require_a_playable_stem({"play": [], "download": ["drums", "bass"]})
+        pipeline._require_a_full_stem_set({"play": [], "download": ["drums", "bass"]})
     assert ei.value.failure_reason == "no_playable_stems"
     assert "2 downloadable" in str(ei.value)
+    with pytest.raises(UploadFailedError) as ei:
+        pipeline._require_a_full_stem_set({"play": list(SIX[:5]), "download": []})
+    assert ei.value.failure_reason == "partial_stem_set"
+
+
+def test_the_threshold_is_the_models_stem_count():
+    assert pipeline.ALL_STEMS == SIX, "htdemucs_6s: six stems; N follows ALL_STEMS"
 
 
 def test_retain_stems_with_every_put_failing_is_caught(monkeypatch, tmp_path):
@@ -252,7 +369,7 @@ def test_retain_stems_with_every_put_failing_is_caught(monkeypatch, tmp_path):
     report = pipeline.retain_stems(JOB, paths)
     assert report["play"] == [] and report["download"] == []
     with pytest.raises(UploadFailedError):
-        pipeline._require_a_playable_stem(report)
+        pipeline._require_a_full_stem_set(report)
 
 
 # ------------------------------------------------------------------ QK-4 through the pipeline
@@ -279,6 +396,26 @@ def test_kill_switch_through_the_pipeline_is_our_fault_reported_once(monkeypatch
         assert [f[1] for f in seen["failed"]] == ["INTERNAL_ERROR"]
         assert "Upload the audio file" in seen["failed"][0][2]
     assert [s["tags"]["failure_reason"] for s in sentry] == ["fetch_paused"]
+
+
+def test_a_failed_capture_does_not_use_up_the_once_per_process_report(monkeypatch, sentry):
+    # #490: the once-per-process flag was set BEFORE the capture call, so a capture that raised
+    # (Sentry transport error) silenced the standing state for the life of the process.
+    monkeypatch.delenv("ALLOW_YOUTUBE_INPUT", raising=False)
+    calls: list = []
+
+    def capture(exc=None, **k):
+        calls.append(k["tags"]["failure_reason"])
+        if len(calls) == 1:
+            raise RuntimeError("sentry transport down")
+
+    monkeypatch.setattr(pipeline.sentry_sdk, "capture_exception", capture)
+    for _ in range(3):
+        seen = _drive(monkeypatch, kind="youtube")
+        with pytest.raises(YoutubeInputDisabledError):
+            asyncio.run(pipeline._run_pipeline(JOB))
+        assert [f[1] for f in seen["failed"]] == ["INTERNAL_ERROR"]
+    assert calls == ["youtube_input_disabled"] * 2, "retried once after the failed capture"
 
 
 def test_blocklist_unavailable_through_the_pipeline_is_reported_every_time(monkeypatch, sentry):

@@ -152,6 +152,7 @@ def select_mutants(files0: bytes, gate: str, worker: str, cap: int) -> tuple[lis
     py_like = sorted(x for x in money if x.endswith((".py", ".sh", ".ts", ".tsx")))
     gaps = [x for x in py_like if x not in covered and x not in web_entries]
     web_hit = sorted(x for x in money if x in web_entries)
+    cap = max(0, cap)  # #515: a negative cap selects nothing (a bare chosen[:-1] would drop only the last entry)
     ids = chosen[:cap]
     md = ["### Diff-scoped mutants (advisory)", "",
           f"{len(money)} changed money path(s) · {len(chosen)} worker manifest mutant(s) on them · running {len(ids)}"
@@ -186,7 +187,7 @@ def main(argv=None) -> int:
             md = shared(mine, {str(k): list(v or []) for k, v in others.items()}, a.pr, a.open_unreadable,
                         [x for x in a.unreadable.split(",") if x])
         else:
-            ids, md = select_mutants(Path(a.files).read_bytes(), a.gate, a.worker, max(0, a.max))
+            ids, md = select_mutants(Path(a.files).read_bytes(), a.gate, a.worker, a.max)
             if a.ids_out:
                 Path(a.ids_out).write_text(",".join(ids), encoding="utf-8")
     except Exception as e:  # advisory: report, never fail the build

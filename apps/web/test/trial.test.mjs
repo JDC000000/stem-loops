@@ -96,15 +96,15 @@ async function loadGrantRoute({ user, trial }) {
 // Burst-limit stub for /api/users/me/trial/consume (round-2 FIX #3).
 // `limited` = true → returns a BurstDenial, false → returns null and the
 // route proceeds. Records calls so tests can assert the gate ran.
-function burstStub({ limited = false } = {}) {
-  const payload = JSON.stringify({ limited });
+function burstStub({ limited = false, retryAfterS = 60 } = {}) {
+  const payload = JSON.stringify({ limited, retryAfterS });
   return dataUrl(`
     const cfg = ${payload};
     globalThis.__burstCalls = 0;
     export const checkBurstLimit = async (userId) => {
       globalThis.__burstCalls++;
       globalThis.__burstLastUser = userId;
-      if (cfg.limited) return { kind: 'rate_limit_burst', retry_after_s: 60 };
+      if (cfg.limited) return { kind: 'rate_limit_burst', retry_after_s: cfg.retryAfterS };
       return null;
     };
   `);
@@ -239,18 +239,21 @@ test('POST /api/users/me/trial/consume — 429 when burst limit trips (round-2 F
   const mod = await loadConsumeRoute({
     user: USER,
     trial: { consumeResult: { ok: true, songs_remaining: 2, expires_at: EXPIRY } },
-    burst: { limited: true },
+    // #507 R1: a value other than 60, so a hard-coded 60 in the route cannot pass.
+    burst: { limited: true, retryAfterS: 17 },
   });
   const res = await mod.POST(sameOriginReq());
   assert.equal(res.status, 429);
   assert.equal(res.body.code, 'rate_limit_burst');
-  assert.equal(res.headers.get('Retry-After'), '60');
+  assert.equal(res.headers.get('Retry-After'), '17');
+  assert.equal(res.body.retry_after_s, 17);
+  assert.equal(res.headers.get('Retry-After'), String(res.body.retry_after_s));
   // #489: the same body /api/jobs sends (QW-1): the old fields plus error_code and the sentence.
   const { RATE_LIMITED_PER_CLIENT_MSG } = await import(ERRCOPY_URL);
   assert.deepEqual(res.body, {
     error: 'too many requests',
     code: 'rate_limit_burst',
-    retry_after_s: 60,
+    retry_after_s: 17,
     error_code: 'RATE_LIMITED',
     message: RATE_LIMITED_PER_CLIENT_MSG,
   });

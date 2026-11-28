@@ -599,7 +599,7 @@ class Tail(Harness):
 
 
 class Freeze(Harness):
-    AFTER = "2026-11-28"
+    AFTER = "2026-12-01"  # inside the v1.2 freeze [11-30T01:00Z, 12-03T01:00Z)
 
     def test_apps_frozen_for_both(self):
         self.assertRefused(self.run_sm("23B", at("17:00", self.AFTER)), text="freeze")
@@ -613,9 +613,15 @@ class Freeze(Harness):
         self.assertClaimed(self.run_sm("23B", at("17:00", self.AFTER), extra={"BLOCKER": "123"}), tag="23B")
 
     def test_freeze_boundary(self):
-        # frozen from 23:00Z on 11-27; 23:30Z is clear of every block and slot, 19:00Z the same day is before the freeze
-        self.assertRefused(self.run_sm("23B", ts("2026-11-27T23:30:00Z")), text="freeze")
-        self.assertClaimed(self.run_sm("23B", ts("2026-11-27T19:00:00Z"), files=["apps/a.ts"]), tag="23B")
+        # v1.2 (Jon L12): frozen from 01:00Z on 11-30 (Sun 18:00 Vancouver). 01:00:00Z is the first frozen second; 00:59:59Z is open.
+        self.assertRefused(self.run_sm("23B", ts("2026-11-30T01:00:00Z")), text="freeze")
+        self.assertClaimed(self.run_sm("23B", ts("2026-11-30T00:59:59Z"), files=["apps/a.ts"]), tag="23B")
+
+    def test_old_freeze_start_now_open(self):
+        # the v1.1 freeze start (11-27 23:00Z) no longer freezes: apps/** PRs can merge on Sat 11-28 (24B's batch)
+        self.assertClaimed(self.run_sm("23B", ts("2026-11-27T23:30:00Z")), tag="23B")
+        self.assertClaimed(self.run_sm("23B", at("17:00", "2026-11-28")), tag="23B")
+        self.assertClaimed(self.run_sm("23A", at("15:00", "2026-11-29")))
 
     def test_files_listing_capped_fails_closed(self):
         many = [f"docs/{i}.md" for i in range(100)]

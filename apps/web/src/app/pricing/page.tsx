@@ -229,7 +229,7 @@ export default async function PricingPage() {
       </div>
 
       <h2 className="pr-h2">Credits</h2>
-      <p className="pr-lede">One credit is one uploaded track on the Free plan. Credits never expire.</p>
+      <p className="pr-lede">One credit is one uploaded song on the Free plan. Credits never expire.</p>
       {checkoutOn ? (
       <CreditPackCheckout returnTo="/pricing">
       <div className="pr-packs">

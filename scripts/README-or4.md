@@ -226,7 +226,7 @@ SESSION_TAG=23B scripts/session-merge.sh ack <comment-id>...                    
   after which every claim is refused until the section is renewed by PR): an **A** session claims only when its whole 40-min window fits
   inside an A block (15:00–17:00Z, 21:00–22:00Z); a **B** session only when its window touches no A block; **both** refuse a window touching
   a DEPLOY slot (18:00–18:30Z, 23:00–23:30Z) and any other session's live CLAIM/DEPLOY (untagged lines count as another session's).
-  Freeze: any session's PR with an `apps/` file from 2026-11-27T23:00Z until 2026-12-03T01:00Z (`FREEZE_AT`, `FREEZE_END`; the beta no-deploy
+  Freeze: any session's PR with an `apps/` file from 2026-11-30T01:00Z (Sun 11-29 18:00 Vancouver; v1.2, Jon L12) until 2026-12-03T01:00Z (`FREEZE_AT`, `FREEZE_END`; the beta no-deploy
   window ends 12-02 18:00 Vancouver) unless `BLOCKER=<issue>`; a listing of 100+ files counts as apps (fail closed).
 - **Shared files (v1.1):** before claiming, prints `WARNING: open PR #N also changes: <files>` for every other open PR that changes a file this
   PR changes. A warning only: it never refuses, and an unreadable listing is reported (`WARN shared-file check skipped …`) and skipped.

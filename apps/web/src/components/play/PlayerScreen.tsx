@@ -69,6 +69,7 @@ import { SetListMenuItems, SetListPicker } from '@/components/setlists/AddToSetL
 import { PLAYBACK_RATES } from '@/lib/play/engine';
 import { speedLabel } from '@/lib/play/stretch';
 import { SetListNext } from '@/components/setlists/SetListNext';
+import { FEEDBACK_URL } from '@/components/landing/legal';
 import setStyles from '@/components/setlists/SetLists.module.css';
 import { isSetId, setHref } from '@/lib/set-lists';
 
@@ -95,7 +96,8 @@ export const PART_NAMES_NOT_SAVED = 'Names not saved: this browser blocked stora
 
 /** The ⋯ button's accessible name lists what its menu holds (QA S8): the
  *  chord items only when the song has chords (#496), speed only when the
- *  engine offers it, Rename parts only when it shows. Menu order. */
+ *  engine offers it, Rename parts only when it shows. Menu order. Send
+ *  feedback (#487, QA S4) is always last. */
 export function moreMenuLabel(o: { hasChords: boolean; speed: boolean; renameParts: boolean }): string {
   const items = [
     o.hasChords ? 'all chords' : null,
@@ -104,6 +106,7 @@ export function moreMenuLabel(o: { hasChords: boolean; speed: boolean; renamePar
     'count-in',
     o.renameParts ? 'rename parts' : null,
     'set lists',
+    'send feedback',
   ].filter(Boolean);
   return `More: ${items.join(', ')}`;
 }
@@ -792,6 +795,16 @@ export function PlayerScreen(props: ScreenProps) {
                 onOpenPicker={() => setPickerOpen(true)}
                 onMessage={setSetToast}
               />
+              {/* #487 (QA S4): the beta feedback mailto, the same link as /account
+                  (components/landing/legal.ts). No backend. Always last. */}
+              <a
+                href={FEEDBACK_URL}
+                className={styles.menuItem}
+                data-testid="menu-send-feedback"
+                onClick={() => setMenuOpen(false)}
+              >
+                Send feedback
+              </a>
             </div>
           ) : null}
         </div>

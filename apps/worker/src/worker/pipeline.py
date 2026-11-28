@@ -1321,8 +1321,33 @@ def _with_chords_marker(job_id: str, detail: dict | None, outcome: object) -> di
         return detail
 
 
-def _maybe_run_chord_recognition(job_id: str, stem_paths: dict, requested_stems) -> dict | None:
+def _run_chord_shadow(
+    job_id: str, provider_name: str, result, audio_path: str, duration, shadow_out: dict
+) -> None:
+    """B4: BTC beside a Klangio result already in hand. Never raises, never calls Klangio,
+    never changes the chords outcome or artifact (those are fixed before this runs)."""
+    try:
+        if provider_name != "klangio" or getattr(result, "provider", None) != "klangio":
+            return
+        from .chord_shadow import shadow_compare  # noqa: PLC0415 — flag-on path only
+
+        payload = shadow_compare(job_id, audio_path, result, duration)
+        if payload:
+            shadow_out.update(payload)
+    except Exception as exc:  # noqa: BLE001 — shadow must never affect the job
+        log_structured(
+            "WARN", "chords_shadow_failed", job_id=job_id, error_class=type(exc).__name__
+        )
+
+
+def _maybe_run_chord_recognition(
+    job_id: str, stem_paths: dict, requested_stems, shadow_out: dict | None = None
+) -> dict | None:
     """Y1.1 feature-flag entry point. Uploads ``play.chords.json`` to R2 or no-ops.
+
+    ``shadow_out`` (B4 chord shadow-compare, passed only when ``CHORDS_SHADOW_BTC`` is on):
+    after a Klangio result is in hand, BTC runs on the same input and the agreement dict is
+    put into ``shadow_out`` for the extracting/completed row. See ``chord_shadow``.
 
     Returns the B-8c chords outcome (``_chords_ok()`` / ``_chords_unavailable(...)``), or
     ``None`` only when the job is being abandoned for a drain (the rerun does the chords).
@@ -1437,6 +1462,8 @@ def _maybe_run_chord_recognition(job_id: str, stem_paths: dict, requested_stems)
             stem=stem_name,
             r2_key=r2_key,
         )
+        if shadow_out is not None:
+            _run_chord_shadow(job_id, provider_name, result, audio_path, duration, shadow_out)
         if r2_key:
             return _chords_ok()
         # Recognised but not stored: the job has no chords file. No tombstone (the write
@@ -1547,6 +1574,11 @@ async def set_status(job_id: str, status: str) -> None:
     if row is None:
         log_structured("WARN", "job_no_longer_active", job_id=job_id, wanted_status=status)
         raise JobNoLongerActive(job_id)
+
+
+def _chords_shadow_enabled() -> bool:
+    """B4: ``CHORDS_SHADOW_BTC`` exactly ``1``/``true`` (any case). Default OFF."""
+    return os.environ.get("CHORDS_SHADOW_BTC", "").strip().lower() in ("1", "true")
 
 
 def _chords_enabled() -> bool:
@@ -1938,15 +1970,29 @@ async def _run_pipeline(job_id: str) -> None:
         # reaper's stale window is 300s, so heartbeat for the duration.
         # Otherwise a second machine's reaper (deploy overlap) requeues a LIVE job and
         # the rerun submits a second billed request before the first artifact exists.
+        # B4: CHORDS_SHADOW_BTC off (default) -> the first branch is the exact old call.
+        shadow: dict | None = {} if _chords_shadow_enabled() else None
         async with _stage_heartbeat(job_id):
-            chords_outcome = await asyncio.to_thread(
-                _maybe_run_chord_recognition, job_id, stem_paths, requested_stems
-            )
+            if shadow is None:
+                chords_outcome = await asyncio.to_thread(
+                    _maybe_run_chord_recognition, job_id, stem_paths, requested_stems
+                )
+            else:
+                chords_outcome = await asyncio.to_thread(
+                    _maybe_run_chord_recognition,
+                    job_id,
+                    stem_paths,
+                    requested_stems,
+                    shadow_out=shadow,
+                )
 
         # B5: say WHY there are no loops, so the job page can explain it.
         extracting_detail = None if loops else {"loops": 0, "reason": "no_reliable_beat"}
         # B-8c: chords ok/unavailable on this same row (best-effort, never raises).
         extracting_detail = _with_chords_marker(job_id, extracting_detail, chords_outcome)
+        if shadow:
+            # B4: agreement numbers only, on the same row (no new row, stage or phase).
+            extracting_detail = {**(extracting_detail or {}), **shadow}
         await emit_event(job_id, "extracting", "completed", pct=100, detail=extracting_detail)
 
         await set_status(job_id, "uploading")

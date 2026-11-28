@@ -27,6 +27,7 @@ import {
   countInBpm,
   createClickSink,
   createCountIn,
+  countRateFor,
   readCountIn,
   writeCountIn,
 } from '@/lib/play/count-in';
@@ -300,15 +301,16 @@ export function PlayerScreen(props: ScreenProps) {
   engineLatRef.current = getEngineLatencySec;
   // #387 F5: the count follows the slow-down rate (60 / (BPM x rate) per beat).
   // The rate actually PLAYING (a pending change has not taken effect yet).
-  const rateRef = useRef(snapshot.playbackRate ?? 1);
-  rateRef.current = snapshot.playbackRate ?? 1;
+  // #448: with sl.play.countPendingRate.v1 on, a pending first slow-down counts at its rate.
+  const snapRef = useRef(snapshot);
+  snapRef.current = snapshot;
   useEffect(() => {
     const c = createCountIn({
       bpm: bpmNum,
       onBeat: setCountBeat,
       clicks: sinkRef.current ?? undefined,
       timing: () => ({ clickLatencySec: sinkRef.current?.latencySec?.() ?? 0, engineLatencySec: engineLatRef.current?.() ?? 0 }),
-      rate: () => rateRef.current,
+      rate: () => countRateFor(snapRef.current),
       onCancel: () => unprimeRef.current?.(),
     });
     countRef.current = c;

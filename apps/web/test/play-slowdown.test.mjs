@@ -507,6 +507,87 @@ test('R2-2: the lock screen gets the real speed, and the drift check uses it', (
   assert.equal(ms2.positions.at(-1).playbackRate, 1);
 });
 
+// ─── #448: a pending first slow-down (flag sl.play.countPendingRate.v1, default OFF) ──
+
+function gatedStretch() {
+  const st = fakeStretch();
+  let open;
+  const gate = new Promise((r) => (open = r));
+  st.ready = () => gate;
+  return { st, open: () => open() };
+}
+function memStore(init = {}) {
+  const m = new Map(Object.entries(init));
+  return { getItem: (k) => (m.has(k) ? m.get(k) : null), setItem: (k, v) => m.set(k, String(v)), removeItem: (k) => m.delete(k) };
+}
+
+test('#448: while the first slow-down is pending the snapshot carries pendingRate (absent otherwise)', async () => {
+  const { st, open } = gatedStretch();
+  const { engine } = await rig({ stretch: st });
+  assert.equal('pendingRate' in engine.getSnapshot(), false, 'nothing pending');
+  engine.setPlaybackRate(0.75);
+  await settle();
+  let s = engine.getSnapshot();
+  assert.equal(s.playbackRate, 1);
+  assert.equal(s.speedPending, true);
+  assert.equal(s.pendingRate, 0.75);
+  engine.setPlaybackRate(0.9);
+  await settle();
+  assert.equal(engine.getSnapshot().pendingRate, 0.9, 'a second pending choice is seen (new snapshot)');
+  open();
+  for (let i = 0; i < 10 && engine.getSnapshot().speedPending; i++) await settle();
+  s = engine.getSnapshot();
+  assert.equal(s.playbackRate, 0.9);
+  assert.equal(s.speedPending, false);
+  assert.equal('pendingRate' in s, false, 'applied: gone');
+});
+
+test('#448 flag OFF (default): stretchLatencySec() is 0 while the first slow-down is pending (old behaviour)', async () => {
+  const { st, open } = gatedStretch();
+  const { engine } = await rig({ stretch: st });
+  engine.setPlaybackRate(0.75);
+  await settle();
+  assert.equal(withStorage(memStore(), () => engine.stretchLatencySec()), 0, 'no flag');
+  assert.equal(withStorage(memStore({ 'sl.play.countPendingRate.v1': '0' }), () => engine.stretchLatencySec()), 0, '"0"');
+  open();
+  for (let i = 0; i < 10 && engine.getSnapshot().speedPending; i++) await settle();
+  assert.equal(withStorage(memStore(), () => engine.stretchLatencySec()), 0.121, 'applied');
+});
+
+test('#448 flag ON: stretchLatencySec() is the PENDING rate\'s latency while it waits; unchanged otherwise', async () => {
+  const on = memStore({ 'sl.play.countPendingRate.v1': '1' });
+  const { st, open } = gatedStretch();
+  const { engine } = await rig({ stretch: st });
+  assert.equal(withStorage(on, () => engine.stretchLatencySec()), 0, '100%, nothing pending');
+  engine.setPlaybackRate(0.75);
+  await settle();
+  assert.equal(withStorage(on, () => engine.stretchLatencySec()), 0.121, 'pending 75%');
+  engine.setPlaybackRate(0.9);
+  assert.equal(withStorage(on, () => engine.stretchLatencySec()), 0.131, 'pending 90%');
+  open();
+  for (let i = 0; i < 10 && engine.getSnapshot().speedPending; i++) await settle();
+  assert.equal(withStorage(on, () => engine.stretchLatencySec()), 0.131, 'applied 90%');
+  engine.setPlaybackRate(1);
+  assert.equal(withStorage(on, () => engine.stretchLatencySec()), 0, 'back to 100%');
+  engine.dispose();
+  assert.equal(withStorage(on, () => engine.stretchLatencySec()), 0, 'disposed');
+  const plain = await rig({ withStretch: false });
+  plain.engine.setPlaybackRate(0.75);
+  assert.equal(withStorage(on, () => plain.engine.stretchLatencySec()), 0, 'no stretch provider');
+});
+
+test('#448: disposed while the first slow-down is still pending → stretchLatencySec() is 0, flag on and off', async () => {
+  const { st } = gatedStretch();
+  const { engine } = await rig({ stretch: st });
+  engine.setPlaybackRate(0.75);
+  await settle();
+  assert.ok(engine.getSnapshot().speedPending === true, 'pending before dispose');
+  engine.dispose();
+  // dispose() leaves wantRate/stretchProvider set, so only the disposed guard keeps the pending branch out.
+  assert.ok(withStorage(memStore({ 'sl.play.countPendingRate.v1': '1' }), () => engine.stretchLatencySec()) === 0, 'flag on');
+  assert.ok(withStorage(memStore(), () => engine.stretchLatencySec()) === 0, 'flag off');
+});
+
 test('#387: stretchLatencySec() is the stretch latency a start at the playing rate adds (0 at 100%, without stretch, after dispose)', async () => {
   const { engine } = await rig();
   assert.equal(engine.stretchLatencySec(), 0, '100%: bypassed');

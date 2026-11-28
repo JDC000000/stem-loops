@@ -67,3 +67,13 @@ export function addToHistory(jobId: string): void {
     body: JSON.stringify({ jobIds: trimmed.map((e) => e.id) }),
   }).catch(() => {});
 }
+
+/**
+ * Forget this browser's song history (#486). Called on sign-out (components/AccountActions.tsx):
+ * the list is per-browser, never per-user, so on a shared machine the next person would inherit
+ * it. The signed `sl-history` cookie mirror is httpOnly and is cleared by /api/auth/signout.
+ */
+export function clearHistory(): void {
+  if (typeof window === 'undefined') return;
+  window.localStorage.removeItem(HISTORY_KEY);
+}

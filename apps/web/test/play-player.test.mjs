@@ -132,6 +132,7 @@ const {
   UNDECODABLE_MESSAGE,
   NO_STEMS_MESSAGE,
   ENCODE_FAILED_MESSAGE,
+  ENCODE_FAILED_FREE_RETRY_MESSAGE,
   FETCH_NETWORK_MESSAGE,
   FETCH_HTTP_MESSAGE,
   FETCH_BODY_MESSAGE,
@@ -978,7 +979,7 @@ async function noticeFor({ manifest, stem }) {
   const out = await Loader.loadStems(JOB_ID, {
     fetch: async (url) => (String(url).startsWith('/api/') ? mjson(manifest) : stem(url)),
   });
-  return { out, reason: Loader.zeroSourceReason(out), notice: zeroSourceNotice(Loader.zeroSourceReason(out)) };
+  return { out, reason: Loader.zeroSourceReason(out), notice: zeroSourceNotice(Loader.zeroSourceReason(out), out.freeRepaste) };
 }
 
 test('a fresh job whose encoder failed does NOT get the "processed before" sentence', async () => {
@@ -988,6 +989,37 @@ test('a fresh job whose encoder failed does NOT get the "processed before" sente
   assert.equal(notice.retryable, false, 'a reload does not re-encode: do not offer it as the cure');
   assert.doesNotMatch(notice.message, /processed before|aged|old|24 hours|no longer/i);
   assert.match(notice.message, /could not prepare/i);
+  // #494 item 1: no `free_repaste` from the route → the re-paste is charged → no promise.
+  assert.doesNotMatch(notice.message, /on us|free|does not use up/i);
+});
+
+test('#494-1: encode_failed + free_repaste true (charged job, debit unclaimed) → the free-retry promise', async () => {
+  const { out, reason, notice } = await noticeFor({ manifest: { stems: [], state: 'encode_failed', free_repaste: true } });
+  assert.equal(reason, 'ENCODE_FAILED');
+  assert.equal(out.freeRepaste, true);
+  assert.equal(notice.message, ENCODE_FAILED_FREE_RETRY_MESSAGE);
+  assert.equal(notice.retryable, false);
+  assert.match(notice.message, /could not prepare/i);
+  assert.match(notice.message, /same stems and loop length/);
+  assert.match(notice.message, /does not use up another song/);
+  assert.doesNotMatch(notice.message, /counts as a new track/i);
+});
+
+test('#494-1: encode_failed + free_repaste false (e.g. the free re-paste itself failed) → NO promise', async () => {
+  for (const flag of [false, 'true', 1, null]) {
+    const { out, notice } = await noticeFor({ manifest: { stems: [], state: 'encode_failed', free_repaste: flag } });
+    assert.equal(out.freeRepaste, false, `free_repaste ${JSON.stringify(flag)} must not count as true`);
+    assert.equal(notice.message, ENCODE_FAILED_MESSAGE);
+    assert.doesNotMatch(notice.message, /on us|does not use up/i);
+  }
+  // The flag changes only the encode_failed sentence.
+  assert.equal(zeroSourceNotice('NO_STEMS', true), null);
+  assert.equal(zeroSourceNotice('FETCH_HTTP', true).message, FETCH_HTTP_MESSAGE);
+});
+
+test('#494-1: the Player passes the loader\'s freeRepaste to zeroSourceNotice', () => {
+  const src = readFileSync(join(WEB, 'src/components/play/Player.tsx'), 'utf8');
+  assert.ok(src.includes('zeroSourceNotice(reason, loaded.freeRepaste)'));
 });
 
 test('a browser that cannot reach storage (CORS-shaped) gets a network sentence, retryable', async () => {

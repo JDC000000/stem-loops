@@ -226,6 +226,12 @@ export interface LoadStemsResult extends LoadedStems {
    */
   readonly manifestState: StemManifestState | null;
   /**
+   * #494 item 1: the route's `free_repaste` (stems/route.ts): true only when a re-paste of this
+   * job (same stems and loop length) would not be charged. Anything but an explicit `true` is
+   * false, so the UI never promises a free retry it cannot honour.
+   */
+  readonly freeRepaste: boolean;
+  /**
    * How the per-stem downloads failed, as counts. Never a URL: a stem URL carries
    * a presigned signature. `network` is the browser-level rejection (`fetch`
    * throwing a TypeError) and is what a missing R2 CORS rule, a CSP `connect-src`
@@ -268,7 +274,9 @@ const STEM_SET: ReadonlySet<string> = new Set(PLAYABLE_STEMS);
  * (first wins) and bad URLs are dropped; an unknown or absent `state` is `null`,
  * never a guess.
  */
-function parseManifest(body: unknown): { urls: Map<StemName, string>; state: StemManifestState | null } {
+type ParsedManifest = { urls: Map<StemName, string>; state: StemManifestState | null; freeRepaste: boolean };
+
+function parseManifest(body: unknown): ParsedManifest {
   if (typeof body !== 'object' || body === null || !Array.isArray((body as { stems?: unknown }).stems)) {
     throw new StemLoadError('MANIFEST_INVALID', 'Stems manifest has an unexpected shape');
   }
@@ -283,7 +291,8 @@ function parseManifest(body: unknown): { urls: Map<StemName, string>; state: Ste
   const rawState = (body as { state?: unknown }).state;
   const state =
     typeof rawState === 'string' && MANIFEST_STATES.has(rawState) ? (rawState as StemManifestState) : null;
-  return { urls, state };
+  const freeRepaste = (body as { free_repaste?: unknown }).free_repaste === true;
+  return { urls, state, freeRepaste };
 }
 
 /**
@@ -402,7 +411,7 @@ export async function loadStems(jobId: string, opts: LoadStemsOptions = {}): Pro
 
   const manifestUrl = `${opts.baseUrl ?? ''}/api/jobs/${encodeURIComponent(jobId)}/stems`;
 
-  async function fetchManifest(): Promise<{ urls: Map<StemName, string>; state: StemManifestState | null }> {
+  async function fetchManifest(): Promise<ParsedManifest> {
     let res: Response;
     try {
       res = await doFetch(manifestUrl, { signal: ctl.signal, cache: 'no-store' });
@@ -433,6 +442,7 @@ export async function loadStems(jobId: string, opts: LoadStemsOptions = {}): Pro
     const first = await fetchManifest();
     let current = first.urls;
     let manifestState = first.state;
+    let freeRepaste = first.freeRepaste;
     let generation = 0;
     let refreshes = 0;
     let inflight: Promise<void> | null = null;
@@ -462,6 +472,7 @@ export async function loadStems(jobId: string, opts: LoadStemsOptions = {}): Pro
           const next = await fetchManifest();
           current = next.urls;
           manifestState = next.state;
+          freeRepaste = next.freeRepaste;
         } catch (e) {
           // EVERY refresh failure is recorded, not just 429/404. A refresh that
           // 5xxs, fails the network or returns junk leaves the old URLs in
@@ -589,6 +600,7 @@ export async function loadStems(jobId: string, opts: LoadStemsOptions = {}): Pro
         ? { code: failed.code, message: failed.message, status: failed.status, retryAfterSec: failed.retryAfterSec }
         : null,
       manifestState,
+      freeRepaste,
       stemFailures: {
         listed: current.size,
         network: fail.network,

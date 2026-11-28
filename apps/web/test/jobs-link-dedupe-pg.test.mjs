@@ -247,7 +247,7 @@ test('(c) re-paste of a done and retained job -> same id, no charge', { skip }, 
   assert.equal((await counts(u, url)).jobs_used, before.jobs_used + 1);
 });
 
-test('QW-2: re-paste of a done job with no playable stems -> a new job, charged; a playable older one is reused', { skip }, async () => {
+test('QW-2 + #494-1: re-paste of a done job with no playable stems -> a new job, FREE (source claimed); a playable older one is reused', { skip }, async () => {
   const u = await user();
   const url = canon(vid());
   as(u);
@@ -262,7 +262,11 @@ test('QW-2: re-paste of a done job with no playable stems -> a new job, charged;
     assert.notEqual(fresh.body.id, first.body.id);
     const after1 = await counts(u, url);
     assert.equal(after1.jobs, before.jobs + 1);
-    assert.equal(after1.jobs_used, before.jobs_used + 1);
+    // #494 item 1: our encode failure → the re-paste spends nothing; the source row is claimed.
+    assert.equal(after1.jobs_used, before.jobs_used);
+    assert.equal(after1.debits, before.debits, 'the free job has no debit row');
+    const src = await one('SELECT restored_at IS NOT NULL AS claimed, allowance_restored, trial_restored FROM job_allowance_debits WHERE job_id = $1', [first.body.id]);
+    assert.deepEqual(src, { claimed: true, allowance_restored: false, trial_restored: false });
     // The new job is queued: the next re-paste reuses it, nothing charged.
     const again = await paste(url);
     assert.deepEqual([again.status, again.body], [200, HIT(fresh.body.id)]);
@@ -277,6 +281,99 @@ test('QW-2: re-paste of a done job with no playable stems -> a new job, charged;
     globalThis.__ldBroken = undefined;
   }
 });
+
+test('#494-1 abuse bound: one free re-paste per charged job; trial spent → still free; the free job never funds another', { skip }, async () => {
+  const u = await user({ trial: true });
+  const url = canon(vid());
+  as(u);
+  const first = await paste(url); // spends the trial song (and an allowance unit)
+  assert.equal(first.status, 201, JSON.stringify(first.body));
+  await pool.query("UPDATE public.trial_grants SET songs_used = 3 WHERE user_id = $1", [u.user_id]);
+  await pool.query("UPDATE jobs SET status = 'done' WHERE id = $1", [first.body.id]);
+  globalThis.__ldBroken = [first.body.id];
+  try {
+    const before = await counts(u, url);
+    const free = await paste(url);
+    assert.equal(free.status, 201, JSON.stringify(free.body));
+    const a1 = await counts(u, url);
+    assert.deepEqual(
+      [a1.jobs - before.jobs, a1.debits - before.debits, a1.jobs_used - before.jobs_used, a1.songs_used - before.songs_used],
+      [1, 0, 0, 0],
+      'the free re-paste spends no unit, no trial song and writes no debit row',
+    );
+    // The free job also ends done-unplayable: no row to fund it, the source is claimed → charged
+    // like any paste (trial spent → one unit of the free allowance).
+    await pool.query("UPDATE jobs SET status = 'done' WHERE id = $1", [free.body.id]);
+    globalThis.__ldBroken = [first.body.id, free.body.id];
+    const mid = await counts(u, url);
+    const third = await paste(url);
+    assert.equal(third.status, 201, JSON.stringify(third.body));
+    const after = await counts(u, url);
+    assert.deepEqual([after.debits - mid.debits, after.jobs_used - mid.jobs_used], [1, 1], 'the third job is charged');
+    const claims = await one('SELECT count(*)::int AS n FROM job_allowance_debits WHERE user_id = $1 AND restored_at IS NOT NULL', [u.user_id]);
+    assert.equal(claims.n, 1, 'the source was claimed exactly once');
+  } finally {
+    globalThis.__ldBroken = undefined;
+  }
+});
+
+test('#494-1: two truly concurrent re-pastes after an encode failure -> 1 free job, 1 claim', { skip, timeout: 60_000 }, async () => {
+  const u = await user();
+  const url = canon(vid());
+  as(u);
+  const first = await paste(url);
+  assert.equal(first.status, 201);
+  await pool.query("UPDATE jobs SET status = 'done' WHERE id = $1", [first.body.id]);
+  globalThis.__ldBroken = [first.body.id];
+  try {
+    const before = await counts(u, url);
+    const st = lockBarrier(DEDUPE_POINT, DEDUPE_WAIT);
+    const results = await withHook(st.onQuery, () => Promise.all([paste(url), paste(url)]));
+    assert.deepEqual(results.map((r) => r.status).sort(), [200, 201], JSON.stringify(results.map((r) => r.body)));
+    assert.equal(results[0].body.id, results[1].body.id);
+    assert.ok(st.sawWait, 'the loser was seen waiting on the link-dedupe lock');
+    const after = await counts(u, url);
+    assert.deepEqual([after.jobs - before.jobs, after.debits - before.debits, after.jobs_used - before.jobs_used], [1, 0, 0]);
+  } finally {
+    globalThis.__ldBroken = undefined;
+  }
+});
+
+for (const newer of ['claimed', 'row-less']) {
+  test(`#494-1: two unplayable done jobs, the NEWER one ${newer}, the older unclaimed -> 201 free, the OLDER row claimed`, { skip }, async () => {
+    const u = await user();
+    const url = canon(vid());
+    as(u);
+    const older = await paste(url); // charged: a debit row
+    assert.equal(older.status, 201, JSON.stringify(older.body));
+    // Failed for a moment so the next paste makes a second (charged) job of the same selection.
+    await pool.query("UPDATE jobs SET status = 'failed' WHERE id = $1", [older.body.id]);
+    const newerJob = await paste(url);
+    assert.equal(newerJob.status, 201, JSON.stringify(newerJob.body));
+    await pool.query("UPDATE jobs SET created_at = now() - interval '2 minutes' WHERE id = $1", [older.body.id]);
+    await pool.query("UPDATE jobs SET status = 'done' WHERE id = ANY($1::uuid[])", [[older.body.id, newerJob.body.id]]);
+    if (newer === 'claimed') {
+      await pool.query(
+        'UPDATE job_allowance_debits SET restored_at = now(), allowance_restored = false, trial_restored = false WHERE job_id = $1',
+        [newerJob.body.id],
+      );
+    } else {
+      await pool.query('DELETE FROM job_allowance_debits WHERE job_id = $1', [newerJob.body.id]);
+    }
+    globalThis.__ldBroken = [older.body.id, newerJob.body.id];
+    try {
+      const before = await counts(u, url);
+      const free = await paste(url);
+      assert.equal(free.status, 201, JSON.stringify(free.body));
+      const after = await counts(u, url);
+      assert.deepEqual([after.jobs - before.jobs, after.debits - before.debits, after.jobs_used - before.jobs_used], [1, 0, 0]);
+      const olderRow = await one('SELECT restored_at IS NOT NULL AS claimed FROM job_allowance_debits WHERE job_id = $1', [older.body.id]);
+      assert.equal(olderRow.claimed, true, 'the OLDER (still unclaimed) source funded the free re-paste');
+    } finally {
+      globalThis.__ldBroken = undefined;
+    }
+  });
+}
 
 test('(d) re-paste after the previous job FAILED -> a new job, charged normally', { skip }, async () => {
   const u = await user();

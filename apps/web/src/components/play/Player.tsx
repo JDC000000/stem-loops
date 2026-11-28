@@ -148,10 +148,21 @@ export const NO_STEMS_MESSAGE =
  * `state: 'encode_failed'` — the stems were separated and uploaded for download,
  * and converting them for playback failed. A fault, not a fallback, and NOT a
  * reload-fixes-it one: it will answer the same until the track is submitted again.
+ * This is the copy when a re-paste WILL be charged (or that is not known): no promise.
  */
 export const ENCODE_FAILED_MESSAGE =
   'We separated this track but could not prepare its audio for play along. ' +
   'To retry, add the track again on the home page. It counts as a new track.';
+
+/**
+ * #494 item 1 (Jon, 11-26): the same fault when the stems route says `free_repaste`
+ * (the job's debit is unclaimed, so lib/jobs/create-link-job.ts FREE RE-PASTE funds
+ * the re-paste of the same selection). Shown ONLY then.
+ */
+export const ENCODE_FAILED_FREE_RETRY_MESSAGE =
+  'We separated this track but could not prepare its audio for play along. ' +
+  'To retry, add the track again on the home page with the same stems and loop length. ' +
+  'That retry is on us: it does not use up another song.';
 
 /** Stems were offered and the browser never got a response (CORS / CSP / offline). */
 export const FETCH_NETWORK_MESSAGE =
@@ -226,10 +237,12 @@ export function stemLoadMessage(code: StemLoadErrorCode, status?: number): strin
  */
 export function zeroSourceNotice(
   reason: ZeroSourceReason,
+  freeRepaste = false,
 ): { readonly message: string; readonly retryable: boolean } | null {
   switch (reason) {
     case 'ENCODE_FAILED':
-      return { message: ENCODE_FAILED_MESSAGE, retryable: false };
+      // #494 item 1: the free-retry promise only when the server says the re-paste is free.
+      return { message: freeRepaste === true ? ENCODE_FAILED_FREE_RETRY_MESSAGE : ENCODE_FAILED_MESSAGE, retryable: false };
     case 'FETCH_NETWORK':
       return { message: FETCH_NETWORK_MESSAGE, retryable: true };
     case 'FETCH_HTTP':
@@ -578,7 +591,7 @@ export default function Player({
           // play-along audio was kept"), false for a fresh job: see
           // `zeroSourceReason` for the five of them.
           const reason = zeroSourceReason(loaded);
-          const notice = zeroSourceNotice(reason);
+          const notice = zeroSourceNotice(reason, loaded.freeRepaste);
           if (notice === null) {
             // Story 6.4: nothing stored. The brief is explicit that this is the
             // FALLBACK trigger, not an error: show the loops and stop.

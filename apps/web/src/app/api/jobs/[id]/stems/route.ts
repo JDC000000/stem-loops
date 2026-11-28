@@ -40,6 +40,28 @@ function errLabel(e: unknown): string {
   return e instanceof Error ? `${e.name}: ${e.message}` : 'non-Error thrown';
 }
 
+/**
+ * #494 item 1: would a re-paste of this job (same stems and loop length) be free? The same
+ * predicate lib/jobs/create-link-job.ts FREE RE-PASTE funds from (REPASTE_SOURCE_SQL): the
+ * owner's done job whose job_allowance_debits row is still unclaimed. Drives only the Player's
+ * encode_failed sentence (`free_repaste`), so every fault answers false: the copy then makes no
+ * promise, and a charged re-paste is never advertised as free.
+ */
+const FREE_REPASTE_SQL = `SELECT EXISTS (SELECT 1 FROM public.job_allowance_debits d
+  WHERE d.job_id = $1::uuid AND d.user_id = $2::uuid AND d.restored_at IS NULL) AS free`;
+
+async function wouldRepasteBeFree(jobId: string, userId: string): Promise<boolean> {
+  try {
+    const r = await db.query(FREE_REPASTE_SQL, [jobId, userId]);
+    return (r.rows[0] as { free?: unknown } | undefined)?.free === true;
+  } catch (e) {
+    if ((e as { code?: string } | null)?.code !== '42P01') {
+      console.error('GET /api/jobs/[id]/stems: free re-paste read failed:', errLabel(e));
+    }
+    return false;
+  }
+}
+
 // GET /api/jobs/:id/stems — the Opus playback stems for the play-along mixer (V3-J2).
 //
 // Returns one signed GET per retained stem, in mixer channel order. The browser
@@ -238,6 +260,12 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
     }
 
     const state = stemState(playable.size, downloadable.size);
+    // #494 item 1: asked only when the encoder failed, for a signed-in user's job (a demo or an
+    // anonymous job has no debit row). `job.status` is 'done' here (gated above).
+    const freeRepaste =
+      state === 'encode_failed' && typeof job.user_id === 'string' && job.is_demo !== true
+        ? await wouldRepasteBeFree(jobId, job.user_id)
+        : false;
     // NOTE: this route deliberately does NOT report `encode_failed` to Sentry.
     // An earlier version did, and a reviewer pointed out the consequence: the route
     // is unauthenticated, so anyone holding a job UUID could fire an unbounded
@@ -259,6 +287,7 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
         expected: PLAYABLE_STEMS,
         complete: state === 'ready',
         state,
+        free_repaste: freeRepaste,
         expires_in_sec: expiresIn,
       },
       { headers: NO_STORE },

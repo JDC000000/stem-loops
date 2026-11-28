@@ -39,10 +39,16 @@ const PLAY = (s) => `${JOB}/_stems/play/${s}.opus`;
 const DL = (s) => `${JOB}/_stems/dl/${s}.wav`;
 const SIX = ['drums', 'bass', 'guitar', 'keys', 'vocals', 'other'];
 
-function dbStub({ rows, rowCount, dbThrows = false }) {
+function dbStub({ rows, rowCount, dbThrows = false, debit = null }) {
   return dataUrl(`
     export const db = { tx: async (fn) => fn({ query: (t, p) => db.query(t, p) }), query: async (text, params) => {
       globalThis.__st.calls.push(['query', text, params]);
+      // #494 item 1: the free re-paste read. 'throw' = a DB fault; otherwise { free }.
+      if (/job_allowance_debits/.test(text)) {
+        const d = ${JSON.stringify(debit)};
+        if (d === 'throw') throw new Error('debit read failed');
+        return { rows: [{ free: d === null ? false : d.free }], rowCount: 1 };
+      }
       if (${dbThrows}) {
         // Shaped like the errors this handler actually sees: a name, a message, and
         // the extra properties an AWS SDK / pg error hangs off the object.
@@ -127,12 +133,15 @@ async function loadRoute({
   listErrMessage = 'AccessDenied: ListBucket',
   dbThrows = false,
   rateLimited = false,
+  userId = undefined,
+  isDemo = undefined,
+  debit = null,
 } = {}) {
   const expires = expiresAt ?? new Date(Date.now() + 24 * 3600 * 1000).toISOString();
-  const rows = rowCount === 0 ? [] : [{ id: rowId, status, expires_at: expires }];
+  const rows = rowCount === 0 ? [] : [{ id: rowId, status, expires_at: expires, user_id: userId, is_demo: isDemo }];
   let js = toJs(readFileSync(SRC, 'utf8'));
   js = js
-    .replace(/from ['"]@\/lib\/db['"]/g, `from '${dbStub({ rows, rowCount, dbThrows })}'`)
+    .replace(/from ['"]@\/lib\/db['"]/g, `from '${dbStub({ rows, rowCount, dbThrows, debit })}'`)
     .replace(/from ['"]@\/lib\/r2['"]/g, `from '${r2Stub({ keys, listThrows, listErrMessage })}'`)
     .replace(/from ['"]@\/lib\/stem-urls['"]/g, `from '${stemUrlsStub()}'`)
     .replace(/from ['"]@\/lib\/admission['"]/g, `from '${admissionStub({ rateLimited })}'`)
@@ -716,4 +725,55 @@ test('encode_failed does NOT report to Sentry from the route', async () => {
     [],
     'no Sentry message from the route on encode_failed',
   );
+});
+
+// ---------- #494 item 1: free_repaste drives the Player's encode_failed promise ----------
+const OWNER = '33333333-3333-4333-8333-333333333333';
+const debitReads = () => globalThis.__st.calls.filter((c) => c[0] === 'query' && /job_allowance_debits/.test(c[1]));
+
+test('#494-1: encode_failed, owner job with an UNCLAIMED debit row → free_repaste true', async () => {
+  const mod = await loadRoute({ keys: SIX.map(DL), userId: OWNER, debit: { free: true } });
+  const res = await call(mod);
+  assert.equal(res.status, 200);
+  assert.equal(res.body.state, 'encode_failed');
+  assert.equal(res.body.free_repaste, true);
+  const reads = debitReads();
+  assert.equal(reads.length, 1);
+  assert.deepEqual(reads[0][2], [JOB, OWNER], 'keyed on the DB row id and its owner');
+  assert.match(reads[0][1], /d\.job_id = \$1::uuid AND d\.user_id = \$2::uuid AND d\.restored_at IS NULL/);
+});
+
+test('#494-1: encode_failed but the row is claimed / absent (a free re-paste that failed) → false', async () => {
+  const mod = await loadRoute({ keys: SIX.map(DL), userId: OWNER, debit: { free: false } });
+  const res = await call(mod);
+  assert.equal(res.body.free_repaste, false);
+});
+
+test('#494-1: a debit-read fault answers false (no promise), never a 500', async () => {
+  const cap = captureConsoleError();
+  try {
+    const mod = await loadRoute({ keys: SIX.map(DL), userId: OWNER, debit: 'throw' });
+    const res = await call(mod);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.state, 'encode_failed');
+    assert.equal(res.body.free_repaste, false);
+  } finally {
+    cap.restore();
+  }
+});
+
+test('#494-1: not asked unless encode_failed on a signed-in, non-demo job', async () => {
+  for (const opts of [
+    { keys: [...SIX.map(PLAY), ...SIX.map(DL)], userId: OWNER, debit: { free: true } }, // ready
+    { keys: [], userId: OWNER, debit: { free: true } }, // unavailable
+    { keys: SIX.map(DL), userId: null, debit: { free: true } }, // anonymous
+    { keys: SIX.map(DL), userId: OWNER, isDemo: true, debit: { free: true } }, // demo
+  ]) {
+    globalThis.__st = { calls: [], minted: [], sentry: [] };
+    const mod = await loadRoute(opts);
+    const res = await call(mod);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.free_repaste, false, JSON.stringify(opts));
+    assert.equal(debitReads().length, 0, 'no debit read');
+  }
 });

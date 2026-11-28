@@ -33,13 +33,23 @@
 // no access decision rests on getSession() here.
 //
 // EVERY CALL IS BOUNDED (#514). The client is built with a fetch that aborts any request still
-// open after 2 s (REVOKE_TIMEOUT_MS), so a black-holed Supabase cannot hold sign-out. supabase-js
+// open after 2 s (REVOKE_TIMEOUT_MS), so a black-holed Supabase cannot hold any one call. supabase-js
 // 2.117.3 takes no signal on signOut()/admin.signOut(), but sends every auth request through the
 // client's global.fetch and turns a rejected fetch (an abort included) into
 // AuthRetryableFetchError: a timeout is retried like any network failure, inside the same two
-// retries. Worst case ~6.6 s (three 2 s calls and the backoff); then the cookies are cleared and
-// the 303 returned as usual. The wrapper adds only the signal: it never reads, logs or alters the
-// request, so the token goes nowhere but its own /logout call.
+// retries: ~6.6 s for the three /logout calls and the backoff. The wrapper adds only the signal:
+// it never reads, logs or alters the request, so the token goes nowhere but its own /logout call.
+//
+// ONE DEADLINE OVER THE WHOLE SUPABASE BLOCK (#514, PR #533 R1). The per-call bound does not cap
+// the token read: when the stored access token is expired or under 90 s from expiry, getSession()
+// refreshes it, and auth-js retries a failed refresh with backoff for ~30 s (measured 26.7 s
+// against a black-holed Supabase, every attempt cut at 2 s). So getSession, signOut and the
+// retries together race SUPABASE_DEADLINE_MS (7 s, above the 6.6 s revoke budget, so a fresh-token
+// sign-out is not cut short). Past it the route stops waiting, reports once to Sentry (an error
+// of its own, no token), clears the cookies and returns the 303 exactly as when every call times
+// out; the abandoned block catches its own errors and changes nothing the response depends on.
+// The route's real bound is therefore ~7 s plus the cookie clear. Not covered here: middleware.ts
+// runs getUser() on this path before the route, unbounded (tracked separately).
 //
 // SL-HISTORY IS CLEARED TOO (#486). The signed `sl-history` cookie mirrors this browser's
 // anonymous song history and is never scoped to a user (components/chrome/SignedInChrome.tsx).
@@ -71,6 +81,9 @@ const REVOKE_RETRY_DELAYS_MS = [150, 450] as const;
 
 /** The longest any one Supabase request from this route may stay open (#514). */
 const REVOKE_TIMEOUT_MS = 2000;
+
+/** The longest the whole Supabase block (token read, revoke, retries) may hold sign-out (#514). */
+const SUPABASE_DEADLINE_MS = 7000;
 
 /** fetch, aborted after REVOKE_TIMEOUT_MS (a TimeoutError). auth-js 2.117.3 passes no signal of
  *  its own, so this one is the only one. The timer runs on setTimeout and is cleared once the
@@ -125,28 +138,41 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  let failure: unknown = null;
-  try {
-    const supabase = await createServerClient({ fetch: boundedFetch });
-    let token: string | undefined;
+  // The token read, the revoke and its retries, under one deadline (#514). Never rejects.
+  const revoke = async (): Promise<unknown> => {
     try {
-      const { data } = await supabase.auth.getSession();
-      token = data.session?.access_token ?? undefined;
-    } catch {
-      // No token to retry with; the first signOut below still runs.
+      const supabase = await createServerClient({ fetch: boundedFetch });
+      let token: string | undefined;
+      try {
+        const { data } = await supabase.auth.getSession();
+        token = data.session?.access_token ?? undefined;
+      } catch {
+        // No token to retry with; the first signOut below still runs.
+      }
+      let failure = await attempt(() => supabase.auth.signOut({ scope: 'local' }));
+      for (const delay of REVOKE_RETRY_DELAYS_MS) {
+        if (failure === null || !token || !isRetryable(failure)) break;
+        await sleep(delay);
+        const jwt = token;
+        failure = await attempt(() => supabase.auth.admin.signOut(jwt, 'local'));
+        if (failure !== null && isGone(failure)) failure = null;
+      }
+      return failure;
+    } catch (err) {
+      // Supabase env missing: nothing could be revoked. Still clear the cookies below.
+      return err;
     }
-    failure = await attempt(() => supabase.auth.signOut({ scope: 'local' }));
-    for (const delay of REVOKE_RETRY_DELAYS_MS) {
-      if (failure === null || !token || !isRetryable(failure)) break;
-      await sleep(delay);
-      const jwt = token;
-      failure = await attempt(() => supabase.auth.admin.signOut(jwt, 'local'));
-      if (failure !== null && isGone(failure)) failure = null;
-    }
-  } catch (err) {
-    // Supabase env missing: nothing could be revoked. Still clear the cookies below.
-    failure = err;
-  }
+  };
+  let deadline: ReturnType<typeof setTimeout> | undefined;
+  const failure: unknown = await Promise.race([
+    revoke(),
+    new Promise<unknown>((resolve) => {
+      deadline = setTimeout(
+        () => resolve(new Error(`sign-out Supabase block passed its ${SUPABASE_DEADLINE_MS} ms deadline`)),
+        SUPABASE_DEADLINE_MS,
+      );
+    }),
+  ]).finally(() => clearTimeout(deadline));
   if (failure !== null) {
     Sentry.captureException(failure, { tags: { route: 'api/auth/signout', revoke: 'failed' } });
   }

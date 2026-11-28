@@ -88,6 +88,8 @@ const SUPABASE = (mode) =>
     return { auth: {
       getSession: async () => {
         so.getSession += 1;
+        // #514 R1: an expired token makes auth-js refresh it, retrying for ~30 s; here it never ends.
+        if (${JSON.stringify(mode)} === 'session-hang') return new Promise(() => {});
         return { data: { session: so.token ? { access_token: so.token } : null }, error: null };
       },
       signOut: async (opts) => {
@@ -118,7 +120,12 @@ const OTHER_COOKIES = ['sb-abcd-something-else', 'theme', 'sl-history-x'];
 const NET = { name: 'AuthRetryableFetchError', status: 0, message: 'fetch failed' };
 const FAKE_TOKEN = 'fake-access-token-for-tests';
 
-async function callRoute({ mode = 'ok', headers = sameOriginHeaders(), adminResults = [], token = FAKE_TOKEN } = {}) {
+/** The overall deadline on the route's Supabase block (#514 R1). */
+const SUPABASE_DEADLINE_MS = 7000;
+
+/** `deadlineAfterMs`: how long (real ms) the harness lets the deadline timer run before firing it.
+ *  Every other timer fires at once; this one waits, so a block that ends in time beats it. */
+async function callRoute({ mode = 'ok', headers = sameOriginHeaders(), adminResults = [], token = FAKE_TOKEN, deadlineAfterMs = 500 } = {}) {
   const js = toJs(readFileSync(ROUTE_SRC, 'utf8'))
     .replace(SAME_ORIGIN_IMPORT_RE, `from '${SAME_ORIGIN_URL}'`)
     .replace(/from ['"]next\/server['"]/g, `from '${NEXT_SERVER}'`)
@@ -129,14 +136,25 @@ async function callRoute({ mode = 'ok', headers = sameOriginHeaders(), adminResu
   globalThis.__so = {
     jar: new Map([...CLEARED, ...OTHER_COOKIES].map((n) => [n, 'v'])),
     deleted: [], signOut: [], sentry: [], admin: [], adminResults: [...adminResults], token, getSession: 0,
-    delays: [], fetches: [], clientFetch: undefined,
+    delays: [], fetches: [], clientFetch: undefined, deadlines: [], deadlineFired: false, cleared: new Set(),
   };
   const mod = await import(dataUrl(js) + '#' + Math.random());
   assert.equal(mod.GET, undefined, 'sign-out must not answer GET (a link or <img> could trigger it)');
   // The retry backoff runs on setTimeout: record each delay and fire it at once.
   // So does the per-call fetch timeout (#514), which is why a black-holed call ends at once here.
   const realSetTimeout = globalThis.setTimeout;
-  globalThis.setTimeout = (fn, ms) => { globalThis.__so.delays.push(ms); return realSetTimeout(fn, 0); };
+  const realClearTimeout = globalThis.clearTimeout;
+  globalThis.setTimeout = (fn, ms) => {
+    const so = globalThis.__so;
+    if (ms === SUPABASE_DEADLINE_MS) {
+      const handle = realSetTimeout(() => { so.deadlineFired = true; fn(); }, deadlineAfterMs);
+      so.deadlines.push(handle);
+      return handle;
+    }
+    so.delays.push(ms);
+    return realSetTimeout(fn, 0);
+  };
+  globalThis.clearTimeout = (handle) => { globalThis.__so.cleared.add(handle); return realClearTimeout(handle); };
   // A black-holed Supabase: the request never answers. It ends only if its signal aborts.
   const realFetch = globalThis.fetch;
   // Unless the next admin result is 'answer': then Supabase replies 204 at once.
@@ -161,9 +179,10 @@ async function callRoute({ mode = 'ok', headers = sameOriginHeaders(), adminResu
       new Promise((_, reject) => {
         guard = realSetTimeout(() => reject(new Error('sign-out hung: a /logout call is unbounded')), 1000);
       }),
-    ]).finally(() => clearTimeout(guard));
+    ]).finally(() => realClearTimeout(guard));
   } finally {
     globalThis.setTimeout = realSetTimeout;
+    globalThis.clearTimeout = realClearTimeout;
     globalThis.fetch = realFetch;
   }
   return { mod, res, so: globalThis.__so };
@@ -291,6 +310,38 @@ test('signout #514: every call black-holed — each is bounded, two retries, the
   assert.doesNotMatch(JSON.stringify(so.sentry), new RegExp(FAKE_TOKEN), 'the token reached Sentry');
   assert.deepEqual([...so.deleted].sort(), [...CLEARED].sort());
   assert.deepEqual([...so.jar.keys()].sort(), [...OTHER_COOKIES].sort());
+});
+
+// #514 R1: getSession() is not capped by the per-call bound (an expired token makes auth-js retry
+// its refresh for ~30 s), so the whole Supabase block races one 7 s deadline.
+test('signout #514 R1: the token read hangs forever — the deadline ends the wait, cookies cleared, 303', { timeout: 5000 }, async () => {
+  const { res, so } = await callRoute({ mode: 'session-hang', deadlineAfterMs: 0 });
+  assert.equal(so.deadlines.length, 1, 'exactly one deadline, of SUPABASE_DEADLINE_MS');
+  assert.equal(so.deadlineFired, true);
+  assert.equal(so.getSession, 1);
+  assert.deepEqual(so.signOut, [], 'the block was still stuck in the token read');
+  assert.equal(res.status, 303);
+  assert.equal(res.headers.get('Location'), '/');
+  assert.equal(res.headers.get('Cache-Control'), 'no-store');
+  assert.deepEqual([...so.deleted].sort(), [...CLEARED].sort(), 'session cookies and sl-history cleared');
+  assert.deepEqual([...so.jar.keys()].sort(), [...OTHER_COOKIES].sort());
+  assert.equal(so.sentry.length, 1, 'the deadline is reported once');
+  assert.deepEqual(so.sentry[0].tags, { route: 'api/auth/signout', revoke: 'failed' });
+  assert.match(so.sentry[0].message, /deadline/);
+  assert.doesNotMatch(JSON.stringify(so.sentry), new RegExp(FAKE_TOKEN), 'the token reached Sentry');
+});
+
+test('signout #514 R1: a block that ends in time clears the deadline timer (it never fires)', { timeout: 5000 }, async () => {
+  for (const [mode, adminResults] of [['ok', []], ['hang', ['hang', 'hang', 'hang']]]) {
+    const { res, so } = await callRoute({ mode, adminResults, deadlineAfterMs: 100 });
+    assert.equal(res.status, 303);
+    assert.equal(so.deadlines.length, 1, 'exactly one deadline, of SUPABASE_DEADLINE_MS');
+    const [handle] = so.deadlines;
+    assert.ok(so.cleared.has(handle), `${mode}: the deadline timer was not cleared`);
+    await new Promise((r) => setTimeout(r, 150)); // past when the deadline would have fired
+    assert.equal(so.deadlineFired, false, `${mode}: the deadline fired after the block finished`);
+    assert.equal(so.sentry.length, mode === 'ok' ? 0 : 1);
+  }
 });
 
 test('signout: CSRF — cross-origin, null, missing Origin or Host are refused and nothing is cleared', async () => {

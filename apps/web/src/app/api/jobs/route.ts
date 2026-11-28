@@ -429,7 +429,7 @@ export async function POST(request: NextRequest) {
           loopLengthBars: bodyObj.loop_length_bars,
           clientIpHash: () => clientIpHashOf(request),
           // QW-2: a done hit is reused only if it can still play (lib/jobs/stem-artifacts.ts);
-          // the probe spends this caller's per-IP stem-list budget.
+          // the probe spends this caller's own per-IP paste-probe budget (#494 item 4).
           ...pasteHooks({ clientIpHash: () => clientIpHashOf(request) }),
         },
         linkJobDeps(),

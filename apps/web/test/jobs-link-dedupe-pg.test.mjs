@@ -282,6 +282,34 @@ test('QW-2 + #494-1: re-paste of a done job with no playable stems -> a new job,
   }
 });
 
+test('#494-3: no 3-skip cap — 4 newer unplayable done jobs, an OLDER playable one is reused ($7 skip list grows past 3)', { skip }, async () => {
+  const u = await user();
+  const url = canon(vid());
+  as(u);
+  const ids = [randomUUID(), randomUUID(), randomUUID(), randomUUID(), randomUUID()]; // ids[0] oldest, playable
+  for (const [i, id] of ids.entries()) {
+    await pool.query(
+      `INSERT INTO jobs (id, youtube_url, requested_stems, loop_length_bars, status, client_ip_hash, client_fingerprint, user_id, created_at)
+       VALUES ($1, $2, $3, 4, 'done', 'x', '', $4::uuid, now() - make_interval(secs => $5::int))`,
+      [id, url, ['drums', 'bass', 'vocals', 'guitar', 'keys', 'other'], u.user_id, 100 - i],
+    );
+  }
+  globalThis.__ldBroken = ids.slice(1);
+  try {
+    const before = await counts(u, url);
+    const r = await paste(url);
+    assert.deepEqual([r.status, r.body], [200, HIT(ids[0])]);
+    assert.deepEqual(await counts(u, url), before, 'nothing charged, no job, no burst row');
+    // All five unplayable → a new job (charged here: none has a debit row to fund it).
+    globalThis.__ldBroken = ids;
+    const fresh = await paste(url);
+    assert.equal(fresh.status, 201, JSON.stringify(fresh.body));
+    assert.equal(!ids.includes(fresh.body.id), true);
+  } finally {
+    globalThis.__ldBroken = undefined;
+  }
+});
+
 test('#494-1 abuse bound: one free re-paste per charged job; trial spent → still free; the free job never funds another', { skip }, async () => {
   const u = await user({ trial: true });
   const url = canon(vid());

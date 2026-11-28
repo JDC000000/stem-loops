@@ -506,3 +506,14 @@ def test_swallowed_klangio_attempt_still_fails_the_run(guard, capsys):
     with pytest.raises(bcb.KlangioForbidden):
         bcb.run(deps, limit=None, since=None, timeout=5.0)
     bcb._KLANGIO_CONSTRUCTED = 0
+
+
+def test_klangio_attempt_while_loading_chords_stops_the_run(guard):
+    h = _standard_harness()
+
+    def get_object(Bucket, Key):  # noqa: N803, ARG001
+        raise bcb.KlangioForbidden("x")
+
+    h.s3.get_object = get_object
+    with pytest.raises(bcb.KlangioForbidden):
+        bcb.run(h.deps(), limit=None, since=None, timeout=5.0)

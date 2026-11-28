@@ -234,3 +234,89 @@ Two notes for anyone extending this file:
   by `GET /api/jobs/[id]/download`; this smoke test does not exercise that route.
   **`export_wav24` is false on every plan**: 24-bit WAV loops are available on
   every tier rather than being a paid differentiator.
+
+## Post-merge production web smoke (read-only)
+
+`scripts/smoke_prod_web.mjs` answers one question after a merge to `v3/main`
+(Vercel rebuilds production web on every merge; J1a, Jon L9): **is production
+web up, in the expected posture, and serving the expected build?** It is
+**read-only**: unauthenticated `GET`s only. No sign-in, no cookie, no
+Authorization header, no POST, no job creation, no spend. Zero npm dependencies
+(Node 18+). It is a different script from the staging billing smoke above, and
+it needs no secrets.
+
+**A green run proves the build only when `EXPECT_DPL` was set.** Without it the
+script checks only that every page carries one deployment id and that all the
+pages agree. A stale or failed Vercel build leaves the previous deployment
+serving, and that deployment passes every other check. The last line of the
+output says `build VERIFIED (dpl_...)` or `build NOT verified`. Treat
+`NOT verified` as unproven, not as green.
+
+### How 24A runs it after each merge
+
+1. Wait about 2 minutes for the Vercel production build. Then read the GitHub
+   production deployment for the merge commit. The environment is
+   `Production – stem-loops-web` (with an en dash). The older `production`
+   environment is a different, stale one (last entry 61173f9, `failure`).
+   ```
+   ENV='Production%20%E2%80%93%20stem-loops-web'
+   gh api "repos/JDC000000/stem-loops/deployments?environment=$ENV&per_page=1" --jq '.[0] | .sha, .id'
+   gh api repos/JDC000000/stem-loops/deployments/<id>/statuses \
+     --jq '.[0] | .state, .environment_url'      # want: success, https://stem-loops-<hash>-jdci-nc.vercel.app
+   ```
+   Check that `.sha` is the merge commit and the state is `success`.
+2. Get the expected deployment id. **The GitHub record has no `dpl_` id.** It
+   has only the deployment URL (`environment_url`, `target_url` and `log_url`,
+   which are all the same), and its `payload` is `{}`. Checked on deployment
+   8122701813 (75ea4e9). Vercel maps that URL to its id. Use one of:
+   - Vercel MCP: `get_deployment` with `idOrUrl=<environment_url host>`. Read
+     `.id`, and check that `.meta.githubCommitSha` is the merge SHA and that
+     `.alias` includes `stem-loops.com`.
+   - Vercel CLI `vercel inspect <environment_url>`, or the Vercel REST API
+     `GET https://api.vercel.com/v13/deployments/<host>` with a read token.
+     Neither was tried here: this sandbox has no Vercel CLI or token. The MCP
+     route was tried, and it returned `dpl_HkpHRQfrn3Bj4e9QYTMu3kHy3LZH` for
+     75ea4e9, which matched the live pages.
+
+   Fetching the deployment URL directly from the agent sandbox does not work:
+   the egress proxy refuses `*.vercel.app` (CONNECT 403).
+3. Run `EXPECT_DPL=dpl_... node scripts/smoke_prod_web.mjs`.
+   - Exit `0`: all checks PASS or SKIP, and at least one ran.
+   - Exit `1`: any FAIL, including a dpl mismatch, or zero checks ran.
+   - Exit `2`: unusable `SMOKE_BASE_URL`, `EXPECT_DPL`, `SMOKE_TIMEOUT_MS` or
+     `SMOKE_DEADLINE_MS`.
+
+   Runtime is a few seconds.
+
+`EXPECT_SHA=<sha>` is accepted but can only SKIP. The site exposes no git SHA:
+apps/web has no build-id meta, no SHA header and no health route, and the apps
+freeze forbids adding one. Step 2 is how a SHA becomes a checkable id.
+
+| Check | Expects (pinned to apps/web at main; file:line is in the script) |
+|---|---|
+| `/`, `/pricing`, `/login`, `/help`, `/terms`, `/privacy` | HTTP 200 (redirects are not followed). The page's `<title>`, plus a body marker in the rendered markup (not inside a `<script>` payload or a comment). |
+| security headers on `/` | `X-Frame-Options: DENY`, `nosniff`, CSP `frame-ancestors 'none'` |
+| `/pricing` health | no "live plan data is temporarily unavailable" banner (DB down) |
+| checkout hidden | Every card except Free shows `data-testid="checkout-unavailable"` and "Coming soon — free during the beta". The page has none of `Get Pro`, `Get Studio`, `Buy credits`, `return_to=/pricing`, `/api/billing/checkout` or the hCaptcha label. |
+| `/terms` beta copy | "aren’t on sale during the beta" |
+| demos (every one in `/api/demos`, max 10) | `/demo/<slug>` returns 200 with the exact title "Play along to <title> · stem-loops" and the player body. `/api/jobs/<id>` signed out returns 200 with `done` and `is_demo`, a non-empty `loops`, no owner-only fields and no signed loop URLs. |
+| private APIs | A signed-out `GET` of `/api/library`, `/api/billing/credits/balance` or `/api/set-lists` returns exactly 401 with the app's JSON code. A 403, or an HTML 401 from an edge, FAILs. |
+| build identity | Every HTML page carries exactly one `dpl=dpl_...`, and all pages carry the same one. With `EXPECT_DPL` set, it must equal that. |
+
+Bounds:
+- 15 s per request (`SMOKE_TIMEOUT_MS`, max 60000) and 100 s overall
+  (`SMOKE_DEADLINE_MS`, max 600000).
+- One retry, on a network error only. Timeouts and HTTP statuses are never
+  retried.
+
+HTML GETs carry `?smoke=<ts>`. Vercel's CDN still answers static pages from
+cache with it (`x-vercel-cache: HIT` was observed), so the dpl check, not the
+query, is what catches a stale build.
+
+`SMOKE_BASE_URL` points the script at another origin, such as a preview URL.
+
+When checkout is re-enabled in January, the "checkout hidden" and terms checks
+are expected to FAIL. Update them in the same change.
+
+Tests use a stub server and no network. They are not run by CI yet, so run
+them by hand: `node --test scripts/smoke_prod_web.test.mjs`.

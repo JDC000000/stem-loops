@@ -20,6 +20,13 @@ RUN pip install --no-cache-dir -r requirements.txt -c constraints-prod.txt
 
 # Production image
 FROM deps AS production
+# BTC chord weights (CHORDS_PROVIDER=btc only; default is klangio). Fetched at build from a
+# pinned commit and SHA-256-checked, never committed and never fetched at runtime. --soft: a
+# GitHub outage leaves no file and does not fail the build (btc then fails per job with a
+# provider_failed tombstone); klangio is unaffected. Own layer, cached across code changes.
+COPY scripts/fetch_btc_weights.py /tmp/fetch_btc_weights.py
+RUN python /tmp/fetch_btc_weights.py --soft /app/models/btc/btc_model_large_voca.pt \
+    && rm /tmp/fetch_btc_weights.py
 COPY . .
 
 # Health check

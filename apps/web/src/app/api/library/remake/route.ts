@@ -14,8 +14,8 @@
 //   beforeInsert  locks the entry row FOR UPDATE in the insert tx and repeats the lookup, so
 //                 two concurrent Re-makes make one job and one debit.
 // Neither hook writes the entry; the job's expires_at is the INSERT default (Free's 24 h, or
-// the paid library rule read at serve time). Refusals keep the status the job route gives and
-// carry existing copy (lib/error-copy.ts entitlementMessage); nothing new is added there.
+// the paid library rule read at serve time). Refusals keep the status and body the job lib gives
+// (its copy comes from lib/error-copy.ts); nothing new is added there.
 //
 // Errors: 400 INVALID_REQUEST · 401 AUTH_REQUIRED · 403 BAD_ORIGIN / DOWNLOAD_INVALID_URL
 //         (links paused) · 404 NOT_FOUND · 409 UPLOAD_AGAIN · 402 / 429 / 503 from the gates ·
@@ -128,11 +128,9 @@ export async function POST(request: NextRequest) {
       if (err instanceof EntryGone) return notFound();
       throw err;
     }
-    // The two gate refusals the job route builds without a `message` get the existing copy.
-    const out: Record<string, unknown> = { ...r.body };
-    if (!out.message && out.code === 'quota_exceeded') out.message = entitlementMessage('FREE_MONTHLY_QUOTA_EXHAUSTED');
-    if (!out.message && out.code === 'rate_limit_burst') out.message = entitlementMessage('RATE_LIMITED');
-    return NextResponse.json(out, { status: r.status, headers: { ...NO_STORE, ...(r.headers ?? {}) } });
+    // The lib's refusal bodies carry their own sentence (QW-1: quotaRefusalBody /
+    // burstRefusalBody), so the body is returned as it is (#489: the old back-fill was dead).
+    return NextResponse.json(r.body, { status: r.status, headers: { ...NO_STORE, ...(r.headers ?? {}) } });
   } catch (err) {
     Sentry.captureException(err);
     console.error('POST /api/library/remake error:', err instanceof Error ? err.message : 'unknown');

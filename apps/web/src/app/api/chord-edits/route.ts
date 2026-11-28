@@ -36,7 +36,9 @@ import { HARTE_RE } from '@/chord/harte';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const SHA256_HEX_RE = /^[0-9a-f]{64}$/;
-const PROVIDERS = new Set(['klangio', 'internal', 'autochord']);
+// 'btc' = the self-hosted BTC worker provider (chord_providers/btc.py, DR-D1 D1a); keep in
+// sync with chord/edit-collector.ts ChordProvider.
+const PROVIDERS = new Set(['klangio', 'internal', 'autochord', 'btc']);
 const RATE_LIMIT_PER_HOUR = 60;
 
 // Length / range caps (mirror migration 026).

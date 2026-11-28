@@ -104,7 +104,7 @@ test('D-03: lib/error-copy.ts has no curly apostrophes among its straight-quoted
   const src = read('lib/error-copy.ts');
   assert.doesNotMatch(src, /[‘’]/, 'use a straight apostrophe in a double-quoted string');
   assert.match(src, /"You've used this month's allowance on your plan\./);
-  assert.match(src, /"We couldn't finish this track\. Try another file\."/);
+  assert.match(src, /"We couldn't finish this song\. Try another file\."/);
 });
 
 // ── CA-11 / F72: RATE_LIMITED says which of its two causes refused you ─────────────────
@@ -165,4 +165,52 @@ test('CA-15: StartTrialButton.tsx is gone and nothing imports it', () => {
   };
   walk(SRC(''));
   for (const f of files) assert.doesNotMatch(readFileSync(f, 'utf8'), /import[^;]*StartTrialButton/, f);
+});
+
+// ── #498: the tone guide no longer approves "tracks" as the limits / billing unit ──────
+
+test('#498: BRAND-TONE.md counts songs for limits and billing, and no longer lists "free tracks this month"', () => {
+  const tone = readFileSync(join(WEB, '..', '..', 'docs', 'seo', 'BRAND-TONE.md'), 'utf8');
+  assert.doesNotMatch(tone, /free tracks this month|\d+ tracks a month|one uploaded track/);
+  assert.match(tone, /\| \*\*song\*\* \|[^\n]*"5 songs a month", "free songs this month"/);
+  assert.match(tone, /\| \*\*track\*\* \| Never the unit for limits or billing/);
+});
+
+// ── #512: the "track" leftovers #503 missed (credits copy, tone-guide error example, SEO plan) ──
+// Noun-only: "song" is the unit for limits and billing (BRAND-TONE.md glossary, #497/#498).
+// The numbers, prices and plan names in these sentences are pinned unchanged.
+
+test('#512: the pricing Credits lede counts one uploaded song, not a track', () => {
+  const src = read('app/pricing/page.tsx');
+  assert.match(
+    src,
+    /<p className="pr-lede">One credit is one uploaded song on the Free plan\. Credits never expire\.<\/p>/,
+  );
+  assert.doesNotMatch(src, /uploaded track/);
+});
+
+test('#512: the credit-pack receipt note counts one uploaded song, not a track (rendered)', async () => {
+  const sharedUrl = dataUrl(toJs(read('lib/emails/templates/shared.ts')));
+  const js = toJs(read('lib/emails/templates/receipt.ts'))
+    .replace(/from ['"]@\/lib\/billing\/types['"]/g, `from '${dataUrl('export {};')}'`)
+    .replace(/from ['"]\.\/shared['"]/g, `from '${sharedUrl}'`);
+  const { renderReceipt } = await import(dataUrl(js) + '#512');
+  const pack = renderReceipt({ amount_cad_cents: 500, plan_or_pack_label: '20 credits', invoice_url: null, kind: 'credit_pack', paid_on: '2026-11-13T10:00:00Z' });
+  assert.match(pack.text, /Credits never expire\. Each one covers one uploaded song on the Free plan\./);
+  assert.doesNotMatch(pack.text + pack.html, /uploaded track/);
+});
+
+test('#512: BRAND-TONE.md error examples say "song", in both places', () => {
+  const tone = readFileSync(join(WEB, '..', '..', 'docs', 'seo', 'BRAND-TONE.md'), 'utf8');
+  const example = '"This song is too short or has no steady beat. Try a longer song with a clear beat."';
+  assert.equal(tone.split(example).length - 1, 2, 'rule 2 "Name one cause" + the Errors row of the tone table');
+  assert.doesNotMatch(tone, /This track is too short|Try a longer track/);
+});
+
+test('#512: SEO-AIO-PLAN.md states our free limit in songs (§2 A3, §4.0 rule, §4.2 fact table)', () => {
+  const plan = readFileSync(join(WEB, '..', '..', 'docs', 'seo', 'SEO-AIO-PLAN.md'), 'utf8');
+  assert.match(plan, /Ours, free: six stems, including guitar and keys; also 5 songs a month, the same cap/);
+  assert.match(plan, /"free: 5 songs a month", "six stems free"/);
+  assert.match(plan, /\| Free limits \| \*\*5 songs a calendar month\*\*/);
+  assert.doesNotMatch(plan, /\d+ tracks a month|\| Free limits \| \*\*\d+ tracks/);
 });

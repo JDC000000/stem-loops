@@ -54,7 +54,7 @@ const CASES = [
     name: 'R2 welcome',
     render: () => renderWelcome({ plan_code: 'pro', period_end: '2027-01-15T00:00:00Z', monthly_job_quota: 50 }),
     subject: 'Welcome to stem-loops',
-    lead: 'Thanks for subscribing. Your Pro plan is active, covers 50 tracks a month and renews on 15 January 2027.',
+    lead: 'Thanks for subscribing. Your Pro plan is active, covers 50 songs a month and renews on 15 January 2027.',
     cta: ['Add a song', 'https://stem-loops.com/'],
     why: WHY_SERVICE,
   },
@@ -78,7 +78,7 @@ const CASES = [
     name: 'R4 active (re-subscriber)',
     render: () => renderSubscriptionChanged({ plan_code: 'pro', status: 'active', period_end: '2027-01-15T00:00:00Z', monthly_job_quota: 50 }),
     subject: 'Your stem-loops Pro plan is active',
-    lead: 'Your Pro plan is active. It covers 50 tracks a month and renews on 15 January 2027.',
+    lead: 'Your Pro plan is active. It covers 50 songs a month and renews on 15 January 2027.',
     cta: ['Manage your plan', 'https://stem-loops.com/account'],
     why: WHY_SERVICE,
   },
@@ -86,7 +86,7 @@ const CASES = [
     name: 'R4 switched',
     render: () => renderSubscriptionChanged({ plan_code: 'studio', previous_plan_code: 'pro', status: 'active', period_end: '2027-01-15T00:00:00Z', monthly_job_quota: 150 }),
     subject: 'Your stem-loops plan is now Studio',
-    lead: 'Your plan changed from Pro to Studio. It covers 150 tracks a month and renews on 15 January 2027.',
+    lead: 'Your plan changed from Pro to Studio. It covers 150 songs a month and renews on 15 January 2027.',
     cta: ['Manage your plan', 'https://stem-loops.com/account'],
     why: WHY_SERVICE,
   },
@@ -102,7 +102,7 @@ const CASES = [
     name: 'R4 active again',
     render: () => renderSubscriptionChanged({ plan_code: 'pro', status: 'active', resumed: true, period_end: '2027-01-15T00:00:00Z', monthly_job_quota: 50 }),
     subject: 'Your stem-loops Pro plan is active',
-    lead: 'Your Pro plan is active again. It covers 50 tracks a month and renews on 15 January 2027.',
+    lead: 'Your Pro plan is active again. It covers 50 songs a month and renews on 15 January 2027.',
     cta: ['Manage your plan', 'https://stem-loops.com/account'],
     why: WHY_SERVICE,
   },
@@ -223,12 +223,12 @@ test('shell escapes subject, preheader and footer; CTA URL goes through safeUrl'
 
 test('R2 welcome: quota per plan, renewal date in prose, one button, no /pricing', () => {
   const studio = renderWelcome({ plan_code: 'studio', period_end: '2027-03-02T00:00:00Z', monthly_job_quota: 150 });
-  assert.match(studio.text, /Your Studio plan is active, covers 150 tracks a month and renews on 2 March 2027\./);
+  assert.match(studio.text, /Your Studio plan is active, covers 150 songs a month and renews on 2 March 2027\./);
   assert.equal(count(studio.html, /<a href=/g), 3, 'CTA + account link + footer site link; no second button');
   // No plan details known: still true, no invented numbers.
   const bare = renderWelcome();
   assert.match(bare.text, /Thanks for subscribing\. Your plan is active\./);
-  assert.doesNotMatch(bare.text, /tracks a month|renews on/);
+  assert.doesNotMatch(bare.text, /(tracks|songs) a month|renews on/);
   assert.match(bare.text, /Songs longer than 5 minutes use the first 5 minutes/);
 });
 
@@ -291,9 +291,9 @@ test('R6 plan ended: ended date is never in the future', () => {
 
 test('R6 plan ended: Free quota from plans; no Free claim when another plan still entitles', () => {
   const free = renderPlanEnded({ plan_code: 'pro', period_end: null, now: '2026-11-14T00:00:00Z', free_quota: 5 });
-  assert.match(free.text, /The Free plan covers 5 tracks a month\. Any credits you hold stay on your account\./);
+  assert.match(free.text, /The Free plan covers 5 songs a month\. Any credits you hold stay on your account\./);
   const unknownQuota = renderPlanEnded({ plan_code: 'pro', period_end: null, now: '2026-11-14T00:00:00Z' });
-  assert.doesNotMatch(unknownQuota.text, /tracks a month/);
+  assert.doesNotMatch(unknownQuota.text, /(tracks|songs) a month/);
   const other = renderPlanEnded({ plan_code: 'pro', period_end: null, now: '2026-11-14T00:00:00Z', on_free: false });
   assert.doesNotMatch(other.text + other.html, /Free plan/);
   assert.match(other.text, /Your Pro plan has ended\. Your other plan is unchanged\./);
@@ -345,4 +345,22 @@ test('library retention: R5 names the 30 days after the end date; R6 says 30 mor
   assert.match(ended.html, /Songs already in your library keep their audio for 30 more days/);
   const other = renderPlanEnded({ plan_code: 'pro', period_end: null, now: '2026-11-14T00:00:00Z', on_free: false });
   assert.doesNotMatch(other.text + other.html, /30 more days/, 'still entitled by another plan: the library is not on a clock');
+});
+
+test('#498: welcome, subscription-changed and plan-ended count songs, never tracks ("chord track" is the feature name)', () => {
+  const renders = {
+    'welcome pro': renderWelcome({ plan_code: 'pro', period_end: '2027-01-15T00:00:00Z', monthly_job_quota: 50 }),
+    'welcome bare': renderWelcome(),
+    'changed active': renderSubscriptionChanged({ plan_code: 'pro', status: 'active', period_end: '2027-01-15T00:00:00Z', monthly_job_quota: 50 }),
+    'changed switched': renderSubscriptionChanged({ plan_code: 'studio', previous_plan_code: 'pro', status: 'active', period_end: '2027-01-15T00:00:00Z', monthly_job_quota: 150 }),
+    'changed resumed': renderSubscriptionChanged({ plan_code: 'pro', status: 'active', resumed: true, period_end: '2027-01-15T00:00:00Z', monthly_job_quota: 50 }),
+    'ended to free': renderPlanEnded({ plan_code: 'pro', period_end: null, now: '2026-11-14T00:00:00Z', free_quota: 5 }),
+  };
+  for (const [name, r] of Object.entries(renders)) {
+    for (const part of [r.subject, r.text, r.html]) {
+      const t = String(part).replace(/\bchord tracks?\b/gi, '');
+      assert.doesNotMatch(t, /\btracks?\b/i, `${name}: ${(t.match(/.{0,40}\btracks?\b.{0,40}/i) || [''])[0]}`);
+    }
+  }
+  assert.match(renders['ended to free'].text, /The Free plan covers 5 songs a month\./);
 });

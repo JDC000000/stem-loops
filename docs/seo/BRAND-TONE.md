@@ -131,15 +131,15 @@ If Jon chooses "Stem Loops", change every instance in one PR, including the pinn
 
 | Term | Rule |
 |---|---|
-| **song** | What the user brings: "Paste a song", "Start a new song". |
-| **track** | Limits, specs and billing: "Uses the first 5 minutes of any song", "5 tracks a month", "free tracks this month". |
+| **song** | What the user brings: "Paste a song", "Start a new song". Also the unit for limits and billing: "5 songs a month", "free songs this month", "add more songs" (#497, #498). |
+| **track** | Never the unit for limits or billing (say "song"; #497, #498). The feature name "chord track" (below) keeps it. |
 | **job** | The processing record. Use it in the UI ("Job history", "job page") and in the landing page's account and stage explanations (pinned: "Starting a job needs no account", `landing-copy.test.mjs:290`). Never in benefit copy. |
 | **stems** | Lowercase, including stem names: drums, bass, guitar, keys, vocals, other (Story 2.1 order). |
 | **player**, **play along** | The noun is lowercase. The nav label is "Play along". Use "play-along" only as an adjective. |
 | **chord track**, **chords** | Lowercase. Symbols as shown: Gm, E♭. Pair with "estimate" on first mention in marketing copy. |
 | **section loop** | Looping a detected section. |
 | **loops** | The second product. Verbs: **cut** and **download**. Never "extract" or "map" in user copy. Nav label when it ships: "Download loops", per Jon's brief and `signed-in-nav.test.mjs:150-157`. |
-| **plans**, **credits** | Free, Pro, Studio are capitalized. "credit pack" and "credits" are lowercase. Each credit covers one uploaded track on the Free plan. |
+| **plans**, **credits** | Free, Pro, Studio are capitalized. "credit pack" and "credits" are lowercase. Each credit covers one uploaded song on the Free plan. |
 | **sign in**, **sign-in** | "Sign in" is the verb; "sign-in" is the noun and adjective. Never "log in" or "login". |
 
 ### Use and avoid
@@ -177,7 +177,7 @@ Status codes from providers keep their own spelling (`canceled`).
 - Length: 1–5 words. Aim for ≤ 20 characters; the hard maximum is 24 ("Email me a one-time link": 5 words, 24 characters).
 
 ### Numerals
-- **Spell out one to nine in running prose:** "six stems", "one uploaded track". "Six stems" is the product phrase (pinned, `landing-copy.test.mjs:422`).
+- **Spell out one to nine in running prose:** "six stems", "one uploaded song". "Six stems" is the product phrase (pinned, `landing-copy.test.mjs:422`).
 - **Use digits for:**
   - 10 and above;
   - any number with a unit: "5 minutes", "8 bars", "200 MB", "102 BPM";

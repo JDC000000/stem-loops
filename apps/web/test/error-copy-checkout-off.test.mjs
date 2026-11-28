@@ -61,8 +61,8 @@ test('checkout OFF (unset, the beta default): no buy instruction, the beta copy 
 
 test('checkout ON (exactly "true"): the original ERROR_COPY sentences come back unchanged', () => {
   setSwitch('true');
-  assert.equal(copy.entitlementMessage('TRIAL_EXHAUSTED'), "You've used all the tracks in your free trial. Pick a plan or buy a credit pack to keep going.");
-  assert.equal(copy.entitlementMessage('CREDIT_BALANCE_INSUFFICIENT'), "You're out of credits. Buy a credit pack to add more tracks.");
+  assert.equal(copy.entitlementMessage('TRIAL_EXHAUSTED'), "You've used all the songs in your free trial. Pick a plan or buy a credit pack to keep going.");
+  assert.equal(copy.entitlementMessage('CREDIT_BALANCE_INSUFFICIENT'), "You're out of credits. Buy a credit pack to add more songs.");
   for (const code of CODES) assert.equal(copy.entitlementMessage(code), line(copy.ERROR_COPY[code]));
 });
 
@@ -132,4 +132,18 @@ test('startRefusalMessage: server sentence first, then the quota / burst sentenc
 test('isFinalStartRefusal: only 402 drops the retry; 429 and 503 pass with time', () => {
   assert.equal(copy.isFinalStartRefusal(402), true);
   for (const s of [400, 401, 403, 429, 500, 503]) assert.equal(copy.isFinalStartRefusal(s), false, String(s));
+});
+
+test('#498: no ERROR_COPY or CHECKOUT_OFF_COPY sentence, and not the failed-job fallback, says "track": the product counts songs (#497)', () => {
+  const lines = [];
+  for (const [name, map] of [['ERROR_COPY', copy.ERROR_COPY], ['CHECKOUT_OFF_COPY', copy.CHECKOUT_OFF_COPY]])
+    for (const [code, c] of Object.entries(map)) lines.push([`${name}.${code}`, `${c.headline} ${c.action}`]);
+  lines.push(['FAILED_JOB_FALLBACK', copy.FAILED_JOB_FALLBACK]);
+  const hits = lines.filter(([, t]) => /\btracks?\b/i.test(t.replace(/\bchord tracks?\b/gi, '')));
+  assert.deepEqual(hits, []);
+  // The three sentences #498 named, as they now read.
+  assert.equal(copy.ERROR_COPY.TRIAL_EXHAUSTED.headline, "You've used all the songs in your free trial.");
+  assert.equal(copy.CHECKOUT_OFF_COPY.TRIAL_EXHAUSTED.headline, "You've used all the songs in your free trial.");
+  assert.equal(copy.ERROR_COPY.CREDIT_BALANCE_INSUFFICIENT.action, 'Buy a credit pack to add more songs.');
+  assert.equal(copy.FAILED_JOB_FALLBACK, "We couldn't finish this song. Try another file.");
 });

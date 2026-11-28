@@ -14,3 +14,6 @@ spikes
 **/*.flac
 .env
 .env.*
+# BTC weights come only from the verified build-time fetch, never from a local copy.
+models
+**/*.pt

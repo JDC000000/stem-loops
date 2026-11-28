@@ -124,8 +124,11 @@ def test_submit_includes_vocabulary_full_by_default_and_hits_real_paths(
         ("GET", f"/job/{JOB}/status"),
         ("GET", f"/job/{JOB}/json"),
     ]
-    assert [(s.start_sec, s.end_sec, s.label) for s in result.segments] == [(0.0, 10.0, "N")]
-    assert result.duration_sec == 10.0
+    # Served [0.0, 10.0] is frame 108 on Klangio's 10/108 s clock = 108 * 2048/22050 s (#524).
+    assert [(s.start_sec, s.end_sec, s.label) for s in result.segments] == [
+        (0.0, 108 * 2048 / 22050, "N")
+    ]
+    assert result.duration_sec == pytest.approx(10.0310, abs=1e-4)
 
 
 def test_multipart_file_field_is_named_file(

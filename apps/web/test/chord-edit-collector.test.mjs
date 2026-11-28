@@ -127,6 +127,14 @@ test('validateChordEdit rejects unknown provider', async () => {
   );
 });
 
+test('validateChordEdit accepts provider btc (DR-D1 D1a) and rejects near misses', async () => {
+  const { validateChordEdit } = await loadCollector();
+  validateChordEdit({ ...VALID, provider: 'btc', providerVersion: 'btc-large-voca@1673d23f8f9a' });
+  for (const provider of ['BTC', 'btc ', 'replicate']) {
+    assert.throws(() => validateChordEdit({ ...VALID, provider }), /provider/, provider);
+  }
+});
+
 test('buffered edits survive a page reload (round-trip through localStorage)', async () => {
   // First "page view": buffer an edit but DO NOT let the flush deliver it.
   fetchImpl = async () => {

@@ -220,6 +220,29 @@ test('400 CHORD_EDIT_INVALID on unknown provider', async () => {
   assert.equal(res.body.error_code, 'CHORD_EDIT_INVALID');
 });
 
+test('201 for provider btc (self-hosted BTC chords, DR-D1 D1a) and it reaches the INSERT', async () => {
+  const mod = await loadRoute({ user: USER, db: { recentCount: 0 } });
+  const res = await mod.POST(
+    makeReq({ ...VALID_BODY, provider: 'btc', provider_version: 'btc-large-voca@1673d23f8f9a' }),
+  );
+  assert.equal(res.status, 201);
+  const insertCall = globalThis.__calls.find(
+    (c) => c.sql && String(c.sql).includes('INSERT INTO public.chord_edits'),
+  );
+  assert.ok(insertCall);
+  assert.equal(insertCall.params[3], 'btc');
+  assert.equal(insertCall.params[4], 'btc-large-voca@1673d23f8f9a');
+});
+
+test('400 CHORD_EDIT_INVALID on near-miss provider spellings (allowlist is exact)', async () => {
+  for (const provider of ['BTC', 'btc ', 'btc2', 'replicate']) {
+    const mod = await loadRoute({ user: USER });
+    const res = await mod.POST(makeReq({ ...VALID_BODY, provider }));
+    assert.equal(res.status, 400, provider);
+    assert.equal(res.body.error_code, 'CHORD_EDIT_INVALID', provider);
+  }
+});
+
 test('400 CHORD_EDIT_INVALID on out-of-range confidence', async () => {
   const mod = await loadRoute({ user: USER });
   const res = await mod.POST(makeReq({ ...VALID_BODY, original_confidence: 1.5 }));

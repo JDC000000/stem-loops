@@ -34,7 +34,8 @@
 
 import { HARTE_RE } from './harte.ts';
 
-export type ChordProvider = 'klangio' | 'internal' | 'autochord';
+// 'btc' = self-hosted BTC worker provider (DR-D1 D1a); mirrors api/chord-edits PROVIDERS.
+export type ChordProvider = 'klangio' | 'internal' | 'autochord' | 'btc';
 
 export interface ChordEdit {
   jobId: string;
@@ -122,8 +123,8 @@ export function validateChordEdit(edit: ChordEdit): void {
   if (edit.originalLabel === edit.correctedLabel) {
     throw new ChordEditValidationError('EDIT_LABELS_DIFFER', 'labels must differ');
   }
-  if (!['klangio', 'internal', 'autochord'].includes(edit.provider)) {
-    throw new ChordEditValidationError('EDIT_PROVIDER', 'provider must be klangio|internal|autochord');
+  if (!['klangio', 'internal', 'autochord', 'btc'].includes(edit.provider)) {
+    throw new ChordEditValidationError('EDIT_PROVIDER', 'provider must be klangio|internal|autochord|btc');
   }
   if (typeof edit.providerVersion !== 'string' || edit.providerVersion.length === 0) {
     throw new ChordEditValidationError('EDIT_PROVIDER_VERSION', 'providerVersion is required');

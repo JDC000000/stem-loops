@@ -206,6 +206,8 @@ export interface EngineSnapshot {
   readonly playbackRate?: number;
   /** True while a requested speed waits for the stretch nodes to start. */
   readonly speedPending?: boolean;
+  /** #448: the requested speed while `speedPending`; absent otherwise. */
+  readonly pendingRate?: number;
 }
 
 /**

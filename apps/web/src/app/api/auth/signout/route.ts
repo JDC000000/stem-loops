@@ -32,6 +32,15 @@
 // `revoke: failed`; the token itself is never logged. The token is used only to revoke itself;
 // no access decision rests on getSession() here.
 //
+// EVERY CALL IS BOUNDED (#514). The client is built with a fetch that aborts any request still
+// open after 2 s (REVOKE_TIMEOUT_MS), so a black-holed Supabase cannot hold sign-out. supabase-js
+// 2.117.3 takes no signal on signOut()/admin.signOut(), but sends every auth request through the
+// client's global.fetch and turns a rejected fetch (an abort included) into
+// AuthRetryableFetchError: a timeout is retried like any network failure, inside the same two
+// retries. Worst case ~6.6 s (three 2 s calls and the backoff); then the cookies are cleared and
+// the 303 returned as usual. The wrapper adds only the signal: it never reads, logs or alters the
+// request, so the token goes nowhere but its own /logout call.
+//
 // SL-HISTORY IS CLEARED TOO (#486). The signed `sl-history` cookie mirrors this browser's
 // anonymous song history and is never scoped to a user (components/chrome/SignedInChrome.tsx).
 // On a shared machine, the next person to use the browser would otherwise inherit the last
@@ -59,6 +68,21 @@ const HISTORY_COOKIE = 'sl-history';
 
 /** Wait before each retry of a failed revoke (#485). Its length is the number of retries. */
 const REVOKE_RETRY_DELAYS_MS = [150, 450] as const;
+
+/** The longest any one Supabase request from this route may stay open (#514). */
+const REVOKE_TIMEOUT_MS = 2000;
+
+/** fetch, aborted after REVOKE_TIMEOUT_MS (a TimeoutError). auth-js 2.117.3 passes no signal of
+ *  its own, so this one is the only one. The timer runs on setTimeout and is cleared once the
+ *  response arrives (logout reads no body). */
+function boundedFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(
+    () => controller.abort(new DOMException('sign-out request timed out', 'TimeoutError')),
+    REVOKE_TIMEOUT_MS,
+  );
+  return fetch(input, { ...init, signal: controller.signal }).finally(() => clearTimeout(timer));
+}
 
 type RevokeResult = { error: unknown };
 
@@ -103,7 +127,7 @@ export async function POST(request: NextRequest) {
 
   let failure: unknown = null;
   try {
-    const supabase = await createServerClient();
+    const supabase = await createServerClient({ fetch: boundedFetch });
     let token: string | undefined;
     try {
       const { data } = await supabase.auth.getSession();

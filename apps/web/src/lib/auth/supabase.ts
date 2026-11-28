@@ -98,8 +98,13 @@ export function createBrowserClient(): SupabaseClient {
  * `src/middleware.ts`). Route handlers CAN set cookies, so `setAll`
  * works there as expected. This is the pattern the Supabase SSR docs
  * prescribe for Next.js 14.
+ *
+ * `options.fetch` (optional) replaces the fetch supabase-js uses for this client, e.g. one that
+ * adds a timeout signal (api/auth/signout, #514). Omitted, supabase-js uses the global fetch.
  */
-export async function createServerClient(): Promise<SupabaseClient> {
+export async function createServerClient(
+  options: { fetch?: typeof fetch } = {},
+): Promise<SupabaseClient> {
   const { url, anonKey } = readPublicEnv();
   // Dynamic import keeps this module compatible with non-Next environments
   // (e.g. the test file under `apps/web/test/`, which mocks it out).
@@ -107,6 +112,9 @@ export async function createServerClient(): Promise<SupabaseClient> {
   const cookieStore = cookies();
 
   return createSupabaseServerClient(url, anonKey, {
+    // Optional: a caller may bound every Supabase request (api/auth/signout, #514). supabase-js
+    // sends each auth call through this fetch.
+    ...(options.fetch ? { global: { fetch: options.fetch } } : {}),
     cookies: {
       getAll() {
         return cookieStore.getAll();

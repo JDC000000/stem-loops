@@ -1,7 +1,8 @@
 // Beta QA 2026-11-26: Sign out (S5) and Send feedback (S4 / G5).
 //
 //   1. POST /api/auth/signout — same-origin only (CSRF), signs out with scope 'local', retries a
-//      network-failed revoke with the captured token (#485), expires every Supabase auth cookie
+//      network-failed revoke with the captured token (#485), bounds each /logout call with a 2 s
+//      timeout that counts as a network failure (#514), expires every Supabase auth cookie
 //      (plain, chunked, code verifier) and the sl-history mirror (#486) even when Supabase fails,
 //      leaves other cookies alone, and answers 303 → / (relative). Loaded through the repo's data-URL
 //      transpile with the REAL same-origin guard (test/helpers/same-origin.mjs).
@@ -59,16 +60,31 @@ const HEADERS = dataUrl(`
   }
 `);
 /** mode: 'ok' | 'error' (signOut returns a retryable network error) | 'api-error' (signOut returns a
- *  non-retryable 400) | 'throws' (createServerClient throws). `admin` scripts what each retry's
- *  POST /logout returns, in order (null = revoked). `token` is what getSession yields (a FAKE
+ *  non-retryable 400) | 'throws' (createServerClient throws) | 'hang' (signOut's POST /logout goes
+ *  through the client fetch to a black-holed Supabase, #514). `admin` scripts what each retry's
+ *  POST /logout returns, in order (null = revoked, 'hang' = black-holed). `token` is what getSession yields (a FAKE
  *  placeholder string, never a real token). */
 const SUPABASE = (mode) =>
   dataUrl(`
   const NET = { name: 'AuthRetryableFetchError', status: 0, message: 'fetch failed' };
   const API = { name: 'AuthApiError', status: 400, message: 'bad request' };
-  export async function createServerClient() {
+  // #514: auth-js 2.117.3 sends every request through the client's fetch (global.fetch option)
+  // and turns a rejected fetch, an abort included, into AuthRetryableFetchError(status 0). The
+  // stub does the same with the fetch the route handed to createServerClient.
+  async function viaFetch(so, jwt) {
+    try {
+      await (so.clientFetch ?? globalThis.fetch)('https://sb.example/auth/v1/logout?scope=local', {
+        method: 'POST', headers: { Authorization: 'Bearer ' + jwt },
+      });
+      return { data: null, error: null };
+    } catch (e) {
+      return { data: null, error: { name: 'AuthRetryableFetchError', status: 0, message: String(e?.message ?? e) } };
+    }
+  }
+  export async function createServerClient(opts) {
     if (${JSON.stringify(mode)} === 'throws') throw new Error('supabase unreachable');
     const so = globalThis.__so;
+    so.clientFetch = opts?.fetch;
     return { auth: {
       getSession: async () => {
         so.getSession += 1;
@@ -78,14 +94,17 @@ const SUPABASE = (mode) =>
         so.signOut.push(opts);
         // auth-js 2.117.3 removes the local session even when POST /logout fails: a token read
         // after this call finds nothing (the reason the route reads it first, #485).
+        const jwt = so.token;
         so.token = null;
         const m = ${JSON.stringify(mode)};
+        if (m === 'hang') return viaFetch(so, jwt);
         return { error: m === 'error' ? NET : m === 'api-error' ? API : null };
       },
       admin: { signOut: async (jwt, scope) => {
         so.admin.push([jwt, scope]);
         const next = so.adminResults.shift();
         if (next === 'throw') throw new TypeError('fetch failed');
+        if (next === 'hang' || next === 'answer') return viaFetch(so, jwt);
         return { data: null, error: next === undefined ? NET : next };
       } },
     } };
@@ -110,18 +129,42 @@ async function callRoute({ mode = 'ok', headers = sameOriginHeaders(), adminResu
   globalThis.__so = {
     jar: new Map([...CLEARED, ...OTHER_COOKIES].map((n) => [n, 'v'])),
     deleted: [], signOut: [], sentry: [], admin: [], adminResults: [...adminResults], token, getSession: 0,
-    delays: [],
+    delays: [], fetches: [], clientFetch: undefined,
   };
   const mod = await import(dataUrl(js) + '#' + Math.random());
   assert.equal(mod.GET, undefined, 'sign-out must not answer GET (a link or <img> could trigger it)');
   // The retry backoff runs on setTimeout: record each delay and fire it at once.
+  // So does the per-call fetch timeout (#514), which is why a black-holed call ends at once here.
   const realSetTimeout = globalThis.setTimeout;
   globalThis.setTimeout = (fn, ms) => { globalThis.__so.delays.push(ms); return realSetTimeout(fn, 0); };
+  // A black-holed Supabase: the request never answers. It ends only if its signal aborts.
+  const realFetch = globalThis.fetch;
+  // Unless the next admin result is 'answer': then Supabase replies 204 at once.
+  globalThis.fetch = (url, init) => {
+    globalThis.__so.fetches.push({ url, init });
+    if (globalThis.__so.fetches.length > 1 && adminResults[globalThis.__so.fetches.length - 2] === 'answer') {
+      return Promise.resolve(new Response(null, { status: 204 }));
+    }
+    return new Promise((_, reject) => {
+      const signal = init?.signal;
+      if (!signal) return;
+      if (signal.aborted) return reject(signal.reason);
+      signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+    });
+  };
   let res;
   try {
-    res = await mod.POST({ headers });
+    // A call that is not bounded never ends: fail this test (and restore the globals) instead.
+    let guard;
+    res = await Promise.race([
+      mod.POST({ headers }),
+      new Promise((_, reject) => {
+        guard = realSetTimeout(() => reject(new Error('sign-out hung: a /logout call is unbounded')), 1000);
+      }),
+    ]).finally(() => clearTimeout(guard));
   } finally {
     globalThis.setTimeout = realSetTimeout;
+    globalThis.fetch = realFetch;
   }
   return { mod, res, so: globalThis.__so };
 }
@@ -199,6 +242,55 @@ test('signout #485: a non-retryable error, or no token to retry with, is not ret
   const retry5xx = await callRoute({ mode: 'error', adminResults: [{ name: 'AuthApiError', status: 400, message: 'x' }] });
   assert.equal(retry5xx.so.admin.length, 1, 'a non-retryable answer on retry stops the loop');
   assert.equal(retry5xx.so.sentry.length, 1);
+});
+
+// #514: no /logout call may hold sign-out. Each fetch the client makes carries a 2 s abort
+// signal; a timeout is a network failure (AuthRetryableFetchError), so it is retried within the
+// same two-retry budget, and the cookies are cleared and the 303 returned when all three time out.
+const REVOKE_TIMEOUT_MS = 2000;
+
+test('signout #514: the client is built with a fetch whose every call carries an abort signal', { timeout: 5000 }, async () => {
+  const { so } = await callRoute({ mode: 'hang', adminResults: [null] });
+  assert.equal(typeof so.clientFetch, 'function', 'createServerClient got no bounded fetch');
+  assert.equal(so.fetches.length, 1);
+  const { init } = so.fetches[0];
+  assert.ok(init.signal instanceof AbortSignal, 'the /logout fetch has no signal');
+  assert.equal(init.method, 'POST', 'the request is forwarded unchanged');
+  assert.equal(init.headers.Authorization, 'Bearer ' + FAKE_TOKEN, 'the request is forwarded unchanged');
+});
+
+test('signout #514: a black-holed first call times out, is retried, and the retry revokes', { timeout: 5000 }, async () => {
+  const { res, so } = await callRoute({ mode: 'hang', adminResults: [null] });
+  assert.equal(res.status, 303);
+  assert.deepEqual(so.delays, [REVOKE_TIMEOUT_MS, 150], 'bounded call, then the first backoff');
+  assert.deepEqual(so.admin, [[FAKE_TOKEN, 'local']]);
+  assert.deepEqual(so.sentry, [], 'a revoke that worked on retry is not an error');
+  assert.deepEqual([...so.deleted].sort(), [...CLEARED].sort());
+});
+
+test('signout #514: a call that is answered in time clears its timer (nothing aborts it later)', { timeout: 5000 }, async () => {
+  const { so } = await callRoute({ mode: 'hang', adminResults: ['answer'] });
+  assert.equal(so.fetches.length, 2);
+  assert.equal(so.fetches[0].init.signal.aborted, true, 'the black-holed call was aborted');
+  await new Promise((r) => setTimeout(r, 20)); // past the (0 ms in this harness) timeout
+  assert.equal(so.fetches[1].init.signal.aborted, false, 'the answered call\'s timer still fired');
+  assert.deepEqual(so.sentry, []);
+});
+
+test('signout #514: every call black-holed — each is bounded, two retries, then cookies cleared and 303', { timeout: 5000 }, async () => {
+  const { res, so } = await callRoute({ mode: 'hang', adminResults: ['hang', 'hang', 'hang'] });
+  assert.equal(res.status, 303);
+  assert.equal(res.headers.get('Location'), '/');
+  assert.equal(so.fetches.length, 3, 'the first call and exactly two retries');
+  assert.ok(so.fetches.every(({ init }) => init.signal?.aborted), 'every call was aborted');
+  assert.deepEqual(so.delays, [REVOKE_TIMEOUT_MS, 150, REVOKE_TIMEOUT_MS, 450, REVOKE_TIMEOUT_MS],
+    'each call is bounded at 2 s (a sign-out waits at most ~6.6 s)');
+  assert.equal(so.admin.length, 2);
+  assert.equal(so.sentry.length, 1, 'the lasting failure is reported once');
+  assert.deepEqual(so.sentry[0].tags, { route: 'api/auth/signout', revoke: 'failed' });
+  assert.doesNotMatch(JSON.stringify(so.sentry), new RegExp(FAKE_TOKEN), 'the token reached Sentry');
+  assert.deepEqual([...so.deleted].sort(), [...CLEARED].sort());
+  assert.deepEqual([...so.jar.keys()].sort(), [...OTHER_COOKIES].sort());
 });
 
 test('signout: CSRF — cross-origin, null, missing Origin or Host are refused and nothing is cleared', async () => {

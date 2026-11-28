@@ -5,8 +5,11 @@ import { presignPut } from '@/lib/r2';
 import { validateUpload, MAX_UPLOAD_BYTES } from '@/lib/upload';
 import { checkAnonUploadDailyRate, checkGlobalCapacity, checkUploadRate, recordAnonPresign } from '@/lib/admission';
 import { clientIpHashOf } from '@/lib/client-ip';
-import { RATE_LIMITED_PER_CLIENT_MSG } from '@/lib/error-copy';
+import { RATE_LIMITED_PER_CLIENT_MSG, entitlementMessage } from '@/lib/error-copy';
 import { getUser } from '@/lib/auth/supabase';
+import { enforceEntitlement, EntitlementError } from '@/lib/billing/entitlements';
+import { checkMonthlyQuota } from '@/lib/billing/rate-limit';
+import { quotaRefusalBody } from '@/lib/jobs/create-link-job';
 import { BAD_ORIGIN, crossOriginRefusal } from '@/lib/same-origin';
 
 // F72: checkUploadRate is a per-client limit only.
@@ -69,9 +72,32 @@ export async function POST(request: NextRequest) {
     // QA track B, B-05: a SIGNED-OUT caller also has a per-IP DAILY presign cap
     // (lib/admission.ts checkAnonUploadDailyRate). Last gate before minting, so a refused,
     // invalid or at-capacity request never spends a unit of it. Signed-in callers are
-    // metered at job creation by plan quota or credits.
+    // metered at job creation by plan quota or credits (checked early, read-only, above).
     const user = await getUser();
-    if (!user) {
+    if (user) {
+      // Beta QA S12 / QW-5 (#489): a signed-in caller out of songs (or credits) is told NOW,
+      // before the browser PUTs up to 200 MB to R2, not after, when POST /api/jobs refuses it.
+      // The same two read-only gates and the same 402 bodies as the upload path of POST
+      // /api/jobs. Advisory: POST /api/jobs re-checks both authoritatively and owns the counted
+      // boundary. checkBurstLimit is NOT called here: it records a start attempt, and a
+      // presign is not a start.
+      try {
+        const { snapshot } = await enforceEntitlement('start_job_upload', user.user_id);
+        const quota = await checkMonthlyQuota(user.user_id);
+        if (quota) {
+          const paid = snapshot.plan_code === 'pro' || snapshot.plan_code === 'studio';
+          return NextResponse.json(quotaRefusalBody(quota.resets_at, paid, entitlementMessage), { status: 402 });
+        }
+      } catch (err) {
+        if (err instanceof EntitlementError) {
+          return NextResponse.json(
+            { error_code: err.code, message: entitlementMessage(err.code, err.message) },
+            { status: err.status },
+          );
+        }
+        throw err;
+      }
+    } else {
       const daily = await checkAnonUploadDailyRate(clientIpHashOf(request));
       if (!daily.allowed) {
         return NextResponse.json(

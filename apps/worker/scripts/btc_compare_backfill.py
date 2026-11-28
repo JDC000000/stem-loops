@@ -120,7 +120,9 @@ def install_klangio_guard() -> Callable[[], None]:
         raise KlangioForbidden("btc_compare_backfill must not construct a Klangio client")
 
     def _factory(provider: str | None = None):
+        global _KLANGIO_CONSTRUCTED
         if (provider or "klangio") == "klangio":
+            _KLANGIO_CONSTRUCTED += 1
             raise KlangioForbidden("btc_compare_backfill must not construct a Klangio client")
         return orig_factory(provider)
 

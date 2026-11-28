@@ -517,3 +517,31 @@ def test_klangio_attempt_while_loading_chords_stops_the_run(guard):
     h.s3.get_object = get_object
     with pytest.raises(bcb.KlangioForbidden):
         bcb.run(h.deps(), limit=None, since=None, timeout=5.0)
+
+
+def test_klangio_factory_attempt_while_scoring_stops_at_the_first_song(guard, capsys):
+    """get_chord_source('klangio') in the scoring path stops the run AT ONCE (the re-raise
+    after score_song), and the factory attempt is counted too."""
+    from worker import chord_source
+
+    calls = []
+
+    def chooser(stem_paths, preferred):
+        calls.append(1)
+        chord_source.get_chord_source("klangio")
+        return "harmonic_mix", next(iter(stem_paths.values()))
+
+    h = _standard_harness()
+    deps = h.deps()
+    deps.chooser = chooser
+    with pytest.raises(bcb.KlangioForbidden):
+        bcb.run(deps, limit=None, since=None, timeout=5.0)
+    assert calls == [1]  # no further song was scored after the attempt
+    assert bcb._KLANGIO_CONSTRUCTED == 1
+    bcb._KLANGIO_CONSTRUCTED = 0
+    calls.clear()
+    assert bcb.main([], deps=deps) == 2
+    out = capsys.readouterr()
+    assert out.out == ""
+    assert "fatal error_class=KlangioForbidden" in out.err
+    assert calls == [1]

@@ -122,7 +122,7 @@ test('P1.1 header: back · the song title as THE h1 · "<BPM> BPM · <key>" with
   assert.match(h, /<span class="facts" data-testid="player-facts"><span class="sr">Detected: <\/span>102 BPM · B♭ major<\/span>/);
   assert.match(h, /<a class="back" href="\/history" aria-label="Back to song library">/);
   // QA S8: the server render has not heard from the overlay yet (no chords), and no onSpeed here; the 4-part fixture shows Rename parts.
-  assert.match(h, /<button[^>]*aria-label="More: song info, count-in, rename parts, set lists"[^>]*aria-expanded="false"/);
+  assert.match(h, /<button[^>]*aria-label="More: song info, count-in, rename parts, set lists, send feedback"[^>]*aria-expanded="false"/);
   assert.match(decode(ssr({ artist: 'The Royal Sundowners' })), /102 BPM · B♭ major<\/span><span class="artist">The Royal Sundowners<\/span>/);
   // Phase A (J3): the BPM · key chip is 20px, white, readable at 70 cm.
   const css = read('src/components/play/Player.module.css');
@@ -1141,7 +1141,7 @@ test('#496: a song with no chords has no "See all chords" and no Chords: Simple 
       assert.ok(dom.find('[data-testid="speed-group"]'));
       assert.ok(dom.find('[data-testid="count-in-toggle"]'));
       // QA S8: the ⋯ name does not promise chords that are not there.
-      assert.equal(dom.find('[data-testid="player-more"]').getAttribute('aria-label'), 'More: speed, song info, count-in, rename parts, set lists');
+      assert.equal(dom.find('[data-testid="player-more"]').getAttribute('aria-label'), 'More: speed, song info, count-in, rename parts, set lists, send feedback');
       await dom.unmountAll();
     });
   } finally {
@@ -1156,7 +1156,7 @@ test('#496: a song with no chords has no "See all chords" and no Chords: Simple 
     assert.ok(items.includes('See all chords'), items.join(' | '));
     assert.ok(dom.find('[data-testid="chord-mode-simple"]'));
     assert.ok(dom.find('[data-testid="transpose-group"]'));
-    assert.equal(dom.find('[data-testid="player-more"]').getAttribute('aria-label'), 'More: all chords, speed, song info, count-in, rename parts, set lists');
+    assert.equal(dom.find('[data-testid="player-more"]').getAttribute('aria-label'), 'More: all chords, speed, song info, count-in, rename parts, set lists, send feedback');
     await dom.unmountAll();
   });
 });
@@ -1192,20 +1192,44 @@ test('#498: with no sections there is no Rename parts, and the ⋯ name does not
   await withDom(async (dom) => {
     setMedia(false);
     await dom.mount(React.createElement(Player.PlayerView, viewProps({ sections: [], onSpeed: noop })));
-    assert.equal(dom.find('[data-testid="player-more"]').getAttribute('aria-label'), 'More: all chords, speed, song info, count-in, set lists');
+    assert.equal(dom.find('[data-testid="player-more"]').getAttribute('aria-label'), 'More: all chords, speed, song info, count-in, set lists, send feedback');
     await dom.act(() => dom.find('[data-testid="player-more"]').click());
     assert.equal(dom.find('[data-testid="menu-rename-parts"]'), null);
     await dom.unmountAll();
   });
   // Server render: no overlay report yet (no chords), no sections.
-  assert.match(ssr({ sections: [] }), /aria-label="More: song info, count-in, set lists"/);
+  assert.match(ssr({ sections: [] }), /aria-label="More: song info, count-in, set lists, send feedback"/);
 });
 
 test('QA S8: moreMenuLabel lists what the ⋯ menu holds, in menu order', async () => {
   const { moreMenuLabel: L } = await import(graph.url('components/play/PlayerScreen.tsx'));
-  assert.equal(L({ hasChords: false, speed: false, renameParts: false }), 'More: song info, count-in, set lists');
-  assert.equal(L({ hasChords: true, speed: true, renameParts: true }), 'More: all chords, speed, song info, count-in, rename parts, set lists');
-  assert.equal(L({ hasChords: true, speed: false, renameParts: false }), 'More: all chords, song info, count-in, set lists');
+  assert.equal(L({ hasChords: false, speed: false, renameParts: false }), 'More: song info, count-in, set lists, send feedback');
+  assert.equal(L({ hasChords: true, speed: true, renameParts: true }), 'More: all chords, speed, song info, count-in, rename parts, set lists, send feedback');
+  assert.equal(L({ hasChords: true, speed: false, renameParts: false }), 'More: all chords, song info, count-in, set lists, send feedback');
+});
+
+test('#487: ⋯ → Send feedback is the beta feedback mailto (same as /account), last in the menu, and the ⋯ name says so', async () => {
+  const { FEEDBACK_URL } = await import(graph.url('components/landing/legal.ts'));
+  await withDom(async (dom) => {
+    setMedia(false);
+    await dom.mount(React.createElement(Player.PlayerView, viewProps({ onSpeed: noop })));
+    assert.equal(dom.find('[data-testid="player-more"]').getAttribute('aria-label'), 'More: all chords, speed, song info, count-in, rename parts, set lists, send feedback');
+    await dom.act(() => dom.find('[data-testid="player-more"]').click());
+    const link = dom.find('#player-menu [data-testid="menu-send-feedback"]');
+    assert.ok(link, 'the menu offers Send feedback');
+    assert.equal(link.tagName, 'A');
+    assert.equal(link.textContent, 'Send feedback');
+    assert.equal(link.getAttribute('href'), FEEDBACK_URL);
+    assert.match(link.getAttribute('href'), /^mailto:[^?]+\?subject=stem-loops%20beta%20feedback$/);
+    const menu = dom.find('#player-menu');
+    assert.equal(menu.lastElementChild, link, 'Send feedback is the last menu item (menu order = label order)');
+    assert.match(link.className, /menuItem/);
+    await dom.act(() => link.click());
+    assert.equal(dom.find('#player-menu'), null, 'choosing it closes the menu');
+    await dom.unmountAll();
+  });
+  // Server render and the no-chords menu name end with it too.
+  assert.match(ssr({ sections: [] }), /aria-label="More: song info, count-in, set lists, send feedback"/);
 });
 
 test('D6: chords are Simple by default; ⋯ → Chords: Simple / Detailed switches both chord views and is remembered', async () => {

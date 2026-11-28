@@ -222,11 +222,15 @@ SESSION_TAG=23A scripts/session-merge.sh <pr> <reviewed_sha_full> <review-1.md> 
 SESSION_TAG=23B scripts/session-merge.sh ack <comment-id>...                                   # post one "ACK 23B <id>,<id>" line on #414
 ```
 
-- **Protocol** (one marked CONFIG section in the script; `PROTOCOL 2026-11-25`, valid to 2026-12-03T01:00Z = 2026-12-02 18:00 Vancouver,
+- **Protocol** (one marked CONFIG section in the script; `PROTOCOL 2026-11-28` (v1.1, Jon L6, LEDGER-24A row 10), valid to 2026-12-19T00:00Z = 2026-12-18 16:00 Vancouver,
   after which every claim is refused until the section is renewed by PR): an **A** session claims only when its whole 40-min window fits
   inside an A block (15:00–17:00Z, 21:00–22:00Z); a **B** session only when its window touches no A block; **both** refuse a window touching
   a DEPLOY slot (18:00–18:30Z, 23:00–23:30Z) and any other session's live CLAIM/DEPLOY (untagged lines count as another session's).
-  Freeze: any session's PR with an `apps/` file after 2026-11-27T23:00Z unless `BLOCKER=<issue>`; a listing of 100+ files counts as apps (fail closed).
+  Freeze: any session's PR with an `apps/` file from 2026-11-27T23:00Z until 2026-12-03T01:00Z (`FREEZE_AT`, `FREEZE_END`; the beta no-deploy
+  window ends 12-02 18:00 Vancouver) unless `BLOCKER=<issue>`; a listing of 100+ files counts as apps (fail closed).
+- **Shared files (v1.1):** before claiming, prints `WARNING: open PR #N also changes: <files>` for every other open PR that changes a file this
+  PR changes. A warning only: it never refuses, and an unreadable listing is reported (`WARN shared-file check skipped …`) and skipped.
+- **CI watch:** PR CI and main CI after the merge are each awaited up to `CI_WATCH_SECS` = 2400 s (40 min; was 30 min) before `unknown`.
 - **Unread-note guard:** before claiming and again before the gate, every comment of #414's last two pages whose first line starts with
   `NOTE`, `PROTOCOL` or `QUEUE` (case-insensitive, after markdown markup), posted at/after the cutoff, not by this session (first-line
   token 2 is exactly the own tag: write notes as `NOTE <author-tag> …`, e.g. `NOTE 23B hold #500`; `NOTE 23B: …` is not exempt for 23B) and not covered by an `ACK <own tag> <id>[,<id>…]` line (any line of any comment) stops the run with **exit 13**,
@@ -245,4 +249,5 @@ SESSION_TAG=23B scripts/session-merge.sh ack <comment-id>...                    
 - #414 pages are written to files, never argv; every #414 post reads back after an error before retrying (no double CLAIM/RELEASE/ACK);
   a trap RELEASEs the claim on any exit (not on kill -9 or a restart: release by hand).
 - Tests: `python3 -m pytest scripts/test_session_merge.py -q` (offline; `gh`, `date`, `sleep` stubbed via PATH; A/B block boundaries,
-  DEPLOY slots, live/untagged claims, unread notes + ACK, `ack` 5xx read-back, freeze with/without `apps/` files, protocol expiry).
+  DEPLOY slots, live/untagged claims, unread notes + ACK, `ack` 5xx read-back, freeze with/without `apps/` files, freeze end, protocol expiry,
+  shared-file warning, CI watch length).

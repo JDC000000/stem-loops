@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# session-merge.sh v1.0 (2026-11-25, session 23A) — ONE gated merge for an A or a B session. Port of merge1-B.sh v2.5 (22B for 23B+,
+# session-merge.sh v1.1 (2026-11-28, session 24A, Jon L6 = LEDGER-24A row 10: PROTOCOL 2026-11-28 valid to 12-19T00:00Z, freeze end
+#   12-03T01:00Z, CI watch 40 min, shared-file warning). v1.0 (2026-11-25, session 23A) — ONE gated merge for an A or a B session. Port of merge1-B.sh v2.5 (22B for 23B+,
 # sha256 fd91a6a5…c45c0a) with the #414 protocol made symmetric and an unread-note ACK guard. Run it in the FOREGROUND.
 # Usage: SESSION_TAG=23A|23B session-merge.sh <pr> <reviewed_sha_full> <review-1.md> <review-2.md>
 #        SESSION_TAG=23A|23B session-merge.sh ack <comment-id>…      (orchestrators only: posts ONE "ACK <tag> <id>,<id>…" line on #414;
@@ -15,7 +16,9 @@
 # Protocol (see the CONFIG section): an A session may claim only when its whole 40-min claim window fits inside an A block; a B session
 #   only when its window touches no A block; both refuse a window touching a DEPLOY slot and another session's live CLAIM/DEPLOY
 #   (live until its "until", or 40 min after posting if none; 120 min if the "until" cannot be parsed — fail closed) unless that
-#   session posted a later RELEASE. Freeze: any session's PR with an apps/ file, after FREEZE_AT, unless BLOCKER= is set.
+#   session posted a later RELEASE. Freeze: any session's PR with an apps/ file, from FREEZE_AT until FREEZE_END, unless BLOCKER= is set.
+# Shared files (v1.1): before claiming, prints "WARNING: open PR #N also changes: <files>" for every other open PR sharing a changed file
+#   (a warning only; never refuses; the gate's overlap guard still applies).
 # Unread-note guard: before claiming (and again before the gate), every #414 comment of the last two pages whose first line starts with
 #   NOTE, PROTOCOL or QUEUE, posted at/after the cutoff, not by this session (first-line token 2 is EXACTLY the own tag:
 #   write notes as "NOTE <author-tag> …"; "NOTE 23B: …" is not exempt for 23B) and not covered by an
@@ -29,15 +32,17 @@
 # Never edit or replace this file while a run is in progress.
 set -uo pipefail
 
-# ==================== PROTOCOL CONFIG — PROTOCOL 2026-11-25 (22A 14:01Z, ACKed by 22B) ====================
-# Valid to 2026-12-02T18:00 Vancouver = 2026-12-03T01:00Z; after that every claim is refused (exit 3) until this section is renewed by PR.
+# ==================== PROTOCOL CONFIG — PROTOCOL 2026-11-28 (24A, Jon L6 = LEDGER-24A row 10; replaces PROTOCOL 2026-11-25) ====================
+# Valid to 2026-12-18T16:00 Vancouver = 2026-12-19T00:00Z; after that every claim is refused (exit 3) until this section is renewed by PR.
 # All times UTC, "HH:MM HH:MM" = [start, end) on every day.
-PROTOCOL_ID="PROTOCOL 2026-11-25"
-PROTOCOL_VALID_TO=2026-12-03T01:00:00Z
+PROTOCOL_ID="PROTOCOL 2026-11-28"
+PROTOCOL_VALID_TO=2026-12-19T00:00:00Z
 A_BLOCKS=("15:00 17:00" "21:00 22:00")      # A merge blocks: 08:00–10:00 and 14:00–15:00 Vancouver
 DEPLOY_SLOTS=("18:00 18:30" "23:00 23:30")  # DEPLOY slots from 11:00 and 16:00 Vancouver, kept clear for 30 min
-FREEZE_AT=2026-11-27T23:00:00Z              # apps/** freeze: Fri 2026-11-27 16:00 Vancouver
+FREEZE_AT=2026-11-27T23:00:00Z              # apps/** freeze: Fri 2026-11-27 16:00 Vancouver …
+FREEZE_END=2026-12-03T01:00:00Z             # … to Wed 2026-12-02 18:00 Vancouver, the end of the beta no-deploy window: [FREEZE_AT, FREEZE_END)
 CLAIM_SECS=2400                             # a claim lasts 40 min
+CI_WATCH_SECS=2400                          # wait up to 40 min for PR / main CI to complete (Chromium e2e takes 20–25 min)
 # ============================================================================================================
 
 R=JDC000000/stem-loops
@@ -138,7 +143,17 @@ window_bad(){ # $1 start, $2 end (epochs, [start,end)) → prints why the window
   [ "$SIDE" = A ] && [ "$inside" = 0 ] && [ -z "${ALLOW_WINDOW:-}" ] && { echo "outside every A block (${A_BLOCKS[*]} UTC)"; return 0; }
   return 1; }
 # the freeze covers apps/** only (WORKPLAN §3): a PR with no apps/ file (e.g. docs/perf, packages/) is not frozen
-frozen(){ [ "$(now)" -ge "$(epoch $FREEZE_AT)" ] && [ -z "${BLOCKER:-}" ] && [ "${APPS_FILES:-1}" != 0 ]; }
+frozen(){ local t; t=$(now); [ "$t" -ge "$(epoch $FREEZE_AT)" ] && [ "$t" -lt "$(epoch $FREEZE_END)" ] && [ -z "${BLOCKER:-}" ] && [ "${APPS_FILES:-1}" != 0 ]; }
+# shared-file WARNING (never a refusal): names every other open PR that changes a file this PR changes. Unreadable listings are
+# reported and skipped; the gate's own overlap/hot-file guard (or4-merge.sh) still runs at DRY_RUN.
+shared_warn(){ local mine others n f s
+  mine=$(g "repos/$R/pulls/$P/files?per_page=100" --jq '.[].filename' | sort -u) || { log "WARN shared-file check skipped (#$P files unreadable)"; return 0; }
+  others=$(g "repos/$R/pulls?state=open&per_page=100" --jq '.[].number') || { log "WARN shared-file check skipped (open PRs unreadable)"; return 0; }
+  for n in $others; do [[ "$n" =~ ^[0-9]+$ ]] || continue; [ "$n" = "$P" ] && continue
+    f=$(g "repos/$R/pulls/$n/files?per_page=100" --jq '.[].filename' | sort -u) || { log "WARN shared-file check: #$n files unreadable"; continue; }
+    s=$(comm -12 <(printf '%s\n' "$mine") <(printf '%s\n' "$f") | grep -v '^$' | paste -sd' ')
+    [ -n "$s" ] && log "WARNING: open PR #$n also changes: $s"; done
+  return 0; }
 protocol_block(){ local t; t=$(now); window_bad "$t" $((t+CLAIM_SECS)) && return 0
   frozen && { echo "apps/** freeze since $FREEZE_AT (set BLOCKER=<issue>)"; return 0; }; return 1; }
 CLAIMED=0; DONE=0; TAKEN=0
@@ -157,6 +172,7 @@ notes_gate(){ # $1 = "pre" (before claim) or "held" (claim held: release first);
 
 APPS_FILES=$(g "repos/$R/pulls/$P/files?per_page=100" --jq 'if length>=100 then 1 else [.[].filename|select(startswith("apps/"))]|length end') || APPS_FILES=1
 [[ "$APPS_FILES" =~ ^[0-9]+$ ]] || APPS_FILES=1
+shared_warn
 notes_gate pre
 why=$(protocol_block) && { log "protocol: $why"; exit 3; }
 o=$(other_live); rc=$?; [ $rc -eq 2 ] && { log "cannot read #414"; exit 11; }; [ $rc -eq 0 ] && { log "OTHER LIVE: $o"; exit 3; }
@@ -172,7 +188,7 @@ if [ "$B" != 0 ]; then g -X PUT repos/$R/pulls/$P/update-branch --jq .message ||
   B=$(g repos/$R/compare/v3/main...$H2 --jq .behind_by); { [ "$H2" != "$H" ] && [ "$B" = 0 ]; } || { fin "not merged (update-branch)"; exit 5; }
   H=$H2; log "new head ${H:0:7}"; sleep 20; fi
 cistate(){ # → "green N" | "red …" | "unknown …"
-  local S=$1 o i; for i in $(seq 1 90); do o=$(g "repos/$R/commits/$S/check-runs?per_page=100" --jq '"\([.check_runs[]|select(.status!="completed")]|length) \(.check_runs|length)"') || { sleep 20; continue; }
+  local S=$1 o i; for i in $(seq 1 $(( CI_WATCH_SECS / 20 ))); do o=$(g "repos/$R/commits/$S/check-runs?per_page=100" --jq '"\([.check_runs[]|select(.status!="completed")]|length) \(.check_runs|length)"') || { sleep 20; continue; }
     set -- $o; [ "$1" = 0 ] && [ "$2" -ge 10 ] && break; sleep 20; done
   o=$(g "repos/$R/commits/$S/check-runs?per_page=100" --jq '[.check_runs[]|{s:.status,c:(.conclusion//"none")}] as $r | if ($r|length)<10 or ([$r[]|select(.s!="completed")]|length)>0 then "unknown \($r|length)" elif ([$r[]|select(.c!="success" and .c!="skipped" and .c!="neutral")]|length)>0 then "red " + ([$r[]|.c]|unique|join(",")) else "green \($r|length)" end') || o="unknown read-error"
   echo "$o"; }

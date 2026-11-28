@@ -67,7 +67,12 @@ if path == R + "issues/414/comments" and method == "POST":
     if st.get("post_5xx_once"):
         st["post_5xx_once"] = False; fail("HTTP 502: Bad Gateway")
     out({"id": cid})
+if path.startswith(R + "pulls?state=open") and method == "GET" and "open_prs" in st:
+    out([{"number": n} for n in st["open_prs"]])
 if "/files" in path and "/pulls/" in path:
+    n = path.split("/pulls/")[1].split("/")[0]
+    if n in st.get("pr_files", {}):
+        out([{"filename": f} for f in st["pr_files"][n]])
     out([{"filename": f} for f in st.get("files", [])])
 if st.get("tail"):
     HEAD, MERGE = "a" * 40, "b" * 40
@@ -539,11 +544,11 @@ class Tail(Harness):
         self.assertEqual(self.side(".git.log"), [])
 
     def test_window_recheck_protocol_expired_at_pre_gate(self):
-        # claim at 00:30Z on 12-03 (valid to 01:00Z), until 01:10Z; at the pre-gate re-check it is 01:05Z: the claim is not
-        # expiring (01:08Z cut-off) but the protocol is: only the pre-gate window re-check refuses
-        p = self.run_sm("23B", ts("2026-12-03T00:30:00Z"), files=["docs/x.md"], tail=True, advance_on_pr_ci=35 * 60)
+        # claim at 23:35Z on 12-18 (valid to 12-19T00:00Z), until 00:15Z; at the pre-gate re-check it is 00:05Z: the claim is not
+        # expiring (00:13Z cut-off) but the protocol is: only the pre-gate window re-check refuses
+        p = self.run_sm("23B", ts("2026-12-18T23:35:00Z"), files=["docs/x.md"], tail=True, advance_on_pr_ci=30 * 60)
         self.assertEqual(p.returncode, 3, p.stdout + p.stderr)
-        self.assertTrue(self.posts[-1].startswith("RELEASE 23B #500 not merged (now: PROTOCOL 2026-11-25 expired"), self.posts)
+        self.assertTrue(self.posts[-1].startswith("RELEASE 23B #500 not merged (now: PROTOCOL 2026-11-28 expired"), self.posts)
         self.assertEqual(self.side(".git.log"), [])
 
     def test_gate_fetch_fails(self):
@@ -576,6 +581,9 @@ class Tail(Harness):
     def test_main_ci_unknown(self):
         p = self.go(main_ci="unknown")
         self.assertEqual(p.returncode, 10, p.stdout + p.stderr)
+        # CI watch = CI_WATCH_SECS (2400) / 20 = 120 polls, then one final read: 121 check-run reads of the merge commit
+        polls = [x for x in self.st["calls"] if x[1].startswith("repos/JDC000000/stem-loops/commits/" + "b" * 40 + "/check-runs")]
+        self.assertEqual(len(polls), 121, len(polls))
 
     def test_release_post_fails_after_merge(self):
         p = self.go(fail_release_post=True)
@@ -613,9 +621,46 @@ class Freeze(Harness):
         many = [f"docs/{i}.md" for i in range(100)]
         self.assertRefused(self.run_sm("23B", at("17:00", self.AFTER), files=many), text="freeze")
 
+    def test_freeze_ends(self):
+        # frozen in [11-27T23:00Z, 12-03T01:00Z): 00:50Z on 12-03 is frozen, 01:00Z and later are not (B windows clear of blocks/slots)
+        self.assertRefused(self.run_sm("23B", ts("2026-12-03T00:50:00Z")), text="freeze")
+        self.assertClaimed(self.run_sm("23B", ts("2026-12-03T01:00:00Z")), tag="23B")
+        self.assertClaimed(self.run_sm("23A", at("15:00", "2026-12-03")))
+
     def test_protocol_expired(self):
-        self.assertRefused(self.run_sm("23B", ts("2026-12-03T03:00:00Z"), files=["docs/x.md"]), text="expired")
-        self.assertClaimed(self.run_sm("23B", ts("2026-12-03T00:00:00Z"), files=["docs/x.md"]), tag="23B")
+        self.assertRefused(self.run_sm("23B", ts("2026-12-19T00:00:00Z"), files=["docs/x.md"]), text="expired")
+        self.assertRefused(self.run_sm("23B", ts("2026-12-19T03:00:00Z"), files=["docs/x.md"]), text="PROTOCOL 2026-11-28 expired")
+        self.assertClaimed(self.run_sm("23B", ts("2026-12-18T23:40:00Z"), files=["docs/x.md"]), tag="23B")
+        self.assertClaimed(self.run_sm("23B", ts("2026-12-03T03:00:00Z"), files=["docs/x.md"]), tag="23B")  # old 12-03 expiry is gone
+
+
+class SharedFiles(Harness):
+    """v1.1: a warning naming other open PRs that share a changed file; never a refusal (B session, 17:00Z on 11-26)."""
+    NOW = at("17:00")
+
+    def test_warns_and_still_claims(self):
+        p = self.run_sm("23B", self.NOW, files=["apps/web/x.ts", "docs/a.md"], open_prs=[500, 501, 502, 503],
+                        pr_files={"501": ["apps/web/x.ts", "docs/y.md"], "502": ["docs/z.md"], "503": ["docs/a.md", "apps/web/x.ts"]})
+        self.assertClaimed(p, tag="23B")
+        self.assertIn("WARNING: open PR #501 also changes: apps/web/x.ts", p.stdout)
+        self.assertIn("WARNING: open PR #503 also changes: apps/web/x.ts docs/a.md", p.stdout)
+        self.assertNotIn("#502", p.stdout)
+        self.assertNotIn("#500 also", p.stdout)
+
+    def test_no_overlap_no_warning(self):
+        p = self.run_sm("23B", self.NOW, open_prs=[500, 502], pr_files={"502": ["docs/z.md"]})
+        self.assertClaimed(p, tag="23B")
+        self.assertNotIn("WARNING", p.stdout)
+
+    def test_unreadable_listing_is_skipped_not_refused(self):
+        p = self.run_sm("23B", self.NOW)  # stub refuses the open-PR listing
+        self.assertClaimed(p, tag="23B")
+        self.assertIn("WARN shared-file check skipped (open PRs unreadable)", p.stdout)
+
+    def test_warning_before_unread_note_exit(self):
+        p = self.run_sm("23B", self.NOW, comments=[c(7, at("16:00"), "NOTE 23A hold")], open_prs=[500, 501], pr_files={"501": ["apps/web/x.ts"]})
+        self.assertRefused(p, rc=13)
+        self.assertIn("WARNING: open PR #501 also changes: apps/web/x.ts", p.stdout)
 
 
 if __name__ == "__main__":

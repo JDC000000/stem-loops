@@ -99,6 +99,7 @@ export const db = {
       if (/^WITH src AS/.test(sql)) {
         s.log.push('tx:claim');
         assert(/FOR UPDATE OF d/.test(sql) && /SET restored_at = now\\(\\), allowance_restored = false, trial_restored = false/.test(sql));
+        if (s.claimMiss) return { rows: [], rowCount: 0 }; // claimed between the read and the lock
         const r = source(s.rows, p);
         const id = r.rows[0]?.job_id;
         if (id && !tx.claims.includes(id)) { tx.claims.push(id); return r; }
@@ -185,7 +186,7 @@ function reset(state = {}) {
     log: [], lookups: [], locks: [], debits: [], sentry: [], rows: [], mutex: new Map(), txs: 0,
     user: { user_id: USER_ID, email: 'a@b.co' }, trial: false, hideFromOutside: false, outsideBarrier: null,
     quota: null, insertBlocked: false, broken: [], probes: [], probeNull: false,
-    debitRows: {}, claimed: [], noDebitTable: false, admissionRefused: false, burst: null,
+    debitRows: {}, claimed: [], noDebitTable: false, admissionRefused: false, burst: null, claimMiss: false,
     ...state,
   };
 }
@@ -601,4 +602,18 @@ test('#494-1: of several unplayable done jobs the NEWEST with an unclaimed row f
   assert.equal(r.status, 201, JSON.stringify(r.body));
   assert.deepEqual(S().claimed, ['mid']);
   assert.deepEqual(charged(), FREE_GATES);
+});
+
+test('#494-1: the lock-free read finds a source but the in-tx claim gets 0 rows → 409, NO insert, nothing spent', async () => {
+  reset(brokenDone({ claimMiss: true }));
+  const r = await paste();
+  assert.equal(r.status, 409, JSON.stringify(r.body));
+  assert.equal(r.body.error_code, 'RETRY_CONFLICT');
+  assert.ok(S().log.includes('db.query:source') && S().log.includes('tx:claim'));
+  assert.ok(!S().log.includes('tx:insert'), 'no job row without a claimed source');
+  assert.ok(S().log.includes('tx:rollback'));
+  assert.equal(S().rows.length, 1);
+  assert.deepEqual(S().claimed, []);
+  assert.deepEqual(S().debits, []);
+  assert.deepEqual(charged(), ['checkAdmission', 'checkBurstLimit'], 'no metering, no fall-through to the charged path');
 });

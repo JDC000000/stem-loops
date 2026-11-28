@@ -339,6 +339,42 @@ test('#494-1: two truly concurrent re-pastes after an encode failure -> 1 free j
   }
 });
 
+for (const newer of ['claimed', 'row-less']) {
+  test(`#494-1: two unplayable done jobs, the NEWER one ${newer}, the older unclaimed -> 201 free, the OLDER row claimed`, { skip }, async () => {
+    const u = await user();
+    const url = canon(vid());
+    as(u);
+    const older = await paste(url); // charged: a debit row
+    assert.equal(older.status, 201, JSON.stringify(older.body));
+    // Failed for a moment so the next paste makes a second (charged) job of the same selection.
+    await pool.query("UPDATE jobs SET status = 'failed' WHERE id = $1", [older.body.id]);
+    const newerJob = await paste(url);
+    assert.equal(newerJob.status, 201, JSON.stringify(newerJob.body));
+    await pool.query("UPDATE jobs SET created_at = now() - interval '2 minutes' WHERE id = $1", [older.body.id]);
+    await pool.query("UPDATE jobs SET status = 'done' WHERE id = ANY($1::uuid[])", [[older.body.id, newerJob.body.id]]);
+    if (newer === 'claimed') {
+      await pool.query(
+        'UPDATE job_allowance_debits SET restored_at = now(), allowance_restored = false, trial_restored = false WHERE job_id = $1',
+        [newerJob.body.id],
+      );
+    } else {
+      await pool.query('DELETE FROM job_allowance_debits WHERE job_id = $1', [newerJob.body.id]);
+    }
+    globalThis.__ldBroken = [older.body.id, newerJob.body.id];
+    try {
+      const before = await counts(u, url);
+      const free = await paste(url);
+      assert.equal(free.status, 201, JSON.stringify(free.body));
+      const after = await counts(u, url);
+      assert.deepEqual([after.jobs - before.jobs, after.debits - before.debits, after.jobs_used - before.jobs_used], [1, 0, 0]);
+      const olderRow = await one('SELECT restored_at IS NOT NULL AS claimed FROM job_allowance_debits WHERE job_id = $1', [older.body.id]);
+      assert.equal(olderRow.claimed, true, 'the OLDER (still unclaimed) source funded the free re-paste');
+    } finally {
+      globalThis.__ldBroken = undefined;
+    }
+  });
+}
+
 test('(d) re-paste after the previous job FAILED -> a new job, charged normally', { skip }, async () => {
   const u = await user();
   const url = canon(vid());

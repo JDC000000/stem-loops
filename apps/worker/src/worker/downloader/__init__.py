@@ -169,11 +169,11 @@ def _fetch(
     # per retry attempt), and above the fetcher loop so it governs the Cobalt leg too.
     #
     # It refuses NOTHING. A long video is fetched in full by yt-dlp and trimmed on the bytes
-    # we hold (pipeline._trim_link_source, which fails closed). Why not fetch only the first
-    # N seconds with `--download-sections`: that hands the IP-bound googlevideo URL to an
-    # ffmpeg sub-download, and the sticky-session proxy fix in ytdlp_client exists because a
-    # media request landing on a different exit IP 403s. A full fetch is the leg already
-    # proven through the proxy; the bytes are ~1 MB/min at 128 kbps.
+    # we hold (pipeline._trim_link_source, which fails closed). A full fetch is the leg already
+    # proven through the proxy; the bytes are ~1 MB/min at 128 kbps. The one exception (#491):
+    # a video whose full fetch cannot fit the per-attempt ceiling (past ~36 min) is cut with
+    # `--download-sections` in the same yt-dlp run and the same sticky proxy string (see
+    # ytdlp_client.fetch_audio_file), since fetching it in full fails every time.
     #
     # What the reading DOES decide is Cobalt. Cobalt hands back a URL and no bytes, so there
     # is nothing to trim and nothing to measure afterwards: this reading is the only ceiling
@@ -195,7 +195,12 @@ def _fetch(
             )
 
     # QK-1: each yt-dlp attempt's wall-clock bound grows with this length (unknown -> as before).
-    ytdlp_client.set_declared_duration(declared)
+    # #491: the cap goes with it, so a video too long for its full fetch to fit the ceiling is
+    # cut at download (ytdlp_client.download_trim_sec). The caller is told the true length,
+    # because the bytes it then holds are already cut and cannot show it.
+    ytdlp_client.set_declared_duration(declared, max_duration_sec)
+    if meta is not None and ytdlp_client.download_trim_sec(declared, max_duration_sec) is not None:
+        meta["download_trimmed_from_sec"] = declared
 
     attempt_no = 0
     last_exc: Exception | None = None

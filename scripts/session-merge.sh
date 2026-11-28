@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# session-merge.sh v1.1 (2026-11-28, session 24A, Jon L6 = LEDGER-24A row 10: PROTOCOL 2026-11-28 valid to 12-19T00:00Z, freeze end
+# session-merge.sh v1.2 (2026-11-28, 24A, Jon L12 = LEDGER-24A row 67: FREEZE_AT moved to 2026-11-30T01:00Z, so apps/** merges are
+#   open until Sun 11-29 18:00 Vancouver and frozen until Wed 12-02 18:00). v1.1 (2026-11-28, session 24A, Jon L6 = LEDGER-24A row 10: PROTOCOL 2026-11-28 valid to 12-19T00:00Z, freeze end
 #   12-03T01:00Z, CI watch 40 min, shared-file warning). v1.0 (2026-11-25, session 23A) — ONE gated merge for an A or a B session. Port of merge1-B.sh v2.5 (22B for 23B+,
 # sha256 fd91a6a5…c45c0a) with the #414 protocol made symmetric and an unread-note ACK guard. Run it in the FOREGROUND.
 # Usage: SESSION_TAG=23A|23B session-merge.sh <pr> <reviewed_sha_full> <review-1.md> <review-2.md>
@@ -39,7 +40,7 @@ PROTOCOL_ID="PROTOCOL 2026-11-28"
 PROTOCOL_VALID_TO=2026-12-19T00:00:00Z
 A_BLOCKS=("15:00 17:00" "21:00 22:00")      # A merge blocks: 08:00–10:00 and 14:00–15:00 Vancouver
 DEPLOY_SLOTS=("18:00 18:30" "23:00 23:30")  # DEPLOY slots from 11:00 and 16:00 Vancouver, kept clear for 30 min
-FREEZE_AT=2026-11-27T23:00:00Z              # apps/** freeze: Fri 2026-11-27 16:00 Vancouver …
+FREEZE_AT=2026-11-30T01:00:00Z              # apps/** freeze: Sun 2026-11-29 18:00 Vancouver (Jon L12, LEDGER-24A row 67; was 11-27 23:00Z) …
 FREEZE_END=2026-12-03T01:00:00Z             # … to Wed 2026-12-02 18:00 Vancouver, the end of the beta no-deploy window: [FREEZE_AT, FREEZE_END)
 CLAIM_SECS=2400                             # a claim lasts 40 min
 CI_WATCH_SECS=2400                          # wait up to 40 min for PR / main CI to complete (Chromium e2e takes 20–25 min)

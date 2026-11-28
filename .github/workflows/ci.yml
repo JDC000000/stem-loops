@@ -1163,8 +1163,9 @@ jobs:
   # RULES (L7): no labels, no new write permission (each job is read-only), no required-check change. EVERY STEP ENDS `exit 0`:
   # scripts/session-merge.sh and deploy.yml's green gate treat any red check-run as "not green", so an advisory job must never
   # go red, whatever the PR contains. A job that is cancelled by its timeout WOULD go red, so each one bounds its own work well
-  # inside timeout-minutes; checkout and setup-python are continue-on-error. Diffs use --no-renames, as the gate does (a money
-  # file renamed to a non-money name still counts as the money path it was). RESIDUE: a postgres service container that fails to
+  # inside timeout-minutes; checkout and setup-python are continue-on-error, a failed checkout is reported as "could not check
+  # (checkout failed)", checkouts keep no credentials, and each summary append is capped at 200000 bytes (#515). Diffs use
+  # --no-renames, as the gate does (a money file renamed to a non-money name still counts as the money path it was). RESIDUE: a postgres service container that fails to
   # start (diff-mutants) would still turn that job red; GitHub offers no continue-on-error for services. pull_request only
   # (skipped on push: skipped counts as green). Promote one to a real gate only by a later PR with Jon's line. The helper and
   # the gate regexes are read from the BASE commit when it has them, so a PR cannot rewrite the class/shared reports about
@@ -1180,22 +1181,27 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        continue-on-error: true  # advisory: a failed checkout must not turn the job red (later steps report "could not")
+      - id: checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        continue-on-error: true  # advisory: a failed checkout must not turn the job red; the next step reports "could not check (checkout failed)" (#515)
         with:
           fetch-depth: 0
+          persist-credentials: false  # #515: the steps only read the clone; the token is never left in .git/config
       - name: Classify the changed files with the base branch's gate (advisory; never fails)
         env:
+          CHECKOUT: ${{ steps.checkout.outcome }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -u +e +o pipefail
           T="$RUNNER_TEMP"
+          if [ "${CHECKOUT:-}" != success ]; then echo "### PR class (advisory): could not check (checkout failed)" >> "$GITHUB_STEP_SUMMARY"; exit 0; fi
           git diff --no-renames --name-only -z "$BASE_SHA...$HEAD_SHA" > "$T/files0" 2>/dev/null || : > "$T/files0"
           git show "$BASE_SHA:scripts/or4-merge.sh" > "$T/or4.sh" 2>/dev/null || : > "$T/or4.sh"
           if git show "$BASE_SHA:scripts/ci_advisory.py" > "$T/ci_advisory.py" 2>/dev/null; then H="$T/ci_advisory.py"; else H=scripts/ci_advisory.py; echo "_helper from the PR head (not on base yet)_" >> "$GITHUB_STEP_SUMMARY"; fi
           jq '{title: .pull_request.title}' "$GITHUB_EVENT_PATH" > "$T/title.json" 2>/dev/null || echo '{}' > "$T/title.json"
-          python3 -I "$H" classify --files "$T/files0" --gate "$T/or4.sh" --title-json "$T/title.json" | tee -a "$GITHUB_STEP_SUMMARY" || true
+          python3 -I "$H" classify --files "$T/files0" --gate "$T/or4.sh" --title-json "$T/title.json" > "$T/md"
+          cat "$T/md"; head -c 200000 "$T/md" >> "$GITHUB_STEP_SUMMARY"   # #515: capped, so a huge report cannot break the step
           exit 0
 
   advisory-shared-files:
@@ -1207,12 +1213,15 @@ jobs:
       contents: read
       pull-requests: read
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        continue-on-error: true  # advisory: a failed checkout must not turn the job red (later steps report "could not")
+      - id: checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        continue-on-error: true  # advisory: a failed checkout must not turn the job red; the next step reports "could not check (checkout failed)" (#515)
         with:
           fetch-depth: 0
+          persist-credentials: false  # #515: the steps only read the clone; the token is never left in .git/config
       - name: List other open PRs that change the same files (advisory; never fails)
         env:
+          CHECKOUT: ${{ steps.checkout.outcome }}
           GH_TOKEN: ${{ github.token }}
           PR: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
@@ -1220,6 +1229,7 @@ jobs:
         run: |
           set -u +e +o pipefail
           T="$RUNNER_TEMP"; echo '{}' > "$T/others.json"
+          if [ "${CHECKOUT:-}" != success ]; then echo "### Shared files (advisory): could not check (checkout failed)" >> "$GITHUB_STEP_SUMMARY"; exit 0; fi
           if git show "$BASE_SHA:scripts/ci_advisory.py" > "$T/ci_advisory.py" 2>/dev/null; then H="$T/ci_advisory.py"; else H=scripts/ci_advisory.py; echo "_helper from the PR head (not on base yet)_" >> "$GITHUB_STEP_SUMMARY"; fi
           timeout 60 gh api --paginate "repos/$REPO/pulls/$PR/files?per_page=100" --jq '.[].filename' > "$T/mine" 2>/dev/null || : > "$T/mine"
           OPENFLAG=""; UNREAD=""
@@ -1231,7 +1241,8 @@ jobs:
             timeout 30 gh api --paginate "repos/$REPO/pulls/$n/files?per_page=100" --jq '.[].filename' > "$T/f" 2>/dev/null || { UNREAD="$UNREAD,$n"; continue; }
             jq --arg n "$n" --rawfile f "$T/f" '. + {($n): ($f | split("\n") | map(select(. != "")))}' "$T/others.json" > "$T/o2" && mv "$T/o2" "$T/others.json"
           done < "$T/open"
-          python3 -I "$H" shared --mine "$T/mine" --others "$T/others.json" --pr "$PR" $OPENFLAG --unreadable "${UNREAD#,}" | tee -a "$GITHUB_STEP_SUMMARY" || true
+          python3 -I "$H" shared --mine "$T/mine" --others "$T/others.json" --pr "$PR" $OPENFLAG --unreadable "${UNREAD#,}" > "$T/md"
+          cat "$T/md"; head -c 200000 "$T/md" >> "$GITHUB_STEP_SUMMARY"   # #515: capped
           exit 0
 
   advisory-diff-mutants:
@@ -1257,22 +1268,27 @@ jobs:
         ports:
           - 5432:5432
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        continue-on-error: true  # advisory: a failed checkout must not turn the job red (later steps report "could not")
+      - id: checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        continue-on-error: true  # advisory: a failed checkout must not turn the job red; the next step reports "could not check (checkout failed)" (#515)
         with:
           fetch-depth: 0
+          persist-credentials: false  # #515: the steps only read the clone; the token is never left in .git/config
       - name: Select manifest mutants on changed money paths (advisory; never fails)
         id: sel
         env:
+          CHECKOUT: ${{ steps.checkout.outcome }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -u +e +o pipefail
           T="$RUNNER_TEMP"
+          if [ "${CHECKOUT:-}" != success ]; then echo "### Diff-scoped mutants (advisory): could not check (checkout failed)" >> "$GITHUB_STEP_SUMMARY"; echo "ids=" >> "$GITHUB_OUTPUT"; exit 0; fi
           git diff --no-renames --name-only -z "$BASE_SHA...$HEAD_SHA" > "$T/files0" 2>/dev/null || : > "$T/files0"
           git show "$BASE_SHA:scripts/or4-merge.sh" > "$T/or4.sh" 2>/dev/null || : > "$T/or4.sh"
           if git show "$BASE_SHA:scripts/ci_advisory.py" > "$T/ci_advisory.py" 2>/dev/null; then H="$T/ci_advisory.py"; else H=scripts/ci_advisory.py; echo "_helper from the PR head (not on base yet)_" >> "$GITHUB_STEP_SUMMARY"; fi
-          python3 -I "$H" mutants --files "$T/files0" --gate "$T/or4.sh" --worker apps/worker --max 12 --ids-out "$T/ids" | tee -a "$GITHUB_STEP_SUMMARY" || true
+          python3 -I "$H" mutants --files "$T/files0" --gate "$T/or4.sh" --worker apps/worker --max 12 --ids-out "$T/ids" > "$T/md"
+          cat "$T/md"; head -c 200000 "$T/md" >> "$GITHUB_STEP_SUMMARY"   # #515: capped
           ids=$(cat "$T/ids" 2>/dev/null || true)
           [[ "$ids" =~ ^[A-Za-z0-9_.,-]*$ ]] || { echo "_mutant ids failed validation; none run_" >> "$GITHUB_STEP_SUMMARY"; ids=""; }
           echo "ids=$ids" >> "$GITHUB_OUTPUT"
@@ -1286,6 +1302,7 @@ jobs:
       - name: Install worker deps
         if: steps.sel.outputs.ids != ''
         run: |
+          set -u +e +o pipefail
           timeout 600 pip install -r apps/worker/requirements.txt -r apps/worker/requirements-dev.txt -c apps/worker/constraints-prod.txt \
             || echo "_pip install failed; mutants below will report it_" >> "$GITHUB_STEP_SUMMARY"
           exit 0
@@ -1297,11 +1314,12 @@ jobs:
         run: |
           set -u +e +o pipefail
           cd apps/worker
-          PYTHONPATH=src:. timeout 1200 python -m tests.mutation.run_mutants --ids "$IDS" --suite worker --jobs 2 --json "$RUNNER_TEMP/mut.json" > "$RUNNER_TEMP/mut.log" 2>&1
+          PYTHONPATH=src:. timeout 1200 python -m tests.mutation.run_mutants --ids="$IDS" --suite worker --jobs 2 --json "$RUNNER_TEMP/mut.json" > "$RUNNER_TEMP/mut.log" 2>&1
           rc=$?
           {
             echo "### Mutant run (advisory): exit $rc  (0 = every selected mutant killed and every expected survivor survived; 1 = a survivor or crash; 2 = stale manifest; 124 = 20-min budget hit)"
-            echo; echo '```'; tail -n 60 "$RUNNER_TEMP/mut.log"; echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+            echo; echo '```'; tail -n 60 "$RUNNER_TEMP/mut.log"; echo; echo '```'
+          } > "$RUNNER_TEMP/mut.md"
+          head -c 200000 "$RUNNER_TEMP/mut.md" >> "$GITHUB_STEP_SUMMARY"   # #515: capped
           [ "$rc" = 0 ] || echo "::warning::advisory mutant run exit $rc: read the job summary (this job never fails the build)"
           exit 0

@@ -73,7 +73,7 @@ def test_bound_reads_the_declared_length_set_for_this_thread(monkeypatch):
 def test_link_stage_paper_worst_case_exceeds_the_stale_window_so_it_must_heartbeat():
     """Review F2: probe 15 + 2 x (live 15 + bound + kill waits 15) + delay 2 + trim (ffprobe 30
     + ffmpeg FFMPEG_DECODE_TIMEOUT_SEC_DEFAULT + ffprobe 30) is already >= 300 s with a ZERO
-    bound, before an R2 PUT with no wall bound. No ceiling makes it fit: the stage heartbeats
+    bound, before the R2 PUT (bounded since #491). No ceiling makes it fit: the stage heartbeats
     (pinned in test_link_fetch_trim_and_staging_run_inside_the_stage_heartbeat)."""
     from worker import pipeline, reaper  # noqa: PLC0415
 
@@ -354,7 +354,7 @@ def test_link_fetch_trim_and_staging_run_inside_the_stage_heartbeat(monkeypatch,
     monkeypatch.setattr(pipeline, "_stage_heartbeat", tracking_heartbeat)
     monkeypatch.setattr(pipeline, "download_audio", fake_download)
     monkeypatch.setattr(
-        pipeline, "_trim_link_source", lambda j, p: order.append("trim") or (p, None)
+        pipeline, "_trim_link_source", lambda j, p, s=None: order.append("trim") or (p, None)
     )
     monkeypatch.setattr(pipeline, "upload_input", lambda j, p: order.append("stage") or "https://x")
     monkeypatch.setattr(

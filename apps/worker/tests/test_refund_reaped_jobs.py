@@ -418,7 +418,12 @@ class _Harness:
         mp.setattr(pipeline, "extract_and_tag", extract)
         mp.setattr(pipeline, "_maybe_run_chord_recognition", self._stage("chords", None))
         mp.setattr(pipeline, "record_loops", self._stage("record_loops", 0))
-        mp.setattr(pipeline, "retain_stems", self._stage("retain_stems", {"play": ["drums"]}))
+        # #490: a partial set now (rightly) fails the job; this harness is about the heartbeat.
+        mp.setattr(
+            pipeline,
+            "retain_stems",
+            self._stage("retain_stems", {"play": list(pipeline.ALL_STEMS)}),
+        )
 
         @contextlib.asynccontextmanager
         async def heartbeat(job_id):

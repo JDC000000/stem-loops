@@ -42,11 +42,14 @@ double bill). The quota slot is not refunded either way.
 
 K-2: a process-wide circuit breaker (``_SubmitBreaker``) skips submits, before the claim
 and the quota slot, after ``KLANGIO_BREAKER_FAILURES`` (default 3; 0 disables)
-consecutive unanswered submits, for ``KLANGIO_BREAKER_PAUSE_SEC`` (default 1800), then
-lets one trial through. Skipped submits raise ``ChordProviderPaused``.
+consecutive failed submits (unanswered, 5xx/429, or never connected: #462, #467 E3),
+for ``KLANGIO_BREAKER_PAUSE_SEC`` (default 1800), then lets one trial through. Skipped
+submits raise ``ChordProviderPaused``.
 
 402 → ``ChordQuotaExceeded`` (terminal). 4xx (not 402, 429) → raised
-immediately — these are our bugs, retrying wastes quota.
+immediately — these are our bugs, retrying wastes quota. A 5xx/429 on the (never
+retried) submit POST is ``ChordSubmitNoAnswer``: a billed job may exist behind it, so it
+is reported as ``submit_unanswered`` and keeps the claim (#462 item 3).
 
 Per-segment confidence: Klangio does NOT publish it (the result is bare
 [start, end, label] triples; no key either, so ``ChordResult.key`` is None). We set
@@ -255,8 +258,10 @@ class ChordProviderError(Exception):
 
 
 class ChordSubmitNoAnswer(ChordProviderError, ChordSubmitUnanswered):
-    """A non-retried request (the billable submit POST) got no HTTP response at all
-    (transport error / timeout) after it may have been sent. Still a ``ChordProviderError``;
+    """A non-retried request (the billable submit POST) got no usable answer after it may
+    have been sent: no HTTP response at all (transport error / timeout), or a 5xx / 429
+    (#462 item 3: Klangio may still have created and billed the job). Still a
+    ``ChordProviderError``;
     the second base lets the pipeline report it as ``submit_unanswered`` without importing
     this module (B-8c)."""
 
@@ -286,7 +291,8 @@ _NOT_SENT_ERRORS: tuple[type[Exception], ...] = (
 # ------------------------------ K-2: submit circuit breaker ------------------------------
 # Process-wide (no DB, no migration): each worker process trips on its own. During a
 # Klangio outage every submit POST otherwise holds its job 30-120 s and spends one quota
-# slot. After N consecutive "sent, no answer" submits the breaker opens for M seconds and
+# slot. After N consecutive failed submits ("sent, no answer", a 5xx/429 on the POST, or
+# a POST that never connected: Jon E3 = (a), #467) the breaker opens for M seconds and
 # further submits are skipped before the ledger claim and the quota reservation. After M
 # seconds exactly one trial submit is let through (half-open): an answer closes it, no
 # answer (or a trial that could not connect) re-opens it for another M seconds.
@@ -294,9 +300,9 @@ BREAKER_FAILURES_DEFAULT = 3
 BREAKER_PAUSE_SEC_DEFAULT = 1800.0
 
 # Outcomes of one admitted submit, reported to ``_SubmitBreaker.settle``.
-OUTCOME_ANSWERED = "answered"  # any HTTP response (2xx, 4xx, 5xx, 402): Klangio is reachable
-OUTCOME_NO_ANSWER = "no_answer"  # ChordSubmitNoAnswer: sent (maybe), no response
-OUTCOME_NOT_SENT = "not_sent"  # ChordSubmitNotSent: could not connect
+OUTCOME_ANSWERED = "answered"  # 2xx, 4xx (incl. 402): Klangio is reachable and working
+OUTCOME_NO_ANSWER = "no_answer"  # ChordSubmitNoAnswer: sent (maybe), no response or 5xx/429
+OUTCOME_NOT_SENT = "not_sent"  # ChordSubmitNotSent: could not connect (counts, #467 E3)
 OUTCOME_ABORTED = "aborted"  # no POST was made (claim / quota / drain / local error)
 
 _breaker_now = time.monotonic
@@ -404,7 +410,9 @@ class _SubmitBreaker:
             elif failures > 0 and state == self.CLOSED:
                 if outcome == OUTCOME_ANSWERED:
                     self.consecutive_no_answer = 0
-                elif outcome == OUTCOME_NO_ANSWER:
+                elif outcome in (OUTCOME_NO_ANSWER, OUTCOME_NOT_SENT):
+                    # #467 E3 = (a): a POST that never connects counts too (each one
+                    # still spends a quota slot; no refund), so a connect outage trips it.
                     count += 1
                     self.consecutive_no_answer = count
                     if count >= failures:
@@ -412,7 +420,7 @@ class _SubmitBreaker:
                         self.open_until = now + pause
                         streak = count
                         transition = self.OPEN
-                # not_sent / aborted: neither proves nor disproves a hang; streak unchanged.
+                # aborted: no POST was made; streak unchanged.
             # A normal (non-trial) submit that finishes while open/half-open (it was admitted
             # before the breaker opened) does not change the state.
         if transition == self.OPEN:
@@ -448,7 +456,7 @@ def _sentry_capture_breaker_open(
 
         sentry_sdk.capture_message(
             f"chords_breaker_open: Klangio submits paused for {pause:.0f}s after "
-            f"{'a failed half-open trial' if from_trial else f'{streak} unanswered submits'}"
+            f"{'a failed half-open trial' if from_trial else f'{streak} failed submits'}"
             f" (threshold {threshold})",
             level="warning",
         )
@@ -831,7 +839,8 @@ class KlangioChordSource:
                 outcome = OUTCOME_NO_ANSWER
                 raise
             except (ChordProviderError, ChordQuotaExceeded):
-                # An HTTP status (4xx / 5xx / 402) is an answer: Klangio is reachable.
+                # A 4xx / 402 status is an answer: Klangio is reachable. (5xx / 429 on this
+                # POST is ChordSubmitNoAnswer, caught above.)
                 outcome = OUTCOME_ANSWERED
                 raise
             outcome = OUTCOME_ANSWERED
@@ -938,7 +947,9 @@ def _request_with_retry(
             raise ChordQuotaExceeded("Klangio quota exceeded (HTTP 402) — see Y1 decision record.")
         if status == 429 or status >= 500:
             if attempt >= max_retries:
-                raise ChordProviderError(
+                # #462 item 3: on the non-retried submit POST a 5xx/429 leaves the claim
+                # 'submitting' (a billed job may exist), so it is "unanswered".
+                raise (ChordProviderError if retry else ChordSubmitNoAnswer)(
                     f"Klangio {method} {url} HTTP {status} after "
                     f"{attempt + 1} attempt(s)"
                     + ("" if retry else " (not retried: a billed job may exist)")
@@ -1017,6 +1028,39 @@ def _coerce_time(value: Any) -> float | None:
     return f if math.isfinite(f) else None
 
 
+# #524 frame clock. Klangio's served times are exact multiples of 10/108 s (BTC's
+# 10 s / 108-frame chunk period), but its frames are a contiguous hop-2048 CQT at
+# 22.05 kHz, i.e. 2048/22050 s each (frame counts match our audio exactly; fitted
+# served->audio scale 1.00304-1.00314 on 3 songs vs (2048/22050)/(10/108) = 1.003102).
+# Served as-is, chords drift early (~0.9 s by 300 s). We re-stamp each time by its frame
+# index. Only a response whose EVERY time is on the 10/108 grid is re-stamped; anything
+# else (e.g. a provider-side fix) passes through, so we never correct twice.
+_SERVED_FRAME_SEC = 10 / 108
+_AUDIO_HOP_SEC = 2048 / 22050
+_GRID_TOL_FRAMES = 1e-6  # served demo songs: max off-grid 2.3e-13 frames
+CLOCK_RESTAMPED = "frame_10_108_restamped"
+CLOCK_PASSTHROUGH = "passthrough"
+
+
+def _restamp_frame_clock(
+    rows: list[tuple[float, float, str]],
+) -> tuple[list[tuple[float, float, str]], str]:
+    """Map served 10/108 s frame times onto the audio's 2048/22050 s frames (see #524)."""
+
+    def frames(t: float) -> float:
+        return t / _SERVED_FRAME_SEC
+
+    on_grid = bool(rows) and all(
+        abs(frames(t) - round(frames(t))) <= _GRID_TOL_FRAMES for s, e, _ in rows for t in (s, e)
+    )
+    if not on_grid:
+        return rows, CLOCK_PASSTHROUGH
+    return [
+        (round(frames(s)) * _AUDIO_HOP_SEC, round(frames(e)) * _AUDIO_HOP_SEC, label)
+        for s, e, label in rows
+    ], CLOCK_RESTAMPED
+
+
 def _parse_klangio_response(payload: Any, *, model_ms: int) -> ChordResult:
     """Map Klangio's result array ``[[start, end, label], ...]`` onto ChordResult.
 
@@ -1069,6 +1113,9 @@ def _parse_klangio_response(payload: Any, *, model_ms: int) -> ChordResult:
             label = "X"
         parsed.append((start, end, label))
 
+    # Monotone map, so the ordering / overlap repairs below are unaffected by it.
+    parsed, time_clock = _restamp_frame_clock(parsed)
+
     if any(parsed[i][0] > parsed[i + 1][0] for i in range(len(parsed) - 1)):
         parsed.sort(key=lambda t: t[0])  # stable: ties keep wire order
         repaired["reordered"] = 1
@@ -1109,6 +1156,7 @@ def _parse_klangio_response(payload: Any, *, model_ms: int) -> ChordResult:
         repaired_by_kind=repaired,
         bad_row_samples=bad_samples,
         x_label_samples=x_examples,
+        time_clock=time_clock,
     )
     if payload and not segments:
         raise ChordProviderError(

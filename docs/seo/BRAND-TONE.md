@@ -95,7 +95,7 @@ Say whose fault it is, what happened, and one next step. This rests on stem-loop
 
 - **S:** "It's not something you did — we're working through other people's songs." (`lib/error-copy.ts:20`)
 - **Do:** "Something went wrong on our end. Please try again." (server fault). Client validation errors say what to fix and never blame us.
-- **Name one cause.** If one error code covers two real causes, name both until the code is split (audit F72, F29). Example: "This track is too short or has no steady beat. Try a longer track with a clear beat."
+- **Name one cause.** If one error code covers two real causes, name both until the code is split (audit F72, F29). Example: "This song is too short or has no steady beat. Try a longer song with a clear beat."
 - **Don't:** "We couldn’t start that job. PAID_LINK_INGEST_DISALLOWED".
 
 ### 6. Say it once, unless a guard says otherwise
@@ -111,7 +111,7 @@ Put one caveat in one place, next to the thing it qualifies. This rests on stem-
 |---|---|---|---|
 | **Marketing** (landing, OG, meta) | Confident and concrete. Player first, loops second. "Job" only where the page explains accounts, limits or stages. | H1 ≤ 6 words. Lead sentence ≤ 30 words. Spec rows in fragments. | "Paste a song. Play along." |
 | **In-product** (player, mixer, job page) | Quiet and functional. | Verbs on buttons, nouns on headings, status ≤ 8 words. | "Cut 36 loops" · "Finding bars and sections" |
-| **Errors** | Calm and specific. Blame placed correctly. One next step. | Headline ≤ 10 words, action ≤ 20 words. Never a code, stack trace or raw server text. | "This track is too short or has no steady beat. Try a longer track with a clear beat." (audit F29, v1.3) |
+| **Errors** | Calm and specific. Blame placed correctly. One next step. | Headline ≤ 10 words, action ≤ 20 words. Never a code, stack trace or raw server text. | "This song is too short or has no steady beat. Try a longer song with a clear beat." (audit F29, v1.3) |
 | **Legal-adjacent** (data FAQ, delete page, pricing small print) | Literal. No "safe", "secure" or "private" unless the code enforces it. | Must match the privacy notice on facts. | "A job’s link is the only thing protecting it." (`app/(landing)/privacy/page.tsx:127`, current) |
 | **Emails** | Warm and brief. One purpose per email. | Subject ≤ 50 characters. The first line says why you got it. One verb-first button. Human labels for every status. | "Thanks for subscribing. Upload a song and it opens in the player…" |
 

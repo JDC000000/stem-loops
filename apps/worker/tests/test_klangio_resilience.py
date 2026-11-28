@@ -197,6 +197,38 @@ def test_k1_an_http_error_answer_keeps_the_claim(env, status):
     assert ledger.state == "submitting" and ledger.releases == 0
 
 
+@pytest.mark.parametrize("status", [500, 502, 503, 599, 429])
+def test_k1_a_5xx_or_429_post_is_unanswered(env, status):
+    """#462 item 3: Klangio may have created (and billed) the job behind a 5xx/429, so the
+    POST is classed like a lost answer: ``ChordSubmitNoAnswer`` (pipeline reason
+    ``submit_unanswered``), claim kept, quota slot spent."""
+    ledger = _Ledger()
+    with pytest.raises(
+        kg.ChordSubmitNoAnswer, match=f"HTTP {status} .*a billed job may exist"
+    ) as caught:
+        _submit(env, _answer(status, {}), ledger)
+    assert isinstance(caught.value, ChordSubmitUnanswered)
+    assert ledger.state == "submitting" and ledger.releases == 0
+    assert env.quota() == 1
+
+
+@pytest.mark.parametrize("status", [400, 401, 404, 422, 499])
+def test_k1_a_4xx_post_is_not_unanswered(env, status):
+    with pytest.raises(kg.ChordProviderError) as caught:
+        _submit(env, _answer(status, {}), _Ledger())
+    assert not isinstance(caught.value, ChordSubmitUnanswered)
+
+
+@pytest.mark.parametrize("status", [500, 503, 429])
+def test_k1_retried_get_5xx_is_not_unanswered(env, status):
+    client = httpx.Client(
+        base_url="https://api.klang.io", transport=httpx.MockTransport(_answer(status, {}))
+    )
+    with pytest.raises(kg.ChordProviderError) as caught:
+        kg._request_with_retry(client, method="GET", url="/job/x/status")
+    assert type(caught.value) is kg.ChordProviderError
+
+
 def test_k1_a_released_job_can_submit_again(env):
     ledger = _Ledger()
     with pytest.raises(kg.ChordSubmitNotSent):
@@ -254,7 +286,7 @@ def test_k2_two_unanswered_do_not_open(env):
     assert not env.events("chords_breaker_open")
 
 
-@pytest.mark.parametrize("status", [200, 500])
+@pytest.mark.parametrize("status", [200, 400, 404])
 def test_k2_any_answer_resets_the_streak(env, status):
     _no_answer(env)
     _no_answer(env)
@@ -267,14 +299,62 @@ def test_k2_any_answer_resets_the_streak(env, status):
     assert kg._BREAKER.state == kg._SubmitBreaker.OPEN
 
 
-def test_k2_not_sent_is_neutral_for_the_streak(env):
+def test_k2_not_sent_counts_toward_the_streak(env):
+    """#467 item 2, Jon E3 = (a): a POST that never connects counts like an unanswered one
+    (each still spends a quota slot, no refund), so a connect outage trips the breaker."""
     _no_answer(env)
     _no_answer(env)
     with pytest.raises(kg.ChordSubmitNotSent):
         _submit(env, _raiser(httpx.ConnectError))
-    assert kg._BREAKER.state == kg._SubmitBreaker.CLOSED
-    _no_answer(env)
     assert kg._BREAKER.state == kg._SubmitBreaker.OPEN
+    ((_lvl, _ev, fields),) = env.events("chords_breaker_open")
+    assert fields["trigger"] == kg.OUTCOME_NOT_SENT and fields["consecutive_no_answer"] == 3
+
+
+@pytest.mark.parametrize("exc_type", [httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout])
+def test_k2_a_connect_outage_alone_opens_and_then_spends_nothing(env, exc_type):
+    for i in range(3):
+        assert kg._BREAKER.state == kg._SubmitBreaker.CLOSED, i
+        ledger = _Ledger()
+        with pytest.raises(kg.ChordSubmitNotSent):
+            _submit(env, _raiser(exc_type), ledger)
+        assert ledger.state is None  # K-1 still releases the claim
+    assert kg._BREAKER.state == kg._SubmitBreaker.OPEN
+    assert env.quota() == 3  # no refund change: each attempt spent its slot
+    env.sentry.assert_called_once()
+    counting = _Counting(_answer())
+    with pytest.raises(ChordProviderPaused):
+        _submit(env, counting, _Ledger())
+    assert counting.calls == 0 and env.quota() == 3
+
+
+def test_k2_two_not_sent_do_not_open(env):
+    for _ in range(2):
+        with pytest.raises(kg.ChordSubmitNotSent):
+            _submit(env, _raiser(httpx.ConnectError))
+    assert kg._BREAKER.state == kg._SubmitBreaker.CLOSED
+    assert _submit(env, _answer()) == KLANGIO_JOB
+    assert kg._BREAKER.consecutive_no_answer == 0
+
+
+@pytest.mark.parametrize("status", [500, 503, 429])
+def test_k2_a_5xx_or_429_post_counts_toward_the_streak(env, status):
+    """#462 item 3: an error status on the POST is "unanswered" for the breaker too."""
+    for _ in range(3):
+        with pytest.raises(kg.ChordSubmitNoAnswer):
+            _submit(env, _answer(status, {}))
+    assert kg._BREAKER.state == kg._SubmitBreaker.OPEN
+    assert env.events("chords_breaker_open")[0][2]["trigger"] == kg.OUTCOME_NO_ANSWER
+
+
+@pytest.mark.parametrize("status", [500, 429])
+def test_k2_a_5xx_half_open_trial_reopens(env, status):
+    _open(env)
+    env.clock.t += 1800
+    with pytest.raises(kg.ChordSubmitNoAnswer):
+        _submit(env, _answer(status, {}))
+    assert kg._BREAKER.state == kg._SubmitBreaker.OPEN
+    assert kg._BREAKER.open_until == env.clock.t + 1800
 
 
 def test_k2_quota_refusal_does_not_count(env, monkeypatch):

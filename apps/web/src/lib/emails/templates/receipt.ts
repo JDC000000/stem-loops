@@ -58,7 +58,7 @@ export function renderReceipt(vars: ReceiptVars): RenderedEmail {
 
   let note = '';
   if (vars.kind === 'credit_pack') {
-    note = 'Credits never expire. Each one covers one uploaded track on the Free plan.';
+    note = 'Credits never expire. Each one covers one uploaded song on the Free plan.';
   } else if (hasInvoice) {
     note = 'Your invoice is on the Stripe page linked below.';
   }

@@ -28,6 +28,7 @@ function reset(over = {}) {
     lockFound: true,
     admission: { allowed: true, error_code: null },
     quota: null,
+    burst: null,
     queries: [],
     calls: [],
     ...over,
@@ -35,10 +36,7 @@ function reset(over = {}) {
   process.env.ALLOW_YOUTUBE_INPUT = 'true';
 }
 
-const graph = buildModuleGraph({
-  name: 'library-remake-route',
-  entries: ['app/api/library/remake/route.ts', 'app/api/library/[entryId]/route.ts'],
-  overrides: {
+const OVERRIDES = {
     // QW-2: the paste's R2 stem probe (reached via lib/library-server.ts); never called here.
     'lib/jobs/stem-artifacts.ts': 'export const hasPlayableStems = async () => true;',
     'lib/db.ts': `
@@ -77,7 +75,7 @@ const graph = buildModuleGraph({
     'lib/client-ip.ts': 'export const clientIpHashOf = () => "iphash";',
     'lib/billing/rate-limit.ts': `
       const c = (n) => globalThis.__rm.calls.push(n);
-      export async function checkBurstLimit() { c('checkBurstLimit'); return null; }
+      export async function checkBurstLimit() { c('checkBurstLimit'); return globalThis.__rm.burst ?? null; }
       export async function checkMonthlyQuota() { c('checkMonthlyQuota'); return globalThis.__rm.quota; }
       export async function bumpJobsUsed() { c('bumpJobsUsed'); }
       export async function bumpJobsUsedWithinQuota() { c('bumpJobsUsedWithinQuota'); return true; }
@@ -89,12 +87,17 @@ const graph = buildModuleGraph({
       export async function getEntitlementSnapshot() { return { plan_code: 'free', jobs_quota: 5, jobs_used: 0, credits_remaining: 0, services: ['youtube'] }; }
       export async function enforceEntitlement() { return { allowed: true }; }`,
     'lib/trial.ts': 'export async function consumeTrialInTx() { globalThis.__rm.calls.push("consumeTrialInTx"); return { ok: false, reason: "no_grant" }; }',
-  },
-  packages: {
-    '@sentry/nextjs': 'export const captureException = () => {};',
-    'next/server': `export class NextResponse { static json(body, init = {}) { return { status: init.status ?? 200, body, headers: init.headers ?? {} }; } }
+};
+const PACKAGES = {
+  '@sentry/nextjs': 'export const captureException = () => {};',
+  'next/server': `export class NextResponse { static json(body, init = {}) { return { status: init.status ?? 200, body, headers: init.headers ?? {} }; } }
       export class NextRequest {}`,
-  },
+};
+const graph = buildModuleGraph({
+  name: 'library-remake-route',
+  entries: ['app/api/library/remake/route.ts', 'app/api/library/[entryId]/route.ts'],
+  overrides: OVERRIDES,
+  packages: PACKAGES,
 });
 const remake = await import(graph.url('app/api/library/remake/route.ts'));
 const one = await import(graph.url('app/api/library/[entryId]/route.ts'));
@@ -226,6 +229,44 @@ test('AC 5: over the monthly quota -> the job route\'s 402, with the existing qu
   assert.equal(r.body.message, entitlementMessage('FREE_MONTHLY_QUOTA_EXHAUSTED'));
   assert.ok(!S().calls.includes('INSERT jobs'));
 });
+
+test('#489: burst-limited -> 429 with the per-client sentence from the job lib (no remake back-fill)', async () => {
+  reset({ burst: { kind: 'rate_limit_burst', retry_after_s: 60 } });
+  const { RATE_LIMITED_PER_CLIENT_MSG } = await import(graph.url('lib/error-copy.ts'));
+  const r = await remake.POST(req({ entry_id: ENTRY }));
+  assert.equal(r.status, 429);
+  assert.equal(r.headers['Retry-After'], '60');
+  assert.equal(r.body.code, 'rate_limit_burst');
+  assert.equal(r.body.error_code, 'RATE_LIMITED');
+  assert.equal(r.body.message, RATE_LIMITED_PER_CLIENT_MSG);
+  assert.ok(!S().calls.includes('INSERT jobs'));
+});
+
+// #489: the route returns the job lib's refusal body as it is. The lib owns the copy (QW-1); the
+// old back-fill of a missing `message` for quota_exceeded / rate_limit_burst is gone.
+const passGraph = buildModuleGraph({
+  name: 'library-remake-route-pass',
+  entries: ['app/api/library/remake/route.ts'],
+  overrides: {
+    ...OVERRIDES,
+    'lib/jobs/create-link-job.ts': `
+      export const LINK_DEFAULT_STEMS = ['drums', 'bass', 'vocals', 'guitar', 'keys', 'other'];
+      export async function createAuthedLinkJob() { return globalThis.__rm.libResult; }`,
+  },
+  packages: PACKAGES,
+});
+const remakePass = await import(passGraph.url('app/api/library/remake/route.ts'));
+for (const [status, body] of [
+  [402, { error: 'monthly quota reached', code: 'quota_exceeded', resets_at: '2026-12-01T00:00:00Z' }],
+  [429, { error: 'too many requests', code: 'rate_limit_burst', retry_after_s: 60 }],
+]) {
+  test(`#489: a ${status} ${body.code} body from the lib passes through unchanged (no message added)`, async () => {
+    reset({ libResult: { status, body } });
+    const r = await remakePass.POST(req({ entry_id: ENTRY }));
+    assert.equal(r.status, status);
+    assert.deepEqual(r.body, body);
+  });
+}
 
 test('malformed JSON -> 400', async () => {
   reset();

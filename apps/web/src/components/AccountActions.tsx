@@ -11,7 +11,9 @@
 // it works before hydration and without JavaScript. With JavaScript, the submit handler first
 // drops what this browser holds for the user who is leaving: buffered player edits and a link
 // saved for a sign-in round trip, as DeleteAccountForm does (security audit §3 M3), so the next
-// person to sign in on a shared machine cannot flush or inherit them. It never cancels the submit.
+// person to sign in on a shared machine cannot flush or inherit them. It also drops this browser's
+// song history (lib/history.ts, #486); the route clears its httpOnly `sl-history` cookie mirror.
+// It never cancels the submit.
 //
 // SEND FEEDBACK is a mailto with a fixed subject (components/landing/legal.ts). No backend.
 //
@@ -20,6 +22,7 @@
 import type { CSSProperties } from 'react';
 import { clearBufferedEdits } from '@/chord/edit-collector';
 import { clearPendingLink } from '@/lib/pending-link';
+import { clearHistory } from '@/lib/history';
 import { FEEDBACK_URL } from '@/components/landing/legal';
 import { buttonBase, secondaryButton } from '@/lib/ui/form-styles';
 
@@ -56,6 +59,11 @@ export function forgetLocalUserState(): void {
   }
   try {
     clearPendingLink(window.localStorage);
+  } catch {
+    /* blocked storage holds nothing */
+  }
+  try {
+    clearHistory();
   } catch {
     /* blocked storage holds nothing */
   }

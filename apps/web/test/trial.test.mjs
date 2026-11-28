@@ -33,6 +33,9 @@ const toJs = (src) =>
     compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
   }).outputText;
 const dataUrl = (js) => 'data:text/javascript;base64,' + Buffer.from(js).toString('base64');
+// #489: the consume route's burst 429 uses the shared body and sentence (the REAL modules).
+const ERRCOPY_URL = dataUrl(toJs(readFileSync(join(WEB, 'src/lib/error-copy.ts'), 'utf8')));
+const LINK_JOB_URL = dataUrl(toJs(readFileSync(join(WEB, 'src/lib/jobs/create-link-job.ts'), 'utf8')));
 
 function authStub(user) {
   return dataUrl(`export const getUser = async () => (${JSON.stringify(user)});`);
@@ -93,15 +96,15 @@ async function loadGrantRoute({ user, trial }) {
 // Burst-limit stub for /api/users/me/trial/consume (round-2 FIX #3).
 // `limited` = true → returns a BurstDenial, false → returns null and the
 // route proceeds. Records calls so tests can assert the gate ran.
-function burstStub({ limited = false } = {}) {
-  const payload = JSON.stringify({ limited });
+function burstStub({ limited = false, retryAfterS = 60 } = {}) {
+  const payload = JSON.stringify({ limited, retryAfterS });
   return dataUrl(`
     const cfg = ${payload};
     globalThis.__burstCalls = 0;
     export const checkBurstLimit = async (userId) => {
       globalThis.__burstCalls++;
       globalThis.__burstLastUser = userId;
-      if (cfg.limited) return { kind: 'rate_limit_burst', retry_after_s: 60 };
+      if (cfg.limited) return { kind: 'rate_limit_burst', retry_after_s: cfg.retryAfterS };
       return null;
     };
   `);
@@ -120,6 +123,8 @@ async function loadConsumeRoute({ user, trial, burst } = {}) {
     .replace(/from ['"]@\/lib\/auth\/supabase['"]/g, `from '${authStub(user)}'`)
     .replace(/from ['"]@\/lib\/trial['"]/g, `from '${trialStub(trial ?? {})}'`)
     .replace(/from ['"]@\/lib\/billing\/rate-limit['"]/g, `from '${burstStub(burst ?? {})}'`)
+    .replace(/from ['"]@\/lib\/error-copy['"]/g, `from '${ERRCOPY_URL}'`)
+    .replace(/from ['"]@\/lib\/jobs\/create-link-job['"]/g, `from '${LINK_JOB_URL}'`)
     .replace(SAME_ORIGIN_IMPORT_RE, `from '${SAME_ORIGIN_URL}'`)
     .replace(/from ['"]next\/server['"]/g, `from '${nextStub()}'`);
   return await import(dataUrl(js) + '#' + Math.random());
@@ -234,12 +239,26 @@ test('POST /api/users/me/trial/consume — 429 when burst limit trips (round-2 F
   const mod = await loadConsumeRoute({
     user: USER,
     trial: { consumeResult: { ok: true, songs_remaining: 2, expires_at: EXPIRY } },
-    burst: { limited: true },
+    // #507 R1: a value other than 60, so a hard-coded 60 in the route cannot pass.
+    burst: { limited: true, retryAfterS: 17 },
   });
   const res = await mod.POST(sameOriginReq());
   assert.equal(res.status, 429);
   assert.equal(res.body.code, 'rate_limit_burst');
-  assert.equal(res.headers.get('Retry-After'), '60');
+  assert.equal(res.headers.get('Retry-After'), '17');
+  assert.equal(res.body.retry_after_s, 17);
+  assert.equal(res.headers.get('Retry-After'), String(res.body.retry_after_s));
+  // #489: the same body /api/jobs sends (QW-1): the old fields plus error_code and the sentence.
+  const { RATE_LIMITED_PER_CLIENT_MSG } = await import(ERRCOPY_URL);
+  assert.deepEqual(res.body, {
+    error: 'too many requests',
+    code: 'rate_limit_burst',
+    retry_after_s: 17,
+    error_code: 'RATE_LIMITED',
+    message: RATE_LIMITED_PER_CLIENT_MSG,
+  });
+  assert.equal(res.headers.get('Cache-Control'), 'no-store');
+  assert.equal(res.headers.get('content-type'), 'application/json');
   assert.equal(globalThis.__burstCalls, 1, 'burst check must run');
   assert.equal(globalThis.__trialCalls.consume, 0, 'consume must NOT be called when burst-limited');
 });

@@ -50,10 +50,10 @@ const STATUS_LABEL: Record<SubscriptionChangedStatus, string> = {
   paused: 'Paused',
 };
 
-/** "It covers 50 tracks a month and renews on 15 January 2027." or ''. */
+/** "It covers 50 songs a month and renews on 15 January 2027." or ''. */
 function coverage(quota: number | null | undefined, periodEnd: Date | string | null): string {
   const parts: string[] = [];
-  if (typeof quota === 'number' && quota > 0) parts.push(`covers ${quota} tracks a month`);
+  if (typeof quota === 'number' && quota > 0) parts.push(`covers ${quota} songs a month`);
   const renews = formatDateProse(periodEnd);
   if (renews) parts.push(`renews on ${renews}`);
   return parts.length ? `It ${parts.join(' and ')}.` : '';

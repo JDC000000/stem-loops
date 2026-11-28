@@ -72,7 +72,7 @@ export function renderPlanEnded(vars: PlanEndedVars): RenderedEmail {
 
   const freeLine =
     typeof vars.free_quota === 'number' && vars.free_quota > 0
-      ? `The Free plan covers ${vars.free_quota} tracks a month. Any credits you hold stay on your account.`
+      ? `The Free plan covers ${vars.free_quota} songs a month. Any credits you hold stay on your account.`
       : 'Any credits you hold stay on your account.';
   // Paid-plan retention (lib/retention.ts): the library's audio gets 30 days' grace from the
   // end of the plan; new songs on Free lose their audio after 24 hours. Since Phase B B1

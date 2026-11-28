@@ -32,12 +32,12 @@ export interface WelcomeVars {
 
 const NB = ' ';
 
-/** "Your Pro plan is active, covers 50 tracks a month and renews on 15 January 2027." */
+/** "Your Pro plan is active, covers 50 songs a month and renews on 15 January 2027." */
 function planSentence(vars: WelcomeVars): string {
   const plan = vars.plan_code ? `${planLabel(vars.plan_code)} plan` : 'plan';
   const parts: string[] = [];
   if (typeof vars.monthly_job_quota === 'number' && vars.monthly_job_quota > 0) {
-    parts.push(`covers ${vars.monthly_job_quota} tracks a month`);
+    parts.push(`covers ${vars.monthly_job_quota} songs a month`);
   }
   const renews = formatDateProse(vars.period_end);
   if (renews) parts.push(`renews on ${renews}`);

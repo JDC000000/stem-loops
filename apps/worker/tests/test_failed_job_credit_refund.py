@@ -241,12 +241,35 @@ def test_qk2_zero_playable_stems_fails_and_returns_the_credit_once(conn, _pipeli
     assert _balance(conn, uid) == 20
 
 
-def test_qk2_a_partial_stem_set_still_finishes_done_and_keeps_the_credit(
-    conn, _pipeline_db, monkeypatch
-):
+def test_490_a_partial_stem_set_fails_and_returns_the_credit_once(conn, _pipeline_db, monkeypatch):
+    """#490 (Jon E2 = a): 1 of the 6 htdemucs_6s stems playable is not 'done'. UPLOAD_FAILED
+    through the same refund path as 0 stems, exactly one credit back, and the stem objects that
+    did upload are deleted."""
+    from worker.errors import UploadFailedError
+
     uid = _user(conn)
     jid = _job(conn, uid, pred="pred_abc")
+    deleted: list = []
     _drive_to_retention(monkeypatch, _pipeline_db, {"play": ["drums"], "download": ["drums"]})
+    monkeypatch.setattr(_pipeline_db, "delete_objects", lambda keys: deleted.extend(keys))
+    with pytest.raises(UploadFailedError):
+        asyncio.run(_pipeline_db._run_pipeline(str(jid)))
+    assert conn.execute("SELECT status, error_code FROM jobs WHERE id=%s", (jid,)).fetchone() == (
+        "failed",
+        "UPLOAD_FAILED",
+    )
+    assert _balance(conn, uid) == 20
+    _fail(_pipeline_db, jid, "UPLOAD_FAILED")
+    assert _refund_rows(conn, jid) == 1
+    assert _balance(conn, uid) == 20
+    assert sorted(deleted) == [f"{jid}/_stems/dl/drums.wav", f"{jid}/_stems/play/drums.opus"]
+
+
+def test_490_a_full_stem_set_finishes_done_and_keeps_the_credit(conn, _pipeline_db, monkeypatch):
+    six = list(_pipeline_db.ALL_STEMS)
+    uid = _user(conn)
+    jid = _job(conn, uid, pred="pred_abc")
+    _drive_to_retention(monkeypatch, _pipeline_db, {"play": six, "download": six})
     asyncio.run(_pipeline_db._run_pipeline(str(jid)))
     assert conn.execute("SELECT status, error_code FROM jobs WHERE id=%s", (jid,)).fetchone() == (
         "done",
@@ -254,3 +277,48 @@ def test_qk2_a_partial_stem_set_still_finishes_done_and_keeps_the_credit(
     )
     assert _refund_rows(conn, jid) == 0
     assert _balance(conn, uid) == 19
+
+
+@pytest.mark.parametrize(
+    "terminal,code",
+    [("done", None), ("failed", "INTERNAL_ERROR")],
+    ids=["another_run_finished_done", "reaper_already_failed_it"],
+)
+def test_490_r1_b1_a_short_report_on_a_terminal_job_deletes_nothing(
+    conn, _pipeline_db, monkeypatch, terminal, code
+):
+    """Review B-1 (R1): a zombie run whose retention comes back short after the job was ended
+    by someone else (another run wrote 'done'; the reaper failed it) must not delete the stem
+    objects (same deterministic keys as the other run's) and must not change the refund."""
+    import psycopg
+
+    from worker.errors import UploadFailedError
+
+    six = list(_pipeline_db.ALL_STEMS)
+    uid = _user(conn)
+    jid = _job(conn, uid, pred="pred_abc")
+    deleted: list = []
+    _drive_to_retention(monkeypatch, _pipeline_db, None)
+
+    def retain(job_id, _paths):
+        with psycopg.connect(DB) as c:  # type: ignore[arg-type]
+            c.execute(
+                "UPDATE jobs SET status=%s, error_code=%s WHERE id=%s", (terminal, code, job_id)
+            )
+            c.commit()
+        if terminal == "failed":  # the reaper's own fail-and-refund
+            _fail(_pipeline_db, job_id, "INTERNAL_ERROR")
+        return {"play": six[:5], "download": six}
+
+    monkeypatch.setattr(_pipeline_db, "retain_stems", retain)
+    monkeypatch.setattr(_pipeline_db, "delete_objects", lambda keys: deleted.extend(keys))
+    with pytest.raises(UploadFailedError):
+        asyncio.run(_pipeline_db._run_pipeline(str(jid)))
+    assert conn.execute("SELECT status, error_code FROM jobs WHERE id=%s", (jid,)).fetchone() == (
+        terminal,
+        code,
+    )
+    assert deleted == []
+    expected_refunds = 0 if terminal == "done" else 1
+    assert _refund_rows(conn, jid) == expected_refunds
+    assert _balance(conn, uid) == 19 + expected_refunds

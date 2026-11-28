@@ -10,12 +10,16 @@ called wrongly (a usage error), so a broken workflow edit shows up, but nothing 
         OR4  scripts/or4-merge.sh taken from the BASE branch (`git show origin/<base>:scripts/or4-merge.sh`), so a PR cannot
              edit the regex that classifies it. MONEY_RE / PROTECTED_RE / money_meta come from it (OR4_LIB=1), never a copy.
         J    {"title": "..."} (from $GITHUB_EVENT_PATH, never interpolated into a shell line)
-    shared    --mine F --others J [--pr N]
-        F    newline-separated changed paths of this PR; J {"<pr>": ["path", ...], ...} for the other open PRs
+    shared    --mine F --others J [--pr N] [--open-unreadable] [--unreadable N,N]
+        F    newline-separated changed paths of this PR; J {"<pr>": ["path", ...], ...} for the other open PRs.
+        An empty F or --open-unreadable reports "could not check", never "no overlap"; --unreadable lists PRs not compared.
     mutants   --files F0 --gate OR4 --worker apps/worker [--max N] [--ids-out PATH]
         Selects the worker-suite entries of apps/worker/tests/mutation/manifest.py (MUTANTS + SURVIVORS) whose file is a changed
         MONEY path, at most N (default 12), writes their ids comma-separated to PATH, and reports changed money paths that have
         no manifest entry (a coverage gap, not a failure). Running them is the workflow's job (run_mutants.py --ids).
+        NOTE: unlike the regexes, the manifest and the tests it runs come from the PR head (they are what is being tested), so a PR
+        can change what this job reports about it. Read-only token, no secrets: it can mislead the report, not write anything.
+    An empty changed-file list (classify, mutants) is reported as "could not read", never as "standard" or "nothing to mutate".
 
 Tests: python3 -m unittest scripts/test_ci_advisory.py (offline; stdlib only).
 """
@@ -65,6 +69,10 @@ def _fmt(paths: list[str]) -> list[str]:
 
 def classify(files0: bytes, gate: str, title_json: str | None) -> tuple[str, list[str]]:
     paths = [x for x in files0.decode("utf-8", errors="surrogateescape").split("\0") if x]
+    if not paths:  # a PR always changes something: an empty list means the diff could not be read (R1 sonnet B2)
+        return "unknown", ["### PR class (advisory): **unknown**", "",
+                           "The changed-file list is empty, so it could not be read (`git diff` failed?). No class is reported: "
+                           "classify by reading the files."]
     money = _bash_lib(gate, "money_paths", files0)
     prot = _bash_lib(gate, "protected_match", files0)
     mt = _money_title(gate, title_json)
@@ -88,7 +96,16 @@ def classify(files0: bytes, gate: str, title_json: str | None) -> tuple[str, lis
     return cls, md
 
 
-def shared(mine: list[str], others: dict[str, list[str]], pr: str | None) -> list[str]:
+def shared(mine: list[str], others: dict[str, list[str]], pr: str | None, open_unreadable: bool = False,
+           unreadable: list[str] | None = None) -> list[str]:
+    if not mine:  # R1 sonnet B1: an empty own list means it could not be read; never say "no overlap"
+        return ["### Shared files (advisory): could not check", "",
+                "This PR's changed-file list could not be read, so no comparison was made."]
+    if open_unreadable:
+        return ["### Shared files (advisory): could not check", "",
+                "The list of open PRs could not be read, so no comparison was made."]
+    unreadable = [u for u in (unreadable or []) if u.isdigit()]
+    note = ([f"", f"Not checked (file list unreadable): " + ", ".join(f"#{u}" for u in unreadable)] if unreadable else [])
     mine_s = set(mine)
     rows = []
     for n in sorted(others, key=lambda k: int(k) if k.isdigit() else 0):
@@ -98,13 +115,13 @@ def shared(mine: list[str], others: dict[str, list[str]], pr: str | None) -> lis
         if common:
             rows.append((n, common))
     if not rows:
-        return ["### Shared files (advisory)", "", f"No other open PR changes a file this PR changes ({len(others)} open PR(s) read)."]
+        return ["### Shared files (advisory)", "", f"No other open PR changes a file this PR changes ({len(others)} open PR(s) read)."] + note
     md = ["### Shared files (advisory)", "",
           f"{len(rows)} other open PR(s) change a file this PR changes. Expect a re-review after whichever merges first "
           "(update-branch changes the context). `session-merge.sh` prints the same warning before claiming.", ""]
     for n, common in rows:
         md.append(f"- **#{n}**: " + ", ".join(f"`{c.replace('`', 'ˋ')}`" for c in common[:20]) + (f" … +{len(common) - 20}" if len(common) > 20 else ""))
-    return md
+    return md + note
 
 
 def _load_manifest(worker: str):
@@ -117,6 +134,8 @@ def _load_manifest(worker: str):
 
 
 def select_mutants(files0: bytes, gate: str, worker: str, cap: int) -> tuple[list[str], list[str]]:
+    if not [x for x in files0.split(b"\0") if x]:
+        return [], ["### Diff-scoped mutants (advisory): could not check", "", "The changed-file list is empty, so it could not be read."]
     money = set(_bash_lib(gate, "money_paths", files0))
     man = _load_manifest(worker)
     wprefix = str(Path(worker).as_posix()).rstrip("/") + "/"
@@ -152,6 +171,7 @@ def main(argv=None) -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
     c = sub.add_parser("classify"); c.add_argument("--files", required=True); c.add_argument("--gate", required=True); c.add_argument("--title-json")
     s = sub.add_parser("shared"); s.add_argument("--mine", required=True); s.add_argument("--others", required=True); s.add_argument("--pr")
+    s.add_argument("--open-unreadable", action="store_true"); s.add_argument("--unreadable", default="", help="comma-separated PR numbers")
     m = sub.add_parser("mutants"); m.add_argument("--files", required=True); m.add_argument("--gate", required=True)
     m.add_argument("--worker", required=True); m.add_argument("--max", type=int, default=12); m.add_argument("--ids-out")
     a = ap.parse_args(argv)
@@ -163,7 +183,8 @@ def main(argv=None) -> int:
             others = json.loads(Path(a.others).read_text(encoding="utf-8"))
             if not isinstance(others, dict):
                 raise ValueError("--others must be a JSON object")
-            md = shared(mine, {str(k): list(v or []) for k, v in others.items()}, a.pr)
+            md = shared(mine, {str(k): list(v or []) for k, v in others.items()}, a.pr, a.open_unreadable,
+                        [x for x in a.unreadable.split(",") if x])
         else:
             ids, md = select_mutants(Path(a.files).read_bytes(), a.gate, a.worker, max(0, a.max))
             if a.ids_out:

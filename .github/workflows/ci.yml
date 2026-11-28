@@ -1163,9 +1163,14 @@ jobs:
   # RULES (L7): no labels, no new write permission (each job is read-only), no required-check change. EVERY STEP ENDS `exit 0`:
   # scripts/session-merge.sh and deploy.yml's green gate treat any red check-run as "not green", so an advisory job must never
   # go red, whatever the PR contains. A job that is cancelled by its timeout WOULD go red, so each one bounds its own work well
-  # inside timeout-minutes. pull_request only (skipped on push: skipped counts as green). Promote one to a real gate only by a
-  # later PR with Jon's line. The helper and the gate regexes are read from the BASE commit when it has them (a PR cannot
-  # rewrite the code that reports on it); on first adoption the PR-head helper is used and the summary says so.
+  # inside timeout-minutes; checkout and setup-python are continue-on-error. Diffs use --no-renames, as the gate does (a money
+  # file renamed to a non-money name still counts as the money path it was). RESIDUE: a postgres service container that fails to
+  # start (diff-mutants) would still turn that job red; GitHub offers no continue-on-error for services. pull_request only
+  # (skipped on push: skipped counts as green). Promote one to a real gate only by a later PR with Jon's line. The helper and
+  # the gate regexes are read from the BASE commit when it has them, so a PR cannot rewrite the class/shared reports about
+  # itself (on first adoption the PR-head helper is used and the summary says so). The mutants job necessarily runs the
+  # PR-head manifest and tests, so a PR CAN change what that job reports; read-only token, no secrets. Unreadable inputs are
+  # reported as "could not check", never as "standard" / "no overlap" / "nothing to mutate".
   # ---------------------------------------------------------------------------------------------------------------------------
   advisory-pr-class:
     name: "Advisory: PR class (MONEY_RE)"
@@ -1176,6 +1181,7 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        continue-on-error: true  # advisory: a failed checkout must not turn the job red (later steps report "could not")
         with:
           fetch-depth: 0
       - name: Classify the changed files with the base branch's gate (advisory; never fails)
@@ -1185,7 +1191,7 @@ jobs:
         run: |
           set -u +e +o pipefail
           T="$RUNNER_TEMP"
-          git diff --name-only -z "$BASE_SHA...$HEAD_SHA" > "$T/files0" 2>/dev/null || : > "$T/files0"
+          git diff --no-renames --name-only -z "$BASE_SHA...$HEAD_SHA" > "$T/files0" 2>/dev/null || : > "$T/files0"
           git show "$BASE_SHA:scripts/or4-merge.sh" > "$T/or4.sh" 2>/dev/null || : > "$T/or4.sh"
           if git show "$BASE_SHA:scripts/ci_advisory.py" > "$T/ci_advisory.py" 2>/dev/null; then H="$T/ci_advisory.py"; else H=scripts/ci_advisory.py; echo "_helper from the PR head (not on base yet)_" >> "$GITHUB_STEP_SUMMARY"; fi
           jq '{title: .pull_request.title}' "$GITHUB_EVENT_PATH" > "$T/title.json" 2>/dev/null || echo '{}' > "$T/title.json"
@@ -1202,6 +1208,7 @@ jobs:
       pull-requests: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        continue-on-error: true  # advisory: a failed checkout must not turn the job red (later steps report "could not")
         with:
           fetch-depth: 0
       - name: List other open PRs that change the same files (advisory; never fails)
@@ -1214,16 +1221,17 @@ jobs:
           set -u +e +o pipefail
           T="$RUNNER_TEMP"; echo '{}' > "$T/others.json"
           if git show "$BASE_SHA:scripts/ci_advisory.py" > "$T/ci_advisory.py" 2>/dev/null; then H="$T/ci_advisory.py"; else H=scripts/ci_advisory.py; echo "_helper from the PR head (not on base yet)_" >> "$GITHUB_STEP_SUMMARY"; fi
-          timeout 300 gh api --paginate "repos/$REPO/pulls/$PR/files?per_page=100" --jq '.[].filename' > "$T/mine" 2>/dev/null || : > "$T/mine"
-          timeout 60 gh api "repos/$REPO/pulls?state=open&per_page=100" --jq '.[].number' > "$T/open" 2>/dev/null || : > "$T/open"
-          end=$(( $(date +%s) + 360 ))
+          timeout 60 gh api --paginate "repos/$REPO/pulls/$PR/files?per_page=100" --jq '.[].filename' > "$T/mine" 2>/dev/null || : > "$T/mine"
+          OPENFLAG=""; UNREAD=""
+          timeout 60 gh api --paginate "repos/$REPO/pulls?state=open&per_page=100" --jq '.[].number' > "$T/open" 2>/dev/null || { : > "$T/open"; OPENFLAG=--open-unreadable; }
+          end=$(( $(date +%s) + 240 ))   # worst case 60 + 60 + 240 + 30 = 390 s < timeout-minutes 10 (R1 fable B2)
           while read -r n; do
             [[ "$n" =~ ^[0-9]+$ ]] || continue; [ "$n" = "$PR" ] && continue
             [ "$(date +%s)" -lt "$end" ] || { echo "_time budget reached; not every open PR was read_" >> "$GITHUB_STEP_SUMMARY"; break; }
-            timeout 60 gh api --paginate "repos/$REPO/pulls/$n/files?per_page=100" --jq '.[].filename' > "$T/f" 2>/dev/null || continue
+            timeout 30 gh api --paginate "repos/$REPO/pulls/$n/files?per_page=100" --jq '.[].filename' > "$T/f" 2>/dev/null || { UNREAD="$UNREAD,$n"; continue; }
             jq --arg n "$n" --rawfile f "$T/f" '. + {($n): ($f | split("\n") | map(select(. != "")))}' "$T/others.json" > "$T/o2" && mv "$T/o2" "$T/others.json"
           done < "$T/open"
-          python3 -I "$H" shared --mine "$T/mine" --others "$T/others.json" --pr "$PR" | tee -a "$GITHUB_STEP_SUMMARY" || true
+          python3 -I "$H" shared --mine "$T/mine" --others "$T/others.json" --pr "$PR" $OPENFLAG --unreadable "${UNREAD#,}" | tee -a "$GITHUB_STEP_SUMMARY" || true
           exit 0
 
   advisory-diff-mutants:
@@ -1250,6 +1258,7 @@ jobs:
           - 5432:5432
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        continue-on-error: true  # advisory: a failed checkout must not turn the job red (later steps report "could not")
         with:
           fetch-depth: 0
       - name: Select manifest mutants on changed money paths (advisory; never fails)
@@ -1260,7 +1269,7 @@ jobs:
         run: |
           set -u +e +o pipefail
           T="$RUNNER_TEMP"
-          git diff --name-only -z "$BASE_SHA...$HEAD_SHA" > "$T/files0" 2>/dev/null || : > "$T/files0"
+          git diff --no-renames --name-only -z "$BASE_SHA...$HEAD_SHA" > "$T/files0" 2>/dev/null || : > "$T/files0"
           git show "$BASE_SHA:scripts/or4-merge.sh" > "$T/or4.sh" 2>/dev/null || : > "$T/or4.sh"
           if git show "$BASE_SHA:scripts/ci_advisory.py" > "$T/ci_advisory.py" 2>/dev/null; then H="$T/ci_advisory.py"; else H=scripts/ci_advisory.py; echo "_helper from the PR head (not on base yet)_" >> "$GITHUB_STEP_SUMMARY"; fi
           python3 -I "$H" mutants --files "$T/files0" --gate "$T/or4.sh" --worker apps/worker --max 12 --ids-out "$T/ids" | tee -a "$GITHUB_STEP_SUMMARY" || true
@@ -1270,6 +1279,7 @@ jobs:
           exit 0
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         if: steps.sel.outputs.ids != ''
+        continue-on-error: true  # R1 sonnet: a PR can break pip caching; advisory jobs never go red
         with:
           python-version: '3.11'
           cache: 'pip'

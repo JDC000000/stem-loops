@@ -96,6 +96,11 @@ class Classify(Base):
         _, md = ca.classify(nul("apps/web/billing`x.ts"), str(GATE), None)
         self.assertTrue(any("billingˋx.ts" in line for line in md), md)
 
+    def test_empty_file_list_is_unknown_not_standard(self):  # R1 sonnet B2
+        cls, md = ca.classify(b"", str(GATE), None)
+        self.assertEqual(cls, "unknown")
+        self.assertNotIn("standard", "\n".join(md))
+
     def test_cli_always_exits_0_even_on_missing_gate(self):
         f = self.write("f0", nul("docs/x.md"))
         p = self.run_cli("classify", "--files", f, "--gate", str(self.tmp / "nope.sh"))
@@ -106,6 +111,95 @@ class Classify(Base):
         self.assertEqual(self.run_cli("classify").returncode, 2)
 
 
+class Limits(Base):
+    """R1 fable N8: pin the caps and the worker-suite filter."""
+    def test_max_list_truncates(self):
+        paths = [f"apps/web/billing/{i}.ts" for i in range(ca.MAX_LIST + 5)]
+        _, md = ca.classify(nul(*paths), str(GATE), None)
+        self.assertEqual(md.count("- … and 5 more"), 2)  # money and protected sections (billing is in both regexes)
+        self.assertEqual(sum(1 for line in md if line.startswith("- `apps/web/billing/")), ca.MAX_LIST * 2)
+
+    def test_shared_caps_20_files_per_pr(self):
+        files = [f"f{i:02}" for i in range(25)]
+        md = "\n".join(ca.shared(files, {"501": files}, "500"))
+        self.assertIn("`f19`", md)
+        self.assertNotIn("`f20`", md)
+        self.assertIn("… +5", md)
+
+    def test_web_suite_entry_never_selected(self):
+        os.chdir(self.tmp)
+        ids, _ = ca.select_mutants(nul("apps/worker/src/lib/billing/providers/stripe.ts",
+                                       "apps/web/src/lib/billing/providers/stripe.ts"), str(GATE), "apps/worker", 12)
+        self.assertNotIn("web-1", ids)
+
+    def test_negative_max_selects_nothing(self):
+        f = self.write("f0", nul("apps/worker/src/worker/consumer.py"))
+        out = self.tmp / "ids.txt"
+        p = self.run_cli("mutants", "--files", f, "--gate", str(GATE), "--worker", "apps/worker", "--max", "-3", "--ids-out", str(out))
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(out.read_text(), "")
+
+
+class Workflow(unittest.TestCase):
+    """R1 fable N8: pin the workflow-shell invariants of the three advisory jobs. Plain-text parse (stdlib only: the CI step
+    that runs this file installs nothing and allows no skips)."""
+    @classmethod
+    def setUpClass(cls):
+        text = (HERE.parent / ".github" / "workflows" / "ci.yml").read_text()
+        cls.adv = text.split("\n  advisory-pr-class:", 1)[1]
+        cls.jobs = {}
+        name = "advisory-pr-class"
+        for line in ("  advisory-pr-class:" + cls.adv).splitlines():
+            if line.startswith("  ") and not line.startswith("   ") and line.rstrip().endswith(":") and not line.lstrip().startswith("#"):
+                name = line.strip()[:-1]
+            cls.jobs.setdefault(name, []).append(line)
+        cls.jobs = {k: "\n".join(v) for k, v in cls.jobs.items() if k.startswith("advisory-")}
+
+    @staticmethod
+    def run_blocks(job):
+        out, cur, ind = [], None, None
+        for line in job.splitlines():
+            if cur is not None:
+                if line.strip() == "" or (len(line) - len(line.lstrip())) > ind:
+                    cur.append(line); continue
+                out.append("\n".join(cur)); cur = None
+            if line.strip() == "run: |":
+                cur, ind = [], len(line) - len(line.lstrip())
+        if cur is not None:
+            out.append("\n".join(cur))
+        return out
+
+    def test_three_jobs_read_only_pull_request_only(self):
+        self.assertEqual(sorted(self.jobs), ["advisory-diff-mutants", "advisory-pr-class", "advisory-shared-files"])
+        for name, job in self.jobs.items():
+            self.assertIn("if: github.event_name == 'pull_request'", job, name)
+            self.assertIn("    permissions:\n      contents: read", job, name)
+            self.assertNotIn("write", "\n".join(l for l in job.splitlines() if not l.lstrip().startswith("#")), name)
+            self.assertEqual(job.count("uses: "), job.count("continue-on-error: true"), name)
+
+    def test_every_run_block_ends_exit_0_and_has_no_expression(self):
+        n = 0
+        for name, job in self.jobs.items():
+            for blk in self.run_blocks(job):
+                n += 1
+                self.assertEqual(blk.strip().splitlines()[-1].strip(), "exit 0", (name, blk[:80]))
+                self.assertNotIn("${{", blk, name)
+                if "set -u" in blk:
+                    self.assertIn("set -u +e +o pipefail", blk, name)
+        self.assertGreaterEqual(n, 5)
+
+    def test_diffs_use_no_renames(self):
+        self.assertNotIn("git diff --name-only", self.adv)
+        self.assertGreaterEqual(self.adv.count("git diff --no-renames --name-only"), 2)
+
+    def test_shared_budget_fits_timeout(self):
+        job = self.jobs["advisory-shared-files"]
+        self.assertIn("timeout-minutes: 10", job)
+        t = [int(x) for x in __import__("re").findall(r"timeout (\d+) gh api", job)]
+        budget = int(__import__("re").search(r"end=\$\(\( \$\(date \+%s\) \+ (\d+) \)\)", job).group(1))
+        self.assertLess(sum(t) + budget, 600 - 120, (t, budget))  # 2 min headroom for checkout and setup
+
+
 class Shared(Base):
     def test_overlap_listed_self_skipped(self):
         md = "\n".join(ca.shared(["a.ts", "b.md"], {"500": ["a.ts"], "501": ["a.ts", "z"], "502": ["z"], "x": ["a.ts"]}, "500"))
@@ -113,6 +207,30 @@ class Shared(Base):
         self.assertNotIn("#500", md)
         self.assertNotIn("#502", md)
         self.assertNotIn("#x", md)
+
+    def test_empty_own_list_is_could_not_check(self):  # R1 sonnet B1
+        md = "\n".join(ca.shared([], {"501": ["a.ts"]}, "500"))
+        self.assertIn("could not check", md)
+        self.assertNotIn("No other open PR", md)
+
+    def test_open_list_unreadable_is_could_not_check(self):
+        md = "\n".join(ca.shared(["a.ts"], {}, "500", open_unreadable=True))
+        self.assertIn("could not check", md)
+        self.assertNotIn("No other open PR", md)
+
+    def test_unreadable_prs_are_named(self):
+        md = "\n".join(ca.shared(["a.ts"], {"501": ["b.ts"]}, "500", unreadable=["502", "x"]))
+        self.assertIn("Not checked (file list unreadable): #502", md)
+        self.assertNotIn("#x", md)
+
+    def test_cli_flags(self):
+        mine = self.write("mine", "a.ts\n")
+        oth = self.write("oth", "{}")
+        p = self.run_cli("shared", "--mine", mine, "--others", oth, "--pr", "500", "--open-unreadable")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("could not check", p.stdout)
+        p = self.run_cli("shared", "--mine", mine, "--others", oth, "--pr", "500", "--unreadable", "503,504")
+        self.assertIn("#503, #504", p.stdout)
 
     def test_no_overlap(self):
         md = "\n".join(ca.shared(["a.ts"], {"501": ["b.ts"]}, "500"))
@@ -144,6 +262,12 @@ class Mutants(Base):
         self.assertIn("- `apps/worker/src/worker/reaper.py`", text)  # money (reaper) with no entry → gap
         self.assertIn("not run by this job", text)
         self.assertNotIn("- `apps/worker/src/worker/cleanup.py`", text.split("coverage gap")[-1])
+
+    def test_empty_file_list_is_could_not_check(self):
+        os.chdir(self.tmp)
+        ids, md = ca.select_mutants(b"", str(GATE), "apps/worker", 12)
+        self.assertEqual(ids, [])
+        self.assertIn("could not check", md[0])
 
     def test_non_money_change_selects_nothing(self):
         os.chdir(self.tmp)

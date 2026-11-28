@@ -3,7 +3,9 @@
 //   stalled panel (queued >90 min and active >11 min, reached by back-dating jobs.updated_at —
 //   the panel keys off updated_at vs the server Date header, so no 90-minute wait) ·
 //   spend brake engaged (job stays queued; what does the user see) then released ·
-//   failed (Replicate mock answers `failed`) · Klangio at-cap tombstone (KLANGIO_MONTHLY_CAP=1).
+//   failed (Replicate mock answers `failed`) · degraded player (a done job, one stem fails to
+//   load in the browser) · partial stem set (#490: 5 of 6 stems ends FAILED UPLOAD_FAILED and
+//   the credit comes back once) · Klangio at-cap tombstone (KLANGIO_MONTHLY_CAP=1).
 // Needs JOURNEY_STACK_CMD (worker / stopworker / ctl) and JOURNEY_DB_URL.
 import { Journey, mintUser, newContext, sleep, sql, stack, uploadViaLanding } from './lib.mjs';
 
@@ -85,14 +87,50 @@ export default async function run() {
     await j.shot(page, 'failed-separation');
     stack('ctl', JSON.stringify({ status: 'succeeded' }));
 
-    // ── partial: provider returns 5 of 6 stems ──────────────────────────────
-    stack('ctl', JSON.stringify({ output: 'five' }));
-    await uploadViaLanding(page, j);
-    const pReady = await page.locator('[data-testid="player"][data-phase="ready"]').waitFor({ timeout: 180_000 }).then(() => true, () => false);
+    // ── degraded: a done job whose `other` stem fails to load in the browser ──
+    // #490 (Jon E2 = a): a 5-of-6 provider output no longer ends `done` (next step), so the
+    // player's "a stem is missing" notice is reached the way it still happens: all six Opus
+    // stems exist, one fails to load (lib/play/load-stems.ts: a 404 is `missing`, never thrown).
+    // `other` is the stem the mock's `five` output drops. Uses the brake job (done, 6 stems).
+    // A route also disables Chromium's HTTP cache, so the reload really re-fetches.
+    const otherOpus = (u) => u.pathname.endsWith(`/${jid}/_stems/play/other.opus`);
+    await page.route(otherOpus, (r) => r.fulfill({ status: 404, contentType: 'text/plain', body: '' }));
+    await page.goto(`/jobs/${jid}`);
+    const dReady = await page.locator('[data-testid="player"][data-phase="ready"]').waitFor({ timeout: 60_000 }).then(() => true, () => false);
     const degraded = await page.locator('[data-testid="player-degraded"]').innerText().catch(() => '');
     const chans = await page.locator('section[aria-label="Stem mixer"] input[type="range"]:not([disabled])').count();
-    j.check('partial (5 stems): player loads, says a stem is missing, 5 faders live', pReady && degraded.length > 0 && chans === 5, `ready=${pReady} live faders=${chans} notice="${degraded}"`);
-    await j.shot(page, 'partial-five-stems');
+    j.check('degraded (one stem fails to load): player loads, says a stem is missing, 5 faders live', dReady && /not available for this track/.test(degraded) && chans === 5, `ready=${dReady} live faders=${chans} notice="${degraded}"`);
+    await j.shot(page, 'degraded-stem-load-404');
+    await page.unroute(otherOpus);
+
+    // ── partial: provider returns 5 of 6 stems → FAILED, credit back once ───
+    // #490: fewer than six playable stems fails the job UPLOAD_FAILED (failure_reason
+    // partial_stem_set, a Sentry tag only) and returns the credit (job_failure.REFUND_SQL).
+    // A quota-funded upload spends no credit and gets nothing back, so the user is given one
+    // credit first: this upload is then credit-funded (api/jobs: chargeCredit). The web reads
+    // credits through a 30 s entitlement cache (lib/billing/entitlements.ts CACHE_TTL_MS), so
+    // wait it out, or the upload is charged from a stale 0-credit snapshot.
+    sql(`INSERT INTO credit_adjustments (user_id, credits_delta, reason, provider, provider_event_id) VALUES ('${user.user_id}', 1, 'manual_grant', 'beta', 'w4-j3-partial-${user.user_id}')`);
+    await sleep(31_000);
+    stack('ctl', JSON.stringify({ output: 'five' }));
+    const pid = await uploadViaLanding(page, j);
+    const pFailed = await page.locator('.jp-failed').waitFor({ timeout: 180_000 }).then(() => true, () => false);
+    const pRow = sql(`SELECT status || '|' || coalesce(error_code,'') FROM jobs WHERE id='${pid}'`);
+    // The job page shows the worker's stored sentence for UPLOAD_FAILED (lib/error-copy.ts
+    // failedJobMessage: only SEPARATION_FAILED is overridden by ERROR_COPY). Worker copy:
+    // apps/worker/src/worker/errors.py UploadFailedError.user_message. A credit-funded upload
+    // gets no "didn't count" sentence (that is the link-job allowance, QA-64).
+    const PARTIAL_COPY = "We separated your stems but couldn't save them. Add the track again to retry.";
+    const pMsg = (await page.locator('.jp-failed p').first().innerText().catch(() => '')).replace(/\s+/g, ' ').trim();
+    const tp = await panelText(page);
+    const uploadAgain = await page.locator('[data-testid="job-upload-again"]').count();
+    const pPlayer = await page.locator('[data-testid="player"]').count();
+    j.check('partial (5 stems): job ends failed UPLOAD_FAILED, not done', pRow === 'failed|UPLOAD_FAILED', `db=${pRow}`);
+    j.check('partial (5 stems): failed panel with the "couldn\'t save them" copy and Upload again, no player', pFailed && /Something went wrong/.test(tp) && pMsg === PARTIAL_COPY && uploadAgain === 1 && pPlayer === 0, `msg="${pMsg}" uploadAgain=${uploadAgain} player=${pPlayer}`);
+    const spent = sql(`SELECT count(*) FROM credit_consumption WHERE job_id='${pid}'`);
+    const refunds = sql(`SELECT count(*) FROM credit_adjustments WHERE provider='worker_job_failed' AND provider_event_id='${pid}'`);
+    j.check('partial (5 stems): the credit it spent comes back exactly once', spent === '1' && refunds === '1', `credit_consumption=${spent} refunds=${refunds}`);
+    await j.shot(page, 'partial-five-stems-failed');
     stack('ctl', JSON.stringify({ output: 'fixed' }));
 
     // ── Klangio at cap: tombstone copy ──────────────────────────────────────

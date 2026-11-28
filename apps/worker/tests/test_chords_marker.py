@@ -248,14 +248,28 @@ def test_a_retried_get_transport_failure_is_not_unanswered(monkeypatch):
     assert not isinstance(caught.value, ChordSubmitUnanswered)
 
 
-def test_unanswered_post_in_the_hook_is_submit_unanswered(hook, monkeypatch, tmp_path):
+def _read_timeout(request: httpx.Request) -> httpx.Response:
+    raise httpx.ReadTimeout("no answer", request=request)
+
+
+@pytest.mark.parametrize(
+    ("handler", "reason"),
+    [
+        pytest.param(_read_timeout, "submit_unanswered", id="read-timeout"),
+        # #462 item 3: a 5xx/429 on the POST keeps 'submitting', so it is unanswered too.
+        pytest.param(lambda _r: httpx.Response(500), "submit_unanswered", id="500"),
+        pytest.param(lambda _r: httpx.Response(503), "submit_unanswered", id="503"),
+        pytest.param(lambda _r: httpx.Response(429), "submit_unanswered", id="429"),
+        pytest.param(lambda _r: httpx.Response(400), "provider_failed", id="400"),
+    ],
+)
+def test_unanswered_post_in_the_hook_is_submit_unanswered(
+    hook, monkeypatch, tmp_path, handler, reason
+):
     run, _ = hook
     monkeypatch.setenv("KLANGIO_API_KEY", "kl-test-key-123")
     monkeypatch.setenv("KLANGIO_QUOTA_FILE", str(tmp_path / "quota.json"))
     monkeypatch.setattr(kg, "MIN_REQUEST_INTERVAL_SEC", 0.0)
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        raise httpx.ReadTimeout("no answer", request=request)
 
     client = httpx.Client(base_url="https://api.klang.io", transport=httpx.MockTransport(handler))
     src = kg.KlangioChordSource()
@@ -263,7 +277,7 @@ def test_unanswered_post_in_the_hook_is_submit_unanswered(hook, monkeypatch, tmp
         client, _wav(tmp_path / "b.wav"), "mix", ledger=_Ledger()
     )
     with patch.object(kg.time, "sleep"):
-        assert run() == _unavailable("submit_unanswered")
+        assert run() == _unavailable(reason)
 
 
 # ------------------------------------------------------------------ drift guard

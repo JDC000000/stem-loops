@@ -935,9 +935,12 @@ export function PlayerScreen(props: ScreenProps) {
                   fader positions, mutes and solos for the session. */}
               <Mixer stems={snapshot.stems} onGain={onGain} onMute={onMute} onSolo={onSolo} jobId={jobId} />
             </div>
-            <button type="button" className={styles.asideButton} onClick={() => setChartOpen(true)}>
-              Show all chords
-            </button>
+            {/* #498: gated like the ⋯ chord items (#496): no chords, no empty chord sheet. */}
+            {hasChords ? (
+              <button type="button" className={styles.asideButton} onClick={() => setChartOpen(true)}>
+                Show all chords
+              </button>
+            ) : null}
           </aside>
         ) : null}
       </div>

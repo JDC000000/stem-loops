@@ -104,7 +104,7 @@ test('D-03: lib/error-copy.ts has no curly apostrophes among its straight-quoted
   const src = read('lib/error-copy.ts');
   assert.doesNotMatch(src, /[‘’]/, 'use a straight apostrophe in a double-quoted string');
   assert.match(src, /"You've used this month's allowance on your plan\./);
-  assert.match(src, /"We couldn't finish this track\. Try another file\."/);
+  assert.match(src, /"We couldn't finish this song\. Try another file\."/);
 });
 
 // ── CA-11 / F72: RATE_LIMITED says which of its two causes refused you ─────────────────
@@ -165,4 +165,13 @@ test('CA-15: StartTrialButton.tsx is gone and nothing imports it', () => {
   };
   walk(SRC(''));
   for (const f of files) assert.doesNotMatch(readFileSync(f, 'utf8'), /import[^;]*StartTrialButton/, f);
+});
+
+// ── #498: the tone guide no longer approves "tracks" as the limits / billing unit ──────
+
+test('#498: BRAND-TONE.md counts songs for limits and billing, and no longer lists "free tracks this month"', () => {
+  const tone = readFileSync(join(WEB, '..', '..', 'docs', 'seo', 'BRAND-TONE.md'), 'utf8');
+  assert.doesNotMatch(tone, /free tracks this month|\d+ tracks a month|one uploaded track/);
+  assert.match(tone, /\| \*\*song\*\* \|[^\n]*"5 songs a month", "free songs this month"/);
+  assert.match(tone, /\| \*\*track\*\* \| Never the unit for limits or billing/);
 });

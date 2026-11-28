@@ -232,11 +232,21 @@ the Klangio dashboard and `UPDATE public.klangio_usage SET count = <n> WHERE cyc
 **Submit circuit breaker (K-2, #466).** `apps/worker/src/worker/chord_providers/klangio.py`
 `_SubmitBreaker`. Checked before the ledger claim and the quota slot, so a skipped submit
 sends nothing, claims nothing and spends no quota. After `KLANGIO_BREAKER_FAILURES`
-(default 3; `0` disables) consecutive submits that were sent but got no answer, it opens for
+(default 3; `0` disables) consecutive **failed** submit POSTs, it opens for
 `KLANGIO_BREAKER_PAUSE_SEC` (default 1800 s); further submits raise `ChordProviderPaused`
-(tombstone `not_attempted`, log `chords_skipped_provider_paused`). Then one half-open trial
-goes through: an answer closes it, no answer or a connect failure re-opens it. Any HTTP
-answer resets the streak; connect failures do not count. **Per process, in memory**: each
+(tombstone `not_attempted`, log `chords_skipped_provider_paused`). Since #501 a failed submit
+is any of:
+
+| Submit POST outcome | Counts toward K-2 | Claim (`klangio_job_id`) | Reported as |
+|---|---|---|---|
+| sent, no HTTP response (transport error / timeout) | yes | stays `'submitting'` | `submit_unanswered` |
+| HTTP 5xx or 429 (the POST is never retried; a billed job may exist) | yes (since #501, #462 item 3) | stays `'submitting'` | `submit_unanswered` |
+| never connected (`ConnectError` / `ConnectTimeout` / `PoolTimeout`) | yes (since #501, #467 E3 = a) | released | `provider_failed`; quota slot **not** refunded |
+| 2xx, or 4xx incl. 402 | no: resets the streak | normal handling | normal handling |
+| no POST made (claim / quota / drain / local error) | no: streak unchanged | n/a | n/a |
+
+Then one half-open trial goes through: a 2xx/4xx answer closes it; no answer, a 5xx/429 or a
+connect failure re-opens it. Retried GETs (polling) never touch the breaker. **Per process, in memory**: each
 worker process trips on its own and a restart closes it. Logs (all `WARN`):
 `chords_breaker_open` (also one Sentry warning per open), `chords_breaker_half_open`,
 `chords_breaker_closed`. Env is read per submit. Operator steps and the stuck
@@ -306,7 +316,7 @@ See `.env.example` for the canonical list. The vars this module reads:
 | `KLANGIO_POLL_INTERVAL_SEC` | `2` | Delay between job-status polls. |
 | `KLANGIO_POLL_DEADLINE_SEC` | `120` | Total wall-clock cap for job completion (600 before #317). Not a hard cap: each status GET has its own retries. Read at import, so changing it on Fly restarts the machine — the #309 drain rules apply. |
 | `KLANGIO_MAX_AUDIO_SEC` | `300` | Provider's per-file max. |
-| `KLANGIO_BREAKER_FAILURES` | `3` | K-2 submit circuit breaker: consecutive "sent, no answer" submits that open it. `0` disables. Invalid or negative fails every submit closed. See "Submit circuit breaker". |
+| `KLANGIO_BREAKER_FAILURES` | `3` | K-2 submit circuit breaker: consecutive failed submit POSTs that open it (no answer, 5xx/429, or never connected; since #501). `0` disables. Invalid or negative fails every submit closed. See "Submit circuit breaker". |
 | `KLANGIO_BREAKER_PAUSE_SEC` | `1800` | How long the breaker stays open before one half-open trial submit. Must be a finite number >= 0. |
 | `CHORD_EVAL_FETCH` | *(unset)* | `1` enables audio downloads in the eval harness. |
 

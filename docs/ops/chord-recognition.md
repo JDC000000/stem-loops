@@ -157,7 +157,7 @@ Startup tier: $99/mo, 500 included requests, $0.20 each beyond. Overage is real 
 `GET /job` or `/jobs`; jobs are reachable only by the `job_id` returned from the POST).
 A retried POST after a lost response would create a second billed job that nothing could
 detect, so `POST /chord-recognition` is sent exactly once. Any failure (5xx, 429,
-timeout) surfaces as `ChordProviderError` ("not retried: a billed job may exist");
+timeout) surfaces as `ChordSubmitNoAnswer`, a `ChordProviderError` ("not retried: a billed job may exist");
 the caller decides whether to resubmit. The failed attempt still counts against the quota.
 
 **Idempotent per job (reaper requeues).** A job that finishes chord recognition and then
@@ -239,11 +239,11 @@ is any of:
 
 | Submit POST outcome | Counts toward K-2 | Claim (`klangio_job_id`) | Reported as |
 |---|---|---|---|
-| sent, no HTTP response (transport error / timeout) | yes | stays `'submitting'` | `submit_unanswered` |
+| sent or maybe sent, no HTTP response (any transport error or timeout other than the three connect failures below) | yes | stays `'submitting'` | `submit_unanswered` |
 | HTTP 5xx or 429 (the POST is never retried; a billed job may exist) | yes (since #501, #462 item 3) | stays `'submitting'` | `submit_unanswered` |
 | never connected (`ConnectError` / `ConnectTimeout` / `PoolTimeout`) | yes (since #501, #467 E3 = a) | released | `provider_failed`; quota slot **not** refunded |
-| 2xx, or 4xx incl. 402 | no: resets the streak | normal handling | normal handling |
-| no POST made (claim / quota / drain / local error) | no: streak unchanged | n/a | n/a |
+| 2xx, or 4xx incl. 402 | no: resets the streak | normal handling (a 2xx without a usable `job_id` keeps `'submitting'`) | normal handling |
+| no POST made (claim / quota / local error) | no: streak unchanged | n/a | n/a |
 
 Then one half-open trial goes through: a 2xx/4xx answer closes it; no answer, a 5xx/429 or a
 connect failure re-opens it. Retried GETs (polling) never touch the breaker. **Per process, in memory**: each

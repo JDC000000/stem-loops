@@ -463,6 +463,122 @@
       "duration_matches": true,
       "notes": "PR-Y1.eval-verify-2 replacement URL for the FMA Folk wildcard acoustic row: Jason Shaw Audionautix: Acoustic album page confirms 'The songs in this album are licensed under: CC BY' (CC BY 3.0). Track 1 'PIONEERS' is 02:53 (173s) per the album index. Solo acoustic guitar — stand-in for upload-only own-file mode (no drums/bass, closest to a lone-instrument harmonic probe). Same album-level verification pattern as row 2 Monplaisir and the two new Josh Woodward / Audionautix Acoustic rows (0 and 8). License shifted from CC BY 4.0 → CC BY 3.0.",
       "new_status": "verified"
+    },
+    {
+      "fma_id_or_jamendo_id": "swd-schubert-d911-01-hu33",
+      "url": "https://raw.githubusercontent.com/meinardmueller/synctoolbox/49b1f128c719883e0b007f5948efde985445199f/data_music/Schubert_D911-01_HU33.wav",
+      "fetched_at": "2026-11-28",
+      "fetch_status": "ok",
+      "audio_source": {
+        "repo": "github.com/meinardmueller/synctoolbox",
+        "commit": "49b1f128c719883e0b007f5948efde985445199f",
+        "path": "data_music/Schubert_D911-01_HU33.wav",
+        "sha256": "074adc8f5899d326f10dfb2ff8b1c72312e9755ed41727c3ce7da2def18e7f60",
+        "bytes": 13745708
+      },
+      "ground_truth_source": {
+        "repo": "github.com/smashub/choco",
+        "commit": "5fe168fd55be5c84512abcfbc4e6f1b1f8f0092a",
+        "path": "partitions/schubert-winterreise/choco/audio/jams-converted/schubert-winterreise-audio_0.jams",
+        "sha256": "0f702b8a4b7256cc7877972722474e345733f174a25476ae73084dfe6679d5ce"
+      },
+      "ground_truth_lab": {
+        "path": "apps/worker/tests/fixtures/swd/Schubert_D911-01_HU33.lab",
+        "sha256": "25e5492846fa9741f62afc169f02f6c64a6164d753c149f3497c30811fa211f0",
+        "converter": "first chord_harte annotation of the JAMS; end = time + duration; times rounded to 1e-6 s; labels verbatim (all parse with mir_eval 0.8.2 chord.encode)"
+      },
+      "license_found": {
+        "labels": "ChoCo LICENSE.md: CC BY 4.0 (SWD is not one of the CC BY-NC-SA exceptions)",
+        "audio": "synctoolbox LICENCE is MIT for code only; README: does not apply to data files, Schubert songs from SWD (Zenodo 4122060). Zenodo unreachable here: NOT verified"
+      },
+      "new_status": "pending"
+    },
+    {
+      "fma_id_or_jamendo_id": "swd-schubert-d911-01-sc06",
+      "url": "https://raw.githubusercontent.com/meinardmueller/synctoolbox/49b1f128c719883e0b007f5948efde985445199f/data_music/Schubert_D911-01_SC06.wav",
+      "fetched_at": "2026-11-28",
+      "fetch_status": "ok",
+      "audio_source": {
+        "repo": "github.com/meinardmueller/synctoolbox",
+        "commit": "49b1f128c719883e0b007f5948efde985445199f",
+        "path": "data_music/Schubert_D911-01_SC06.wav",
+        "sha256": "9a48f65c522c0b711b86b1a4c87c832b83c97678c5f24daaf96263a7511f1934",
+        "bytes": 14347052
+      },
+      "ground_truth_source": {
+        "repo": "github.com/smashub/choco",
+        "commit": "5fe168fd55be5c84512abcfbc4e6f1b1f8f0092a",
+        "path": "partitions/schubert-winterreise/choco/audio/jams-converted/schubert-winterreise-audio_24.jams",
+        "sha256": "9cd7035624f1a0759059bc0722e8e8c74701a32519c87aef53cdb3426bd6d38b"
+      },
+      "ground_truth_lab": {
+        "path": "apps/worker/tests/fixtures/swd/Schubert_D911-01_SC06.lab",
+        "sha256": "4824cd554e492bba18d0279c82892f766fcb77d353955b1016515f717c9f3eb5",
+        "converter": "first chord_harte annotation of the JAMS; end = time + duration; times rounded to 1e-6 s; labels verbatim (all parse with mir_eval 0.8.2 chord.encode)"
+      },
+      "license_found": {
+        "labels": "ChoCo LICENSE.md: CC BY 4.0 (SWD is not one of the CC BY-NC-SA exceptions)",
+        "audio": "synctoolbox LICENCE is MIT for code only; README: does not apply to data files, Schubert songs from SWD (Zenodo 4122060). Zenodo unreachable here: NOT verified"
+      },
+      "new_status": "pending"
+    },
+    {
+      "fma_id_or_jamendo_id": "swd-schubert-d911-03-hu33",
+      "url": "https://raw.githubusercontent.com/meinardmueller/synctoolbox/49b1f128c719883e0b007f5948efde985445199f/data_music/Schubert_D911-03_HU33.wav",
+      "fetched_at": "2026-11-28",
+      "fetch_status": "ok",
+      "audio_source": {
+        "repo": "github.com/meinardmueller/synctoolbox",
+        "commit": "49b1f128c719883e0b007f5948efde985445199f",
+        "path": "data_music/Schubert_D911-03_HU33.wav",
+        "sha256": "c67fef1ed6355a43f2f25c6f3f774f3ad2019f8941c4999c45711b3b497f9ad7",
+        "bytes": 6629420
+      },
+      "ground_truth_source": {
+        "repo": "github.com/smashub/choco",
+        "commit": "5fe168fd55be5c84512abcfbc4e6f1b1f8f0092a",
+        "path": "partitions/schubert-winterreise/choco/audio/jams-converted/schubert-winterreise-audio_2.jams",
+        "sha256": "0c37790ea3fdda1988413f91ab6b6dc01d82dacb5b985043bfea82bfd43ed48b"
+      },
+      "ground_truth_lab": {
+        "path": "apps/worker/tests/fixtures/swd/Schubert_D911-03_HU33.lab",
+        "sha256": "963928c54bb40b555ab6e8df411b09bdd13e32c0fb7235d8bad26f8c4251e96b",
+        "converter": "first chord_harte annotation of the JAMS; end = time + duration; times rounded to 1e-6 s; labels verbatim (all parse with mir_eval 0.8.2 chord.encode)"
+      },
+      "license_found": {
+        "labels": "ChoCo LICENSE.md: CC BY 4.0 (SWD is not one of the CC BY-NC-SA exceptions)",
+        "audio": "synctoolbox LICENCE is MIT for code only; README: does not apply to data files, Schubert songs from SWD (Zenodo 4122060). Zenodo unreachable here: NOT verified"
+      },
+      "new_status": "pending"
+    },
+    {
+      "fma_id_or_jamendo_id": "swd-schubert-d911-03-sc06",
+      "url": "https://raw.githubusercontent.com/meinardmueller/synctoolbox/49b1f128c719883e0b007f5948efde985445199f/data_music/Schubert_D911-03_SC06.wav",
+      "fetched_at": "2026-11-28",
+      "fetch_status": "ok",
+      "audio_source": {
+        "repo": "github.com/meinardmueller/synctoolbox",
+        "commit": "49b1f128c719883e0b007f5948efde985445199f",
+        "path": "data_music/Schubert_D911-03_SC06.wav",
+        "sha256": "40bfb7831f4260dc2340455addf2d9df15f5463cfcd729bad5e751419198418f",
+        "bytes": 6049196
+      },
+      "ground_truth_source": {
+        "repo": "github.com/smashub/choco",
+        "commit": "5fe168fd55be5c84512abcfbc4e6f1b1f8f0092a",
+        "path": "partitions/schubert-winterreise/choco/audio/jams-converted/schubert-winterreise-audio_26.jams",
+        "sha256": "8e01cfcd0061dc97a4a2256319809099a61b863278edb84b017515862ad80a11"
+      },
+      "ground_truth_lab": {
+        "path": "apps/worker/tests/fixtures/swd/Schubert_D911-03_SC06.lab",
+        "sha256": "3bc52ce309c034bd2ccca1928481f68b31b48b0f10efbfc488f8978ebe336098",
+        "converter": "first chord_harte annotation of the JAMS; end = time + duration; times rounded to 1e-6 s; labels verbatim (all parse with mir_eval 0.8.2 chord.encode)"
+      },
+      "license_found": {
+        "labels": "ChoCo LICENSE.md: CC BY 4.0 (SWD is not one of the CC BY-NC-SA exceptions)",
+        "audio": "synctoolbox LICENCE is MIT for code only; README: does not apply to data files, Schubert songs from SWD (Zenodo 4122060). Zenodo unreachable here: NOT verified"
+      },
+      "new_status": "pending"
     }
   ],
   "summary": {

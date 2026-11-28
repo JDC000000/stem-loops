@@ -228,6 +228,23 @@ def test_a_file_cut_at_download_that_overshot_is_recut_and_reports_the_source(
     assert trim == {"trimmed": True, "source_sec": 2400.0, "used_sec": 3.0}
 
 
+def test_a_file_cut_at_download_with_an_unreadable_header_is_still_reported_as_trimmed(
+    monkeypatch, tmp_path
+):
+    """Review B1 (#504): the source cannot be measured and its re-encode lands under the cap.
+    Without a download cut that is "nothing was cut" (None); with one, the song WAS cut, and the
+    user must still be told so, from the true length."""
+    monkeypatch.setenv("MAX_UPLOAD_DURATION_SEC", "3")
+    src = str(_wav(tmp_path / "hidden_header.wav", 2.0))
+    real_probe = pipeline._probe_duration_sec
+    monkeypatch.setattr(
+        pipeline, "_probe_duration_sec", lambda p: None if p == src else real_probe(p)
+    )
+    out, trim = pipeline._trim_link_source(JOB, src, 2400.0)
+    assert out != src
+    assert trim == {"trimmed": True, "source_sec": 2400.0, "used_sec": 2.0}
+
+
 def test_without_a_download_cut_the_trim_is_unchanged(monkeypatch, tmp_path):
     monkeypatch.setenv("MAX_UPLOAD_DURATION_SEC", "3")
     src = str(_wav(tmp_path / "short.wav", 2.0))

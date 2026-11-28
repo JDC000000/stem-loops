@@ -44,8 +44,15 @@ NUM_LAYERS = 8
 NUM_HEADS = 4
 NUM_CHORDS = 170
 LN_EPS = 1e-6
-# Seconds per output frame, exactly as test.py (inst_len / timestep), not hop / sr.
+# Seconds per output frame in upstream test.py (inst_len / timestep). Right ONLY for
+# 10 s-chunked features (each 10 s chunk yields exactly 108 frames).
 FRAME_SEC = INST_LEN_SEC / TIMESTEP
+# Seconds per frame of one contiguous CQT (hop / sr = 0.092880 s). FRAME_SEC on contiguous
+# frames runs 0.31% fast: ~0.6 s early by 3.5 min (measured: the served Klangio chords of the
+# three demo songs match BTC on a contiguous CQT timed by FRAME_SEC at 98.9-99.4% MajMin,
+# i.e. that drift; BTC-TUNING-2026-11-28.md).
+HOP_SEC = HOP_LENGTH / SAMPLE_RATE
+CQT_MODES = ("song", "chunked")
 
 _LEGACY_MAGIC = 0x1950A86A20F9469CFC6C
 _LEGACY_PROTOCOL = 1001
@@ -344,10 +351,32 @@ class BtcModel:
 
 
 # ----------------------------------------------------------------- features + decode
-def cqt_features(wav: np.ndarray) -> np.ndarray:
-    """log|CQT| per 10 s chunk, concatenated: BTC's ``audio_file_to_features`` at 22.05 kHz.
-    Returns [frames, 144] float32. A tail shorter than one hop is dropped (< 0.1 s)."""
+def cqt_features(wav: np.ndarray, mode: str = "song") -> np.ndarray:
+    """log|CQT| features, [frames, 144] float32, at 22.05 kHz.
+
+    ``mode="song"`` (default): ONE contiguous CQT over the whole song; frame i is centred at
+    ``i * HOP_SEC``. No seams every 10 s. On the three demo songs this agrees with the served
+    Klangio chords at 98.3-98.9% MajMin (clock-aligned) vs 92.7-95.6% for chunked, and on the
+    synthetic truth set it is +0.5 pt MajMin. Time it with ``HOP_SEC``.
+
+    ``mode="chunked"``: upstream ``audio_file_to_features``: log|CQT| per 10 s chunk,
+    concatenated (a tail shorter than one hop is dropped, < 0.1 s). Time it with ``FRAME_SEC``.
+    """
     import librosa  # noqa: PLC0415 — heavy import, only when BTC runs
+
+    if mode not in CQT_MODES:
+        raise ValueError(f"unknown CQT mode {mode!r}; expected one of {CQT_MODES}")
+    if mode == "song":
+        if len(wav) == 0:
+            return np.zeros((0, N_BINS), dtype=np.float32)
+        c = librosa.cqt(
+            wav,
+            sr=SAMPLE_RATE,
+            n_bins=N_BINS,
+            bins_per_octave=BINS_PER_OCTAVE,
+            hop_length=HOP_LENGTH,
+        )
+        return np.log(np.abs(c) + 1e-6).astype(np.float32).T
 
     chunk = int(SAMPLE_RATE * INST_LEN_SEC)
     parts = []
@@ -392,9 +421,11 @@ def predict_frames(
 
 
 def frames_to_rows(
-    ids: np.ndarray, probs: np.ndarray, vocab: list[str]
+    ids: np.ndarray, probs: np.ndarray, vocab: list[str], frame_sec: float = HOP_SEC
 ) -> list[tuple[float, float, str, float]]:
-    """Runs of equal class -> ``(start_sec, end_sec, raw_label, mean_prob)``."""
+    """Runs of equal class -> ``(start_sec, end_sec, raw_label, mean_prob)``. ``frame_sec``
+    must match the features: ``HOP_SEC`` for ``cqt_features(mode="song")`` (default),
+    ``FRAME_SEC`` for ``mode="chunked"``."""
     rows = []
     n = len(ids)
     i = 0
@@ -403,7 +434,7 @@ def frames_to_rows(
         while j + 1 < n and ids[j + 1] == ids[i]:
             j += 1
         rows.append(
-            (i * FRAME_SEC, (j + 1) * FRAME_SEC, vocab[int(ids[i])], float(probs[i : j + 1].mean()))
+            (i * frame_sec, (j + 1) * frame_sec, vocab[int(ids[i])], float(probs[i : j + 1].mean()))
         )
         i = j + 1
     return rows

@@ -51,8 +51,25 @@ from ..chord_source import (
 # Keep in sync with ``scripts/fetch_btc_weights.py`` (test_chord_btc checks they agree).
 BTC_WEIGHTS_SHA256 = "1673d23f8f9a55ae7f9e8b80a51da616debb22675b8d8b67ea6ce0ef37b0ab51"
 BTC_WEIGHTS_FILENAME = "btc_model_large_voca.pt"
-# provider_version on the wire (chord_edits.provider_version is capped at 64 chars).
-BTC_PROVIDER_VERSION = f"btc-large-voca@{BTC_WEIGHTS_SHA256[:12]}"
+# Feature/decode mode (BTC_CQT_MODE): "song" (default) = one contiguous CQT timed by hop / sr;
+# "chunked" = upstream test.py's 10 s chunks timed by 10 s / 108 (kept as a rollback knob).
+# Unknown values fall back to the default. See btc_model.cqt_features.
+BTC_CQT_MODE_DEFAULT = "song"
+_VERSION_SUFFIX = {"song": "song", "chunked": "chunk10"}
+
+
+def cqt_mode() -> str:
+    raw = os.environ.get("BTC_CQT_MODE", "").strip().lower()
+    return raw if raw in _VERSION_SUFFIX else BTC_CQT_MODE_DEFAULT
+
+
+def provider_version(mode: str | None = None) -> str:
+    """provider_version on the wire (chord_edits.provider_version is capped at 64 chars):
+    the pinned weights plus the decode mode, so rows made by either mode stay tellable apart."""
+    return f"btc-large-voca@{BTC_WEIGHTS_SHA256[:12]}+{_VERSION_SUFFIX[mode or cqt_mode()]}"
+
+
+BTC_PROVIDER_VERSION = provider_version(BTC_CQT_MODE_DEFAULT)
 BTC_WEIGHTS_DEFAULT_PATH = Path("/app/models/btc") / BTC_WEIGHTS_FILENAME
 _SHA256_HEX = re.compile(r"^[0-9a-f]{64}$")
 
@@ -103,7 +120,7 @@ def verify_weights(path: Path, expected_sha256: str | None = None) -> str:
     return actual
 
 
-_RUNNER_CACHE: dict[tuple[str, str], ModelRunner] = {}
+_RUNNER_CACHE: dict[tuple[str, str, str], ModelRunner] = {}
 
 
 def _default_runner() -> ModelRunner:
@@ -112,7 +129,9 @@ def _default_runner() -> ModelRunner:
     librosa on CPU; ``btc_model`` documents the port."""
     path = weights_path()
     sha = verify_weights(path)
-    cache_key = (str(path), sha)
+    mode = cqt_mode()
+    frame_sec_name = "HOP_SEC" if mode == "song" else "FRAME_SEC"
+    cache_key = (str(path), sha, mode)
     runner = _RUNNER_CACHE.get(cache_key)
     if runner is not None:
         return runner
@@ -124,9 +143,11 @@ def _default_runner() -> ModelRunner:
     mean, std = ckpt["mean"], ckpt["std"]
 
     def run(audio_path: Path) -> list[tuple[float, float, str, float]]:
-        feature = btc_model.cqt_features(btc_model.load_audio(audio_path))
+        feature = btc_model.cqt_features(btc_model.load_audio(audio_path), mode=mode)
         ids, probs = btc_model.predict_frames(model, feature, mean, std)
-        return btc_model.frames_to_rows(ids, probs, vocab)
+        # The clock MUST match the features (a mismatch drifts 0.31%).
+        frame_sec = getattr(btc_model, frame_sec_name)
+        return btc_model.frames_to_rows(ids, probs, vocab, frame_sec=frame_sec)
 
     _RUNNER_CACHE.clear()  # one model per process
     _RUNNER_CACHE[cache_key] = run
@@ -279,7 +300,7 @@ class BtcChordSource:
         if not audio_path.is_file():
             raise FileNotFoundError(f"BTC input audio not found: {audio_path}")
         runner = self._runner if self._runner is not None else _default_runner()
-        version = self._provider_version or BTC_PROVIDER_VERSION
+        version = self._provider_version or provider_version()
         t0 = time.monotonic()
         raw: Sequence[Sequence] = list(runner(audio_path))
         model_ms = int((time.monotonic() - t0) * 1000)

@@ -207,10 +207,28 @@ def test_fake_runner_produces_valid_chord_result(wav: Path) -> None:
         assert 0.0 <= s.start_sec < s.end_sec <= res.duration_sec
 
 
-def test_default_provider_version_names_the_pinned_weights(wav: Path) -> None:
+def test_default_provider_version_names_the_pinned_weights_and_feature_mode(
+    wav: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("BTC_CQT_MODE", raising=False)
     res = BtcChordSource(_fake_runner([(0.0, 1.0, "C")])).recognize(wav)
-    assert res.provider_version == BTC_PROVIDER_VERSION == "btc-large-voca@1673d23f8f9a"
+    assert res.provider_version == BTC_PROVIDER_VERSION == "btc-large-voca@1673d23f8f9a+song"
     assert len(res.provider_version) <= 64  # chord_edits.provider_version cap (migration 026)
+    monkeypatch.setenv("BTC_CQT_MODE", "chunked")  # the upstream test.py decode is named apart
+    res = BtcChordSource(_fake_runner([(0.0, 1.0, "C")])).recognize(wav)
+    assert res.provider_version == "btc-large-voca@1673d23f8f9a+chunk10"
+
+
+@pytest.mark.parametrize(
+    ("raw", "want"),
+    [(None, "song"), ("", "song"), ("song", "song"), (" Chunked ", "chunked"), ("bogus", "song")],
+)
+def test_cqt_mode_env(raw: str | None, want: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    if raw is None:
+        monkeypatch.delenv("BTC_CQT_MODE", raising=False)
+    else:
+        monkeypatch.setenv("BTC_CQT_MODE", raw)
+    assert btc.cqt_mode() == want
 
 
 def test_play_chords_json_matches_golden_shape_and_loader_rules(wav: Path) -> None:
@@ -572,7 +590,7 @@ def test_frames_to_rows_runs_and_times() -> None:
     rows = btc_model.frames_to_rows(
         np.array([169, 169, 1, 1, 1, 9]), np.array([0.9, 0.7, 0.5, 0.5, 0.2, 1.0]), vocab
     )
-    fs = 10.0 / 108
+    fs = 2048 / 22050  # default clock: hop / sr
     assert [(r[2]) for r in rows] == ["N", "C", "C:7"]
     assert rows[0][0] == 0.0 and rows[0][1] == pytest.approx(2 * fs)
     assert rows[1][0] == pytest.approx(2 * fs) and rows[1][1] == pytest.approx(5 * fs)
@@ -581,19 +599,50 @@ def test_frames_to_rows_runs_and_times() -> None:
     assert btc_model.frames_to_rows(np.array([], dtype=int), np.array([]), vocab) == []
 
 
+def test_frames_to_rows_default_clock_is_the_real_hop() -> None:
+    """Default frame time is hop / sr (0.09288 s), the clock of a contiguous CQT. The upstream
+    10 s / 108 (0.09259 s) runs 0.31% fast and is only right for 10 s-chunked features."""
+    vocab = btc_vocabulary()
+    ids, probs = np.array([1] * 1000 + [9]), np.ones(1001)
+    hop = btc_model.HOP_LENGTH / btc_model.SAMPLE_RATE
+    assert pytest.approx(hop) == btc_model.HOP_SEC
+    rows = btc_model.frames_to_rows(ids, probs, vocab)
+    assert rows[1][0] == pytest.approx(1000 * hop) and rows[1][1] == pytest.approx(1001 * hop)
+    legacy = btc_model.frames_to_rows(ids, probs, vocab, frame_sec=btc_model.FRAME_SEC)
+    assert legacy[1][0] == pytest.approx(1000 * 10.0 / 108)
+
+
+def test_cqt_features_song_mode_is_one_contiguous_cqt() -> None:
+    import librosa
+
+    sr = btc_model.SAMPLE_RATE
+    t = np.arange(int(sr * 23.0)) / sr
+    wav = (0.3 * np.sin(2 * np.pi * 220.0 * t)).astype(np.float32)
+    f = btc_model.cqt_features(wav, mode="song")
+    assert f.shape == (1 + len(wav) // 2048, 144) and f.dtype == np.float32  # no chunk seams
+    want = np.log(
+        np.abs(librosa.cqt(wav, sr=sr, n_bins=144, bins_per_octave=24, hop_length=2048)) + 1e-6
+    )
+    np.testing.assert_allclose(f, want.T, rtol=1e-5, atol=1e-5)
+    assert btc_model.cqt_features(wav).shape == f.shape  # song is the default
+    assert btc_model.cqt_features(np.zeros(0, dtype=np.float32), mode="song").shape == (0, 144)
+    with pytest.raises(ValueError):
+        btc_model.cqt_features(wav, mode="nope")
+
+
 def test_cqt_features_chunks_like_btc_and_handles_short_audio() -> None:
     sr = btc_model.SAMPLE_RATE
     t = np.arange(int(sr * 23.0)) / sr
     wav = (0.3 * np.sin(2 * np.pi * 220.0 * t)).astype(np.float32)
-    f = btc_model.cqt_features(wav)
+    f = btc_model.cqt_features(wav, mode="chunked")
     # 10 s chunks -> 108 frames each; 3 s tail -> 1 + 66150 // 2048 = 33 frames.
     assert f.shape == (108 + 108 + 33, 144) and f.dtype == np.float32
     assert np.isfinite(f).all()
-    short = btc_model.cqt_features(wav[: sr * 2])  # < one chunk (the original code crashed)
+    short = btc_model.cqt_features(wav[: sr * 2], mode="chunked")  # < one chunk
     assert short.shape == (1 + (sr * 2) // 2048, 144)
-    tail = btc_model.cqt_features(wav[: sr * 10 + 100])  # tail < one hop is dropped
+    tail = btc_model.cqt_features(wav[: sr * 10 + 100], mode="chunked")  # tail < one hop dropped
     assert tail.shape == (108, 144)
-    assert btc_model.cqt_features(np.zeros(0, dtype=np.float32)).shape == (0, 144)
+    assert btc_model.cqt_features(np.zeros(0, dtype=np.float32), mode="chunked").shape == (0, 144)
 
 
 # ----------------------------- default runner end to end -----------------------------
@@ -626,6 +675,48 @@ def test_default_runner_end_to_end_and_cached(
     assert all(is_valid_harte_label(s.label) and 0 < s.confidence <= 1 for s in r1.segments)
 
 
+@pytest.mark.parametrize(
+    ("env", "mode", "frame_sec"),
+    [(None, "song", "HOP_SEC"), ("chunked", "chunked", "FRAME_SEC")],
+)
+def test_default_runner_pairs_feature_mode_with_its_clock(
+    env: str | None, mode: str, frame_sec: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Song-mode features must be timed by hop / sr, chunked ones by 10 s / 108: a mismatched
+    pair drifts 0.31% (about 0.6 s by the end of a 3.5 min song)."""
+    _install_synthetic_weights(tmp_path, monkeypatch)
+    if env is None:
+        monkeypatch.delenv("BTC_CQT_MODE", raising=False)
+    else:
+        monkeypatch.setenv("BTC_CQT_MODE", env)
+    audio = tmp_path / "harmonic_mix.wav"
+    _write_wav(audio, 220.0, secs=3.0)
+    seen: dict = {}
+    real_cqt, real_rows = btc_model.cqt_features, btc_model.frames_to_rows
+
+    def spy_cqt(wav, mode="song"):
+        seen["mode"] = mode
+        return real_cqt(wav, mode=mode)
+
+    def spy_rows(ids, probs, vocab, frame_sec=btc_model.HOP_SEC):
+        seen["frame_sec"] = frame_sec
+        return real_rows(ids, probs, vocab, frame_sec=frame_sec)
+
+    monkeypatch.setattr(btc_model, "cqt_features", spy_cqt)
+    monkeypatch.setattr(btc_model, "frames_to_rows", spy_rows)
+    btc._default_runner()(audio)
+    assert seen["mode"] == mode
+    assert seen["frame_sec"] == getattr(btc_model, frame_sec)
+
+
+def test_runner_cache_is_keyed_by_cqt_mode(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _install_synthetic_weights(tmp_path, monkeypatch)
+    monkeypatch.delenv("BTC_CQT_MODE", raising=False)
+    song = btc._default_runner()
+    monkeypatch.setenv("BTC_CQT_MODE", "chunked")
+    assert btc._default_runner() is not song
+
+
 def test_runner_cache_is_keyed_by_weights_sha(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -653,6 +744,37 @@ def test_real_weights_smoke(tmp_path: Path) -> None:
     res = BtcChordSource().recognize(audio)
     longest = max(res.segments, key=lambda s: s.end_sec - s.start_sec)
     assert longest.label == "C:maj"
+
+
+@pytest.mark.skipif(
+    not os.environ.get("BTC_WEIGHTS_PATH"), reason="real BTC weights not fetched (opt-in)"
+)
+def test_real_weights_chord_changes_do_not_drift(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Opt-in: chords change every 2 s for 150 s. Detected changes stay on the audio clock: the
+    median error over the last 30 s is < 0.12 s (the 10 s / 108 clock on contiguous frames
+    would be ~0.4 s early there)."""
+    import soundfile as sf
+
+    monkeypatch.delenv("BTC_CQT_MODE", raising=False)
+    sr, per, dur = 22050, 2.0, 150.0
+    t = np.arange(int(sr * dur)) / sr
+    y = np.zeros_like(t)
+    chords = [(60, 64, 67), (55, 59, 62), (57, 60, 64), (53, 57, 60)]
+    for k in range(int(dur / per)):
+        a, b = int(k * per * sr), int((k + 1) * per * sr)
+        for m in chords[k % 4]:
+            f0 = 440 * 2 ** ((m - 69) / 12)
+            for h in (1, 2, 3):
+                y[a:b] += np.sin(2 * np.pi * f0 * h * t[a:b]) / h
+    audio = tmp_path / "changes.wav"
+    sf.write(audio, (0.1 * y / np.abs(y).max()).astype(np.float32), sr)
+    res = BtcChordSource().recognize(audio)
+    starts = np.array([s.start_sec for s in res.segments[1:]])
+    late = np.arange(dur - 30.0, dur, per)
+    err = [starts[np.argmin(np.abs(starts - x))] - x for x in late]
+    assert abs(float(np.median(err))) < 0.12
 
 
 # ----------------------------- fetch script -----------------------------

@@ -84,7 +84,7 @@ const asideItems = (dom) => [...dom.find('aside[aria-labelledby="mix-h"]').query
 for (const source of [NO_ARTIFACT, ALL_N]) {
   test(`#498 real overlay, ${source.label}: phone ⋯ has no chord items and its name promises none`, async () => {
     await withSong(source, false, async (dom) => {
-      assert.equal(dom.find('[data-testid="player-more"]').getAttribute('aria-label'), 'More: speed, song info, count-in, rename parts, set lists');
+      assert.equal(dom.find('[data-testid="player-more"]').getAttribute('aria-label'), 'More: speed, song info, count-in, rename parts, set lists, send feedback');
       await dom.act(() => dom.find('[data-testid="player-more"]').click());
       assert.ok(!menuItems(dom).includes('See all chords'), menuItems(dom).join(' | '));
       assert.equal(dom.find('[data-testid="chord-mode-simple"]'), null);
@@ -103,7 +103,7 @@ for (const source of [NO_ARTIFACT, ALL_N]) {
 
 test('#498 real overlay, the committed golden artifact: phone ⋯ offers the chord items and says so', async () => {
   await withSong(WITH_CHORDS, false, async (dom) => {
-    assert.equal(dom.find('[data-testid="player-more"]').getAttribute('aria-label'), 'More: all chords, speed, song info, count-in, rename parts, set lists');
+    assert.equal(dom.find('[data-testid="player-more"]').getAttribute('aria-label'), 'More: all chords, speed, song info, count-in, rename parts, set lists, send feedback');
     await dom.act(() => dom.find('[data-testid="player-more"]').click());
     assert.ok(menuItems(dom).includes('See all chords'), menuItems(dom).join(' | '));
     assert.ok(dom.find('[data-testid="chord-mode-simple"]'));

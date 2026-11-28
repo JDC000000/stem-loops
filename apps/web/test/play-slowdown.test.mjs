@@ -576,6 +576,18 @@ test('#448 flag ON: stretchLatencySec() is the PENDING rate\'s latency while it 
   assert.equal(withStorage(on, () => plain.engine.stretchLatencySec()), 0, 'no stretch provider');
 });
 
+test('#448: disposed while the first slow-down is still pending → stretchLatencySec() is 0, flag on and off', async () => {
+  const { st } = gatedStretch();
+  const { engine } = await rig({ stretch: st });
+  engine.setPlaybackRate(0.75);
+  await settle();
+  assert.ok(engine.getSnapshot().speedPending === true, 'pending before dispose');
+  engine.dispose();
+  // dispose() leaves wantRate/stretchProvider set, so only the disposed guard keeps the pending branch out.
+  assert.ok(withStorage(memStore({ 'sl.play.countPendingRate.v1': '1' }), () => engine.stretchLatencySec()) === 0, 'flag on');
+  assert.ok(withStorage(memStore(), () => engine.stretchLatencySec()) === 0, 'flag off');
+});
+
 test('#387: stretchLatencySec() is the stretch latency a start at the playing rate adds (0 at 100%, without stretch, after dispose)', async () => {
   const { engine } = await rig();
   assert.equal(engine.stretchLatencySec(), 0, '100%: bypassed');

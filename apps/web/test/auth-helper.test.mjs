@@ -37,6 +37,7 @@ function stubSsrModule(userResult) {
   return dataUrl(`
     export function createBrowserClient() { return { __browser: true }; }
     export function createServerClient(_url, _key, _opts) {
+      globalThis.__ssrOpts = _opts;
       return {
         auth: {
           getUser: async () => (${JSON.stringify(userResult)}),
@@ -180,6 +181,16 @@ test('getUser() returns null when the user has no email (phone-only signup — u
   });
   const user = await mod.getUser();
   assert.equal(user, null);
+});
+
+test('createServerClient({ fetch }) hands that fetch to supabase-js as global.fetch; without it, none (#514)', async () => {
+  const mod = await loadAuthModule({ userResult: { data: { user: null }, error: null } });
+  const fetch = async () => new Response(null);
+  await mod.createServerClient({ fetch });
+  assert.equal(globalThis.__ssrOpts.global?.fetch, fetch);
+  assert.equal(typeof globalThis.__ssrOpts.cookies.getAll, 'function', 'the cookie adapter is kept');
+  await mod.createServerClient();
+  assert.equal(globalThis.__ssrOpts.global, undefined);
 });
 
 test('AuthenticatedUser type keeps the exported shape stable', async () => {

@@ -44,7 +44,8 @@ from .logger import log_structured
 # path failing (fresh result) is reclassified AT THE SOURCE to FETCH_PROXY_FAILED
 # (downloader._attribute_block_to_outage), so the stored code is ours and this tuple is unchanged.
 # QK-2 / QK-4 (2026-11-26), also with this tuple unchanged: a job that retained no playable stem
-# fails UPLOAD_FAILED (pipeline._require_a_playable_stem), and the kill switch, a failed blocklist
+# -- and since #490 (Jon E2 = a) one with fewer than all six playable -- fails UPLOAD_FAILED
+# (pipeline._require_a_full_stem_set), and the kill switch, a failed blocklist
 # read and a worker with ALLOW_YOUTUBE_INPUT off raise INTERNAL_ERROR subclasses (errors.py)
 # instead of DOWNLOAD_BLOCKED -- all ours, so the credit / song comes back.
 OUR_FAULT_CODES = ("SEPARATION_FAILED", "UPLOAD_FAILED", "INTERNAL_ERROR", "FETCH_PROXY_FAILED")

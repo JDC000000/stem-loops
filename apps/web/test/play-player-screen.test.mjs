@@ -1161,6 +1161,46 @@ test('#496: a song with no chords has no "See all chords" and no Chords: Simple 
   });
 });
 
+test('#498: the desktop aside "Show all chords" shows only when the song has chords (same gate as the ⋯ items, #496)', async () => {
+  const asideButtons = (dom) => [...dom.find('aside[aria-labelledby="mix-h"]').querySelectorAll('button')].map((b) => b.textContent);
+  globalThis.__noChords = true;
+  try {
+    await withDom(async (dom) => {
+      setMedia(true);
+      await dom.mount(React.createElement(Player.PlayerView, viewProps()));
+      assert.equal(dom.find('[data-testid="player"]').dataset.layout, 'desktop');
+      assert.ok(!asideButtons(dom).includes('Show all chords'), asideButtons(dom).join(' | '));
+      assert.ok(dom.find('aside[aria-labelledby="mix-h"] [data-testid="desk-presets"]'), 'the rest of the aside is still there');
+      await dom.unmountAll();
+    });
+  } finally {
+    delete globalThis.__noChords;
+  }
+  // …and with chords it is there and opens the chord sheet.
+  await withDom(async (dom) => {
+    setMedia(true);
+    await dom.mount(React.createElement(Player.PlayerView, viewProps()));
+    const btn = [...dom.find('aside[aria-labelledby="mix-h"]').querySelectorAll('button')].find((b) => b.textContent === 'Show all chords');
+    assert.ok(btn, 'with chords the aside offers the chord sheet');
+    await dom.act(() => btn.click());
+    assert.ok(dom.find('[data-testid="chart-sheet"]'), 'the chord sheet opened');
+    await dom.unmountAll();
+  });
+});
+
+test('#498: with no sections there is no Rename parts, and the ⋯ name does not promise it (mounted, not only the helper)', async () => {
+  await withDom(async (dom) => {
+    setMedia(false);
+    await dom.mount(React.createElement(Player.PlayerView, viewProps({ sections: [], onSpeed: noop })));
+    assert.equal(dom.find('[data-testid="player-more"]').getAttribute('aria-label'), 'More: all chords, speed, song info, count-in, set lists');
+    await dom.act(() => dom.find('[data-testid="player-more"]').click());
+    assert.equal(dom.find('[data-testid="menu-rename-parts"]'), null);
+    await dom.unmountAll();
+  });
+  // Server render: no overlay report yet (no chords), no sections.
+  assert.match(ssr({ sections: [] }), /aria-label="More: song info, count-in, set lists"/);
+});
+
 test('QA S8: moreMenuLabel lists what the ⋯ menu holds, in menu order', async () => {
   const { moreMenuLabel: L } = await import(graph.url('components/play/PlayerScreen.tsx'));
   assert.equal(L({ hasChords: false, speed: false, renameParts: false }), 'More: song info, count-in, set lists');

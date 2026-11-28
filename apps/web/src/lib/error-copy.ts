@@ -75,12 +75,12 @@ export const ERROR_COPY: Record<string, { headline: string; action: string }> = 
     action: 'Head back to pricing and pick a plan.',
   },
   TRIAL_EXHAUSTED: {
-    headline: "You've used all the tracks in your free trial.",
+    headline: "You've used all the songs in your free trial.",
     action: 'Pick a plan or buy a credit pack to keep going.',
   },
   CREDIT_BALANCE_INSUFFICIENT: {
     headline: "You're out of credits.",
-    action: 'Buy a credit pack to add more tracks.',
+    action: 'Buy a credit pack to add more songs.',
   },
   FREE_MONTHLY_QUOTA_EXHAUSTED: {
     headline: "You've used all your free songs this month.",
@@ -114,7 +114,7 @@ export const DEFAULT_ERROR = ERROR_COPY.INTERNAL_ERROR;
 // them while it is off. Same one-sentence + one-sentence shape (test/error-copy-shape).
 export const CHECKOUT_OFF_COPY: Readonly<Record<string, { headline: string; action: string }>> = {
   TRIAL_EXHAUSTED: {
-    headline: "You've used all the tracks in your free trial.",
+    headline: "You've used all the songs in your free trial.",
     action: "Plans aren't on sale during the beta, so check back after it ends.",
   },
   CREDIT_BALANCE_INSUFFICIENT: {
@@ -202,7 +202,7 @@ export function entitlementMessage(code: string, detail?: string): string {
  */
 const FAILED_JOB_COPY_OVERRIDES: ReadonlySet<string> = new Set(['SEPARATION_FAILED']);
 
-export const FAILED_JOB_FALLBACK = "We couldn't finish this track. Try another file.";
+export const FAILED_JOB_FALLBACK = "We couldn't finish this song. Try another file.";
 
 /**
  * QA-64. The sentence the worker appends to a failed job's stored `error_message_user` when,

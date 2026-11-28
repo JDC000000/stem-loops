@@ -74,12 +74,22 @@ const stub = {
     export const MAX_UPLOAD_BYTES = 200 * 1024 * 1024;
     export const validateUpload = () => ({ ok: true, ext: 'mp3', contentType: 'audio/mpeg' });`),
   r2: dataUrl(`export const presignPut = async (key) => { globalThis.__up.minted.push(key); return 'https://r2.example/put'; };`),
+  // #489: a signed-in presign reads the upload entitlement + monthly quota first (always allowed
+  // here; the refusals are test/uploads-signed-in-quota.test.mjs).
+  ent: dataUrl(`
+    export class EntitlementError extends Error {}
+    export const enforceEntitlement = async () => ({ allowed: true, snapshot: { plan_code: 'free' } });`),
+  rate: dataUrl(`export const checkMonthlyQuota = async () => null;`),
+  linkJob: dataUrl(`export const quotaRefusalBody = () => ({});`),
 };
 const route = await import(
   dataUrl(
     read('app/api/uploads/route.ts')
       .replace(/from ['"]@\/lib\/admission['"]/g, `from '${ADMISSION}'`)
       .replace(/from ['"]@\/lib\/error-copy['"]/g, `from '${ERRCOPY}'`)
+      .replace(/from ['"]@\/lib\/billing\/entitlements['"]/g, `from '${stub.ent}'`)
+      .replace(/from ['"]@\/lib\/billing\/rate-limit['"]/g, `from '${stub.rate}'`)
+      .replace(/from ['"]@\/lib\/jobs\/create-link-job['"]/g, `from '${stub.linkJob}'`)
       .replace(/from ['"]@\/lib\/client-ip['"]/g, `from '${stub.clientIp}'`)
       .replace(/from ['"]@\/lib\/upload['"]/g, `from '${stub.upload}'`)
       .replace(/from ['"]@\/lib\/r2['"]/g, `from '${stub.r2}'`)

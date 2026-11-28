@@ -18,7 +18,7 @@
 //   200 { ok: false, reason: 'no_grant' | 'expired' | 'exhausted' }
 //   401 when unauthenticated.
 //   403 BAD_ORIGIN when not a same-origin browser request (CSRF guard).
-//   429 when the burst limit trips.
+//   429 RATE_LIMITED (code rate_limit_burst) + the per-client sentence when the burst limit trips.
 //
 // Auth: required. Advisory-lock on hashtext('trial_consume:' || user_id)
 // is taken inside consumeTrial().
@@ -28,6 +28,8 @@ import { getUser } from '@/lib/auth/supabase';
 import { consumeTrial } from '@/lib/trial';
 import { checkBurstLimit } from '@/lib/billing/rate-limit';
 import { BAD_ORIGIN, crossOriginRefusal } from '@/lib/same-origin';
+import { RATE_LIMITED_PER_CLIENT_MSG } from '@/lib/error-copy';
+import { burstRefusalBody } from '@/lib/jobs/create-link-job';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -58,11 +60,8 @@ export async function POST(req: NextRequest) {
   const burst = await checkBurstLimit(user.user_id);
   if (burst) {
     return new NextResponse(
-      JSON.stringify({
-        error: 'too many requests',
-        code: 'rate_limit_burst',
-        retry_after_s: burst.retry_after_s,
-      }),
+      // #489: the same body as /api/jobs' burst 429 (QW-1): old fields + error_code + sentence.
+      JSON.stringify(burstRefusalBody(burst.retry_after_s, RATE_LIMITED_PER_CLIENT_MSG)),
       {
         status: 429,
         headers: {

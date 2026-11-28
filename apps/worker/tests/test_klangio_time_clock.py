@@ -105,3 +105,21 @@ def test_clock_is_logged(monkeypatch: pytest.MonkeyPatch) -> None:
     kg._parse_klangio_response([[0.0, 2.4, "C:maj"]], model_ms=0)
     clocks = [kw["time_clock"] for ev, kw in events if ev == "klangio_parse_summary"]
     assert clocks == ["frame_10_108_restamped", "passthrough"]
+
+
+@pytest.mark.parametrize(
+    ("served", "frame"),
+    # verbatim served floats that land just BELOW the integer frame (truncation would be off by 1)
+    [(16.296296296296294, 176), (34.07407407407407, 368), (40.55555555555555, 438)],
+)
+def test_served_floats_below_the_frame_round_to_it(served: float, frame: int) -> None:
+    rows = [[0.0, served, "C:maj"], [served, served + 23 * SERVED_FRAME, "G:7"]]
+    segs = kg._parse_klangio_response(rows, model_ms=0).segments
+    assert segs[0].end_sec == frame * HOP
+    assert segs[1].start_sec == frame * HOP
+
+
+def test_off_grid_start_with_on_grid_end_passes_through() -> None:
+    """The grid check covers starts too, not only ends."""
+    segs = kg._parse_klangio_response([[0.01, 2.5, "C"]], model_ms=0).segments
+    assert [(s.start_sec, s.end_sec) for s in segs] == [(0.01, 2.5)]

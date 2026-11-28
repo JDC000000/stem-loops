@@ -19,6 +19,8 @@
  * context of its own (created lazily, inside the user's gesture).
  */
 
+import { readCountPendingRate } from './speed-flag.ts';
+
 /** One bar of 4/4. */
 export const COUNT_IN_BEATS = 4;
 /** The toggle is remembered per user (per browser) here: '1' = on. Off by default. */
@@ -137,6 +139,24 @@ export function countInSec(bpm: number, rate = 1): number {
 /** Click times (seconds from the start), one per beat: 0, 1, 2, 3 beats of `beatSec(bpm, rate)`. */
 export function clickOffsets(bpm: number, rate = 1): number[] {
   return Array.from({ length: COUNT_IN_BEATS }, (_, i) => i * beatSec(bpm, rate));
+}
+
+// #448 flag (default OFF): see speed-flag.ts. Re-exported so the count's callers need one import.
+export { COUNT_PENDING_RATE_KEY, readCountPendingRate } from './speed-flag.ts';
+
+/**
+ * The rate the count follows, from the engine snapshot. Flag off: the rate
+ * playing (`playbackRate ?? 1`, the old rule). Flag on and a change pending:
+ * the pending rate, when it is believable.
+ */
+export function countRateFor(
+  snap: { playbackRate?: number; speedPending?: boolean; pendingRate?: number } | null | undefined,
+  pendingOn: boolean = readCountPendingRate(),
+): number {
+  const playing = snap?.playbackRate ?? 1;
+  if (!pendingOn || !snap?.speedPending) return playing;
+  const p = snap.pendingRate;
+  return typeof p === 'number' && Number.isFinite(p) && p >= MIN_COUNT_RATE && p <= MAX_COUNT_RATE ? p : playing;
 }
 
 export function readCountIn(): boolean {

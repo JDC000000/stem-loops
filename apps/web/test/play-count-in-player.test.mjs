@@ -15,7 +15,7 @@ import assert from 'node:assert/strict';
 
 import { buildModuleGraph } from './helpers/module-graph.mjs';
 import { withDom } from './helpers/dom.mjs';
-import { COUNT_IN_KEY, CLICK_LEAD_SEC, ENGINE_LEAD_SEC } from '../src/lib/play/count-in.ts';
+import { COUNT_IN_KEY, COUNT_PENDING_RATE_KEY, CLICK_LEAD_SEC, ENGINE_LEAD_SEC } from '../src/lib/play/count-in.ts';
 
 const graph = buildModuleGraph({
   name: 'play-count-in-player',
@@ -66,7 +66,7 @@ const LOOPS = [
   { stem: 'drums', section: 'verse', start_sec: 9, end_sec: 47, bpm: 120 },
 ];
 
-function makeRig({ rate = 1, stretchSec = 0, routeSec = 0 } = {}) {
+function makeRig({ rate = 1, stretchSec = 0, routeSec = 0, pending = null } = {}) {
   const rig = {
     calls: [],
     playedAt: [],
@@ -76,6 +76,7 @@ function makeRig({ rate = 1, stretchSec = 0, routeSec = 0 } = {}) {
       const subs = new Set();
       let snap = {
         status: 'idle', positionSec: 0, durationSec: 120, loop: null, degraded: null, error: null, playbackRate: rate,
+        ...(pending ? { speedPending: true, pendingRate: pending } : {}),
         stems: STEMS.map((name) => ({ name, availability: 'ready', gain: 0.8, muted: false, soloed: false, effectivelySilent: false })),
       };
       const set = (over) => { snap = { ...snap, ...over }; for (const f of subs) f(snap); };
@@ -186,3 +187,34 @@ test('#387: at 75% the real Player counts at the slowed tempo and calls play() e
     await cleanup(dom);
   });
 });
+
+// #448: 75% tapped, then Play before the stretch nodes run (snapshot: playbackRate 1,
+// speedPending, pendingRate 0.75). The fake engine's stretchLatencySec() stands for
+// the real one under each flag state (engine side pinned in play-slowdown.test.mjs).
+for (const flag of [false, true]) {
+  test(`#448 flag ${flag ? 'ON' : 'OFF (default)'}: pending 75% at 240 BPM: ${flag ? 'the count runs at 75% and play() is early by the pending latency' : 'old behaviour, the count runs at 100%'}`, async () => {
+    await withDom(async (dom) => {
+      const STRETCH = 0.121;
+      const rig = makeRig({ rate: 1, pending: 0.75, stretchSec: flag ? STRETCH : 0, routeSec: 0 });
+      if (flag) globalThis.localStorage.setItem(COUNT_PENDING_RATE_KEY, '1');
+      else globalThis.localStorage.removeItem(COUNT_PENDING_RATE_KEY);
+      try {
+        await mountPlayer(dom, rig, 240);
+        const t0 = Date.now();
+        await dom.act(() => dom.find('[data-testid="transport-play"]').click());
+        assert.equal(countNum(dom), '4');
+        rig.playedAt.length = 0;
+        // OFF: 4 beats at 240 BPM = 1000 ms; ON: at 180 BPM = 1333.3 ms, minus the stretch latency.
+        const bar = flag ? 4 * (60 / 180) * 1000 : 1000;
+        const due = bar + (CLICK_LEAD_SEC - ENGINE_LEAD_SEC - (flag ? STRETCH : 0)) * 1000;
+        await dom.advance(1500);
+        assert.equal(rig.playedAt.length, 1, 'played once');
+        const at = rig.playedAt[0] - t0;
+        assert.ok(at >= due - 5 && at <= due + 60, `play() at ${at} ms, due ${due.toFixed(1)} ms`);
+      } finally {
+        globalThis.localStorage.removeItem(COUNT_PENDING_RATE_KEY);
+        await cleanup(dom);
+      }
+    });
+  });
+}

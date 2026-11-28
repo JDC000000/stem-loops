@@ -15,6 +15,7 @@ import {
   COUNT_IN_BEATS, COUNT_IN_KEY, COUNT_IN_NEEDS_BPM, CANCEL_SWALLOW_MS, beatSec, clickOffsets, countInBpm, countInSec,
   createCountIn, cancelOnOtherInput, readCountIn, writeCountIn, createClickSink, timingOffsets, engineCountLatencySec, SETTLE_MS, CLICK_LEAD_SEC, ENGINE_LEAD_SEC,
   MAX_LATENCY_SEC, MAX_ENGINE_LATENCY_SEC, contextLatencySec, countRate,
+  COUNT_PENDING_RATE_KEY, readCountPendingRate, countRateFor,
 } from '../src/lib/play/count-in.ts';
 import { buildModuleGraph } from './helpers/module-graph.mjs';
 import { withDom } from './helpers/dom.mjs';
@@ -273,6 +274,62 @@ test('storage: off by default, remembered, and a throwing localStorage never thr
   } finally {
     if (real) Object.defineProperty(globalThis, 'localStorage', real); else delete globalThis.localStorage;
   }
+});
+
+// ═══ #448: a pending first slow-down (flag sl.play.countPendingRate.v1, default OFF) ═══
+
+test('#448 flag: key name, off by default, only "1" turns it on, a throwing localStorage reads off', async () => {
+  assert.equal(COUNT_PENDING_RATE_KEY, 'sl.play.countPendingRate.v1');
+  await withDom(async () => {
+    globalThis.localStorage.removeItem(COUNT_PENDING_RATE_KEY);
+    assert.equal(readCountPendingRate(), false, 'off by default');
+    for (const v of ['0', 'true', 'on', '']) {
+      globalThis.localStorage.setItem(COUNT_PENDING_RATE_KEY, v);
+      assert.equal(readCountPendingRate(), false, `"${v}" is not on`);
+    }
+    globalThis.localStorage.setItem(COUNT_PENDING_RATE_KEY, '1');
+    assert.equal(readCountPendingRate(), true);
+    globalThis.localStorage.removeItem(COUNT_PENDING_RATE_KEY);
+  });
+  const real = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+  Object.defineProperty(globalThis, 'localStorage', { configurable: true, get() { throw new Error('denied'); } });
+  try {
+    assert.equal(readCountPendingRate(), false);
+  } finally {
+    if (real) Object.defineProperty(globalThis, 'localStorage', real); else delete globalThis.localStorage;
+  }
+});
+
+test('#448 countRateFor: flag OFF = the rate playing (old behaviour, even while a change is pending)', () => {
+  const pending = { playbackRate: 1, speedPending: true, pendingRate: 0.75 };
+  assert.equal(countRateFor(pending, false), 1);
+  assert.equal(countRateFor({ playbackRate: 0.9, speedPending: true, pendingRate: 0.75 }, false), 0.9);
+  assert.equal(countRateFor({}, false), 1, 'no rate = 1');
+  assert.equal(countRateFor(null, false), 1);
+  assert.equal(countRateFor({ playbackRate: 0.75 }, false), 0.75);
+});
+
+test('#448 countRateFor: flag ON = the PENDING rate while a change waits; else the rate playing', () => {
+  assert.equal(countRateFor({ playbackRate: 1, speedPending: true, pendingRate: 0.75 }, true), 0.75);
+  assert.equal(countRateFor({ playbackRate: 1, speedPending: true, pendingRate: 0.9 }, true), 0.9);
+  assert.equal(countRateFor({ playbackRate: 0.75, speedPending: true, pendingRate: 1 }, true), 1, 'pending back to 100%');
+  assert.equal(countRateFor({ playbackRate: 0.75, speedPending: false, pendingRate: 0.9 }, true), 0.75, 'not pending: the rate playing');
+  assert.equal(countRateFor({ playbackRate: 0.9, speedPending: true }, true), 0.9, 'pending without a rate: the rate playing');
+  for (const bad of [NaN, 0, -1, 0.1, 9, '0.75', null]) {
+    assert.equal(countRateFor({ playbackRate: 0.9, speedPending: true, pendingRate: bad }, true), 0.9, `garbage ${String(bad)}`);
+  }
+  assert.equal(countRateFor(null, true), 1);
+});
+
+test('#448 the default reads the flag from localStorage', async () => {
+  await withDom(async () => {
+    const snap = { playbackRate: 1, speedPending: true, pendingRate: 0.75 };
+    globalThis.localStorage.removeItem(COUNT_PENDING_RATE_KEY);
+    assert.equal(countRateFor(snap), 1, 'off by default');
+    globalThis.localStorage.setItem(COUNT_PENDING_RATE_KEY, '1');
+    assert.equal(countRateFor(snap), 0.75);
+    globalThis.localStorage.removeItem(COUNT_PENDING_RATE_KEY);
+  });
 });
 
 // ═══ the screen ══════════════════════════════════════════════════════════════

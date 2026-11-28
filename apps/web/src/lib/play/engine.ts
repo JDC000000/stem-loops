@@ -187,6 +187,7 @@
  * already tight.
  */
 
+import { readCountPendingRate } from './speed-flag.ts';
 import {
   MAX_TRACK_SEC,
   PLAYABLE_STEMS,
@@ -914,7 +915,12 @@ export class WebAudioPlayEngine implements PlayEngine {
    * `startVoices` adds between `when` and `heardAt`. 0 at 100% (bypassed).
    */
   stretchLatencySec(): number {
-    if (this.disposed || this.rate === 1 || this.stretchers.size === 0) return 0;
+    if (this.disposed) return 0;
+    // #448, behind sl.play.countPendingRate.v1 (default off): while a change waits
+    // for the stretch nodes, a start is heard at the PENDING rate's latency once
+    // it applies, so that is what the count must allow for.
+    if (this.wantRate !== this.rate && readCountPendingRate()) return this.latencyAt(this.wantRate);
+    if (this.rate === 1 || this.stretchers.size === 0) return 0;
     return this.latencyAt(this.rate);
   }
 
@@ -1448,6 +1454,7 @@ export class WebAudioPlayEngine implements PlayEngine {
       error: this.error ? Object.freeze({ ...this.error }) : null,
       playbackRate: this.rate,
       speedPending: this.wantRate !== this.rate,
+      ...(this.wantRate !== this.rate ? { pendingRate: this.wantRate } : {}),
     });
     if (snapshotsEqual(prev, next)) return prev;
     this.snapshot = next;
@@ -1522,6 +1529,7 @@ function snapshotsEqual(a: EngineSnapshot, b: EngineSnapshot): boolean {
   if (a === b) return true;
   if (a.status !== b.status || a.durationSec !== b.durationSec) return false;
   if ((a.playbackRate ?? 1) !== (b.playbackRate ?? 1) || !!a.speedPending !== !!b.speedPending) return false;
+  if (a.pendingRate !== b.pendingRate) return false;
   if (Math.abs(a.positionSec - b.positionSec) >= POSITION_EPSILON_SEC) return false;
   if ((a.loop === null) !== (b.loop === null)) return false;
   if (a.loop && b.loop) {

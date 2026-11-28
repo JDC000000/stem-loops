@@ -177,7 +177,8 @@ def _drive(monkeypatch, *, kind="upload", download=None, retained=None):
     report = retained if retained is not None else {"play": list(SIX), "download": list(SIX)}
     monkeypatch.setattr(pipeline, "retain_stems", lambda _j, _p: report)
     monkeypatch.setattr(pipeline, "delete_objects", lambda keys: seen["deleted"].extend(keys))
-    monkeypatch.setattr(pipeline, "_fail", _async(lambda *a: seen["failed"].append(a)))
+    # fail_job's contract: True when THIS call marked the job failed.
+    monkeypatch.setattr(pipeline, "_fail", _async(lambda *a: seen["failed"].append(a) or True))
     monkeypatch.setattr(replicate_client, "_heartbeat", lambda *_: None)
     return seen
 
@@ -274,15 +275,35 @@ def test_a_failed_stem_set_deletes_every_object_it_uploaded(
     assert sorted(seen["deleted"]) == _keys(played, downloadable)
 
 
-def test_the_stems_are_deleted_before_the_job_is_failed(monkeypatch, sentry):
+def test_the_stems_are_deleted_only_after_this_run_failed_the_job(monkeypatch, sentry):
+    # Review B-1 (R1): deleting first let a zombie run remove the stems of a job another run
+    # had already ended 'done'. Now: fail first, and delete only if THIS run marked it.
     order: list[str] = []
-    seen = _drive(monkeypatch, retained={"play": ["drums"], "download": ["drums"]})
+    _drive(monkeypatch, retained={"play": ["drums"], "download": ["drums"]})
     monkeypatch.setattr(pipeline, "delete_objects", lambda keys: order.append("delete"))
-    monkeypatch.setattr(pipeline, "_fail", _async(lambda *a: order.append("fail")))
+    monkeypatch.setattr(pipeline, "_fail", _async(lambda *a: order.append("fail") or True))
     with pytest.raises(UploadFailedError):
         asyncio.run(pipeline._run_pipeline(JOB))
-    assert order == ["delete", "delete", "fail"]
-    assert seen["failed"] == []
+    assert order == ["fail", "delete", "delete"]
+
+
+def test_a_run_that_did_not_mark_the_job_deletes_nothing(monkeypatch, sentry):
+    # The job was already terminal ('done' by another run, or failed by the reaper): its
+    # objects may be the other run's, so they are left alone (retention sweep's job).
+    seen = _drive(monkeypatch, retained={"play": list(SIX[:5]), "download": list(SIX)})
+    monkeypatch.setattr(pipeline, "_fail", _async(lambda *a: seen["failed"].append(a) or False))
+    with pytest.raises(UploadFailedError):
+        asyncio.run(pipeline._run_pipeline(JOB))
+    assert [f[1] for f in seen["failed"]] == ["UPLOAD_FAILED"]
+    assert seen["deleted"] == []
+
+
+def test_other_failures_never_delete_stems(monkeypatch, sentry):
+    seen = _drive(monkeypatch, retained={"play": list(SIX), "download": list(SIX)})
+    monkeypatch.setattr(pipeline, "record_loops", lambda *a, **k: 1 / 0)
+    with pytest.raises(ZeroDivisionError):
+        asyncio.run(pipeline._run_pipeline(JOB))
+    assert seen["deleted"] == []
 
 
 def test_a_delete_error_never_masks_the_failure_or_skips_other_keys(monkeypatch, sentry):

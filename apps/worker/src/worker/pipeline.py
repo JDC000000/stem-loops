@@ -1781,6 +1781,7 @@ async def run_pipeline(job_id: str) -> None:
 async def _run_pipeline(job_id: str) -> None:
     """Real pipeline. download_audio + Replicate are gated (S1 bake-off / P2-12+);
     the audio core runs against the produced stems. Typed errors set status=failed."""
+    short_stem_report: dict | None = None  # #490: set only while a short stem set is failing
     try:
         row = await asyncio.to_thread(_fetch_job, job_id)
         url, requested_stems, bars, input_kind, upload_r2_key, original_filename = row
@@ -1977,13 +1978,11 @@ async def _run_pipeline(job_id: str) -> None:
         # loops, so a stem-upload problem can never cost us the loops.
         async with _stage_heartbeat(job_id):
             stem_report = await asyncio.to_thread(retain_stems, job_id, stem_paths)
-        try:
-            _require_a_full_stem_set(stem_report)
-        except UploadFailedError:
-            # #490: a failed job's stems are unreachable; delete what did upload rather than
-            # leave it in R2 until the retention sweep. Best-effort, never masks the failure.
-            await asyncio.to_thread(_discard_retained_stems, job_id, stem_report)
-            raise
+        # #490: if the set is short, the StemLoopsError branch below fails the job and, only
+        # when THIS run marked it failed, deletes what this report uploaded (review B-1).
+        short_stem_report = stem_report
+        _require_a_full_stem_set(stem_report)
+        short_stem_report = None
         await emit_event(job_id, "uploading", "completed", pct=100, detail={"stems": stem_report})
 
         await set_status(job_id, "done")
@@ -2008,7 +2007,14 @@ async def _run_pipeline(job_id: str) -> None:
         # OUR-fault codes (provider outage, our storage) ARE reported, at warning level:
         # 2026-11-14 two Replicate-502 SEPARATION_FAILED jobs never reached Sentry at all.
         _report_our_fault(exc)
-        await _fail(job_id, exc.error_code, exc.user_message)
+        marked = await _fail(job_id, exc.error_code, exc.user_message)
+        if marked and short_stem_report is not None:
+            # #490: the failed job's stems are unreachable; delete them rather than leave them
+            # in R2 until the retention sweep. Review B-1: only after THIS run marked the job
+            # failed. A run that found it already terminal ('done' by another run of the same
+            # job, whose objects share these deterministic keys; or failed by the reaper)
+            # deletes nothing. Best-effort, never masks the failure.
+            await asyncio.to_thread(_discard_retained_stems, job_id, short_stem_report)
         raise
     except Exception as exc:  # noqa: BLE001 — surface as typed INTERNAL_ERROR
         # This IS worth reporting — an exception that fell through every typed error
@@ -2137,7 +2143,7 @@ def _report_our_fault(exc: StemLoopsError) -> None:
         _reported_once.add(reason)
 
 
-async def _fail(job_id: str, error_code: str, user_message: str) -> None:
+async def _fail(job_id: str, error_code: str, user_message: str) -> bool:
     """Mark the job failed and return its credit / link allowance unit if owed
-    (job_failure.fail_job)."""
-    await fail_job(DATABASE_URL, job_id, error_code, user_message)
+    (job_failure.fail_job). True if THIS call marked the job failed."""
+    return await fail_job(DATABASE_URL, job_id, error_code, user_message)

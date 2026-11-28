@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import hashlib
 import io
 import json
 import os
@@ -90,12 +91,29 @@ def _download_if_missing(row: dict[str, Any], cache_dir: Path) -> Path | None:
     import httpx  # noqa: PLC0415 — lazy so pytest collection doesn't force it
 
     cache_dir.mkdir(parents=True, exist_ok=True)
+    partial = target.with_suffix(".part")
+    digest = hashlib.sha256()
     with httpx.stream("GET", url, follow_redirects=True, timeout=120) as r:
         r.raise_for_status()
-        with open(target, "wb") as f:
+        with open(partial, "wb") as f:
             for chunk in r.iter_bytes(1 << 20):
+                digest.update(chunk)
                 f.write(chunk)
+    # A row that pins its audio (``audio_sha256``) is only cached when the bytes match, so a
+    # moved or replaced upstream file can never be scored as if it were the pinned one.
+    expected = row.get("audio_sha256")
+    if expected and digest.hexdigest() != expected:
+        partial.unlink(missing_ok=True)
+        raise ValueError("audio_sha256 mismatch")
+    partial.replace(target)
     return target
+
+
+def resolve_ground_truth(gt: str) -> Path:
+    """A relative ``ground_truth_lab`` is relative to apps/worker/ (the manifest's checked-in
+    fixtures), not to the caller's working directory; an absolute path is used as is."""
+    path = Path(gt)
+    return path if path.is_absolute() else _REPO_WORKER_ROOT / path
 
 
 def _segments_to_lab(result: Any) -> str:
@@ -203,7 +221,7 @@ def run_eval(
         mir_scores: dict[str, float] = {}
         gt = row.get("ground_truth_lab")
         if gt:
-            gt_path = Path(gt)
+            gt_path = resolve_ground_truth(gt)
             if gt_path.exists():
                 mir_scores = _mir_eval_row(_segments_to_lab(result), gt_path)
 

@@ -407,6 +407,39 @@ def test_lazy_tensor_honours_offset_and_stride() -> None:
         btc_model._LazyTensor(st, 5, (2, 2), (1, 3)).materialize()
 
 
+def test_lazy_tensor_rejects_last_index_exactly_at_storage_size() -> None:
+    st = btc_model._Storage("k", np.dtype("<f4"), 8, np.arange(8, dtype="<f4"))
+    # last = 4 + 1*1 + 1*3 = 8 == size: one element past the end, must not be read.
+    with pytest.raises(BtcCheckpointError, match="past its storage"):
+        btc_model._LazyTensor(st, 4, (2, 2), (1, 3)).materialize()
+    np.testing.assert_array_equal(  # last = 7: the final in-bounds element is fine
+        btc_model._LazyTensor(st, 3, (2, 2), (1, 3)).materialize(), [[3, 6], [4, 7]]
+    )
+
+
+@pytest.mark.parametrize(
+    "pid",
+    [
+        ("storage", btc_model._FloatStorageTag, "1", "cpu", 4, ("view", 0, 2)),  # float, view
+        ("storage", object, "1", "cpu", 4, None),  # non-float tag, no view
+    ],
+)
+def test_persistent_load_rejects_views_and_non_float_storages(pid: tuple) -> None:
+    up = btc_model._CheckpointUnpickler(io.BytesIO(b""), {})
+    with pytest.raises(BtcCheckpointError, match="plain float32"):
+        up.persistent_load(pid)
+    ok = up.persistent_load(("storage", btc_model._FloatStorageTag, "2", "cpu", 4, None))
+    assert isinstance(ok, btc_model._Storage) and ok.size == 4
+
+
+def test_codecs_encode_only_latin1_strings() -> None:
+    assert btc_model._codecs_encode("\xe9a", "latin1") == b"\xe9a"
+    with pytest.raises(BtcCheckpointError, match="_codecs.encode"):
+        btc_model._codecs_encode("abc", "utf-16")
+    with pytest.raises(BtcCheckpointError, match="_codecs.encode"):
+        btc_model._codecs_encode(b"abc", "latin1")
+
+
 class _Evil:
     def __reduce__(self):
         return (os.getcwd, ())

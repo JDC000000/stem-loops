@@ -3,6 +3,8 @@ as the gate (library mode) and a throwaway mutation manifest. Run: python3 -m un
 """
 import json
 import os
+import re
+import stat
 import subprocess
 import sys
 import tempfile
@@ -132,10 +134,14 @@ class Limits(Base):
                                        "apps/web/src/lib/billing/providers/stripe.ts"), str(GATE), "apps/worker", 12)
         self.assertNotIn("web-1", ids)
 
-    def test_negative_max_selects_nothing(self):
-        f = self.write("f0", nul("apps/worker/src/worker/consumer.py"))
+    def test_negative_max_selects_nothing(self):  # #515: cleanup.py has 3 entries, so an unclamped chosen[:-1] keeps 2
+        os.chdir(self.tmp)
+        files = nul("apps/worker/src/worker/cleanup.py")
+        self.assertEqual(len(ca.select_mutants(files, str(GATE), "apps/worker", 12)[0]), 3)
+        self.assertEqual(ca.select_mutants(files, str(GATE), "apps/worker", -1)[0], [])
+        f = self.write("f0", files)
         out = self.tmp / "ids.txt"
-        p = self.run_cli("mutants", "--files", f, "--gate", str(GATE), "--worker", "apps/worker", "--max", "-3", "--ids-out", str(out))
+        p = self.run_cli("mutants", "--files", f, "--gate", str(GATE), "--worker", "apps/worker", "--max", "-1", "--ids-out", str(out))
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertEqual(out.read_text(), "")
 
@@ -192,12 +198,118 @@ class Workflow(unittest.TestCase):
         self.assertNotIn("git diff --name-only", self.adv)
         self.assertGreaterEqual(self.adv.count("git diff --no-renames --name-only"), 2)
 
+    def test_every_gh_api_call_has_a_timeout(self):  # #515 (R2 fable N1): an unbounded call would also lower the budget sum
+        calls = re.findall(r"(\S+ \S+ )?gh api", self.adv)
+        self.assertGreaterEqual(len(calls), 3)
+        self.assertEqual(len(re.findall(r"\btimeout \d+ gh api", self.adv)), len(calls), calls)
+
+    def test_run_steps_are_blocks_with_one_strict_mode_line(self):  # #515: no one-line run:, no set -e / -o pipefail back
+        for name, job in self.jobs.items():
+            for line in job.splitlines():
+                if re.match(r"\s*(- )?run:", line):
+                    self.assertEqual(line.split("run:", 1)[1].strip(), "|", (name, line))
+            for blk in self.run_blocks(job):
+                lines = [l.strip() for l in blk.splitlines() if l.strip()]
+                self.assertEqual(lines[0], "set -u +e +o pipefail", (name, lines[0]))
+                self.assertEqual(re.findall(r"(?:^[ \t]*|[;&|{(][ \t]*)(set\s[^;\n]*)", blk, re.M), ["set -u +e +o pipefail"], name)
+                self.assertNotIn("errexit", blk, name)
+
+    def test_summary_appends_are_literal_or_capped(self):  # #515: a huge report cannot break the step
+        n = 0
+        for name, job in self.jobs.items():
+            total = job.count('"$GITHUB_STEP_SUMMARY"')
+            ok = re.findall(r'(?:echo "[^"$`]*"|head -c (\d+) "\$[A-Z_]+/[a-z0-9.]+") >> "\$GITHUB_STEP_SUMMARY"', job)
+            self.assertEqual(len(ok), total, name)
+            caps = [int(c) for c in ok if c]
+            self.assertTrue(caps and all(c <= 200000 for c in caps), (name, caps))
+            n += len(caps)
+        self.assertEqual(n, 4)  # class, shared, select, mutant run
+
+    def test_checkouts_keep_no_credentials_and_report_failure(self):  # #515
+        for name, job in self.jobs.items():
+            self.assertEqual(job.count("uses: actions/checkout@"), 1, name)
+            self.assertIn("      - id: checkout\n        uses: actions/checkout@", job, name)
+            self.assertRegex(job, r"\n          fetch-depth: 0\n          persist-credentials: false[ \n]", name)
+            self.assertIn("          CHECKOUT: ${{ steps.checkout.outcome }}\n", job, name)
+
+    def test_shared_files_wiring(self):  # #515 (R2 sonnet NB3, fable N1): $OPENFLAG / --unreadable shell half
+        job = self.jobs["advisory-shared-files"]
+        self.assertIn('OPENFLAG=""; UNREAD=""', job)
+        self.assertRegex(job, r'pulls\?state=open[^\n]*\|\| \{ : > "\$T/open"; OPENFLAG=--open-unreadable; \}')
+        self.assertRegex(job, r'pulls/\$n/files[^\n]*\|\| \{ UNREAD="\$UNREAD,\$n"; continue; \}')
+        self.assertIn('$OPENFLAG --unreadable "${UNREAD#,}"', job)
+
+    def test_mutant_ids_passed_as_one_argument(self):  # #515 (R1 fable N6)
+        self.assertIn('--ids="$IDS"', self.jobs["advisory-diff-mutants"])
+        self.assertNotIn('--ids "$IDS"', self.adv)
+
     def test_shared_budget_fits_timeout(self):
         job = self.jobs["advisory-shared-files"]
         self.assertIn("timeout-minutes: 10", job)
         t = [int(x) for x in __import__("re").findall(r"timeout (\d+) gh api", job)]
         budget = int(__import__("re").search(r"end=\$\(\( \$\(date \+%s\) \+ (\d+) \)\)", job).group(1))
         self.assertLess(sum(t) + budget, 600 - 120, (t, budget))  # 2 min headroom for checkout and setup
+
+
+GH_STUB = """#!/bin/bash
+case "$*" in
+  *"pulls/500/files"*) echo a.ts ;;
+  *"pulls?state=open"*) [ "$STUB_MODE" = openfail ] && exit 1; printf '500\\n501\\n502\\n' ;;
+  *"pulls/501/files"*) echo a.ts ;;
+  *"pulls/502/files"*) [ "$STUB_MODE" = prfail ] && exit 1; echo z ;;
+  *) exit 1 ;;
+esac
+"""
+
+
+class StepRun(unittest.TestCase):
+    """#515: run the real advisory run blocks from ci.yml under bash with a stub gh (bash, jq and coreutils only)."""
+    @classmethod
+    def setUpClass(cls):
+        Workflow.setUpClass.__func__(cls)
+
+    def run_step(self, job, idx, **env):
+        blk = textwrap.dedent(Workflow.run_blocks(self.jobs[job])[idx])
+        tmp = Path(tempfile.mkdtemp())
+        (tmp / "bin").mkdir()
+        gh = tmp / "bin" / "gh"
+        gh.write_text(GH_STUB); gh.chmod(gh.stat().st_mode | stat.S_IEXEC)
+        (tmp / "rt").mkdir()
+        summ, outp = tmp / "summary.md", tmp / "out"
+        summ.write_text(""); outp.write_text("")
+        e = {"PATH": f"{tmp / 'bin'}:{os.environ.get('PATH', '/usr/bin:/bin')}", "HOME": str(tmp), "RUNNER_TEMP": str(tmp / "rt"),
+             "GITHUB_STEP_SUMMARY": str(summ), "GITHUB_OUTPUT": str(outp), "GITHUB_EVENT_PATH": str(tmp / "none.json"),
+             "BASE_SHA": "0" * 40, "HEAD_SHA": "1" * 40, "PR": "500", "REPO": "o/r", "GH_TOKEN": "x"}
+        e.update(env)
+        p = subprocess.run(["bash", "-c", blk], cwd=HERE.parent, env=e, capture_output=True, text=True, timeout=120)
+        return p, summ.read_text(), outp.read_text()
+
+    def test_failed_checkout_says_so_in_each_job(self):
+        for job, idx in (("advisory-pr-class", 0), ("advisory-shared-files", 0), ("advisory-diff-mutants", 0)):
+            for outcome in ("failure", "cancelled", ""):
+                p, summ, out = self.run_step(job, idx, CHECKOUT=outcome)
+                self.assertEqual(p.returncode, 0, (job, p.stderr))
+                self.assertIn("could not check (checkout failed)", summ, (job, outcome))
+                if job == "advisory-diff-mutants":
+                    self.assertEqual(out, "ids=\n")
+
+    def test_shared_open_list_unreadable(self):
+        p, summ, _ = self.run_step("advisory-shared-files", 0, CHECKOUT="success", STUB_MODE="openfail")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("The list of open PRs could not be read", summ)
+        self.assertNotIn("No other open PR", summ)
+
+    def test_shared_one_pr_unreadable_is_named(self):
+        p, summ, _ = self.run_step("advisory-shared-files", 0, CHECKOUT="success", STUB_MODE="prfail")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("**#501**: `a.ts`", summ)
+        self.assertIn("Not checked (file list unreadable): #502", summ)
+
+    def test_shared_all_readable(self):
+        p, summ, _ = self.run_step("advisory-shared-files", 0, CHECKOUT="success")
+        self.assertIn("**#501**: `a.ts`", summ)
+        self.assertNotIn("Not checked", summ)
+        self.assertNotIn("checkout failed", summ)
 
 
 class Shared(Base):

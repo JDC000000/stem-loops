@@ -641,11 +641,12 @@ def test_stem_retention_runs_INSIDE_the_stage_heartbeat(monkeypatch: pytest.Monk
 
     def fake_retain(job_id, stem_paths):
         order.append("retain_stems")
+        # #490: a partial set now (rightly) fails the job; this test is about the heartbeat.
         return {
-            "play": ["drums"],
+            "play": list(pipeline.ALL_STEMS),
             "download": [],
             "expected": list(pipeline.ALL_STEMS),
-            "complete": False,
+            "complete": True,
         }
 
     monkeypatch.setattr(pipeline, "_stage_heartbeat", tracking_heartbeat)

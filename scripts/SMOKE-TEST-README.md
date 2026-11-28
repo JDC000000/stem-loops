@@ -234,3 +234,47 @@ Two notes for anyone extending this file:
   by `GET /api/jobs/[id]/download`; this smoke test does not exercise that route.
   **`export_wav24` is false on every plan**: 24-bit WAV loops are available on
   every tier rather than being a paid differentiator.
+
+## Post-merge production web smoke (read-only)
+
+`scripts/smoke_prod_web.mjs` answers one question after a merge to `v3/main`
+(Vercel rebuilds production web on every merge; J1a, Jon L9): **is production
+web up and serving the expected build?** It is **read-only**: unauthenticated
+`GET`s only. No sign-in, no cookie, no POST, no job creation, no spend. Zero
+npm dependencies (Node 18+). It is a different script from the staging billing
+smoke above and needs no secrets.
+
+**How 24A runs it after each merge:**
+
+1. Wait about 2 minutes for the Vercel production build, then confirm the
+   GitHub production deployment is the merge commit and succeeded. The
+   environment is named `Production – stem-loops-web` (en dash; the older
+   `production` environment is a different, stale one):
+   ```
+   ENV='Production%20%E2%80%93%20stem-loops-web'
+   gh api "repos/JDC000000/stem-loops/deployments?environment=$ENV&per_page=1" --jq '.[0] | .sha, .id'
+   gh api repos/JDC000000/stem-loops/deployments/<id>/statuses --jq '.[0].state'   # want: success
+   ```
+   The site itself exposes no build SHA (no build-id meta, header or health
+   route in apps/web, and the apps freeze forbids adding one), so this GitHub
+   check is the SHA comparison. `EXPECT_SHA=<sha>` is accepted and prints a
+   SKIP saying exactly that.
+2. Run `node scripts/smoke_prod_web.mjs`. Exit `0` = all PASS/SKIP, `1` = any
+   FAIL, `2` = unusable `SMOKE_BASE_URL`. Runtime is a few seconds.
+
+| Check | Expects (pinned to apps/web at main; file:line is in the script) |
+|---|---|
+| `/`, `/pricing`, `/login`, `/help`, `/terms`, `/privacy` | HTTP 200 (redirects are not followed) and the page's `<title>` plus one structural marker |
+| security headers on `/` | `X-Frame-Options: DENY`, `nosniff`, CSP `frame-ancestors 'none'` |
+| `/pricing` health | no "live plan data is temporarily unavailable" banner (DB down) |
+| checkout hidden | "Coming soon — free during the beta" shown; none of `Get Pro`, `Get Studio`, `Buy credits`, `return_to=/pricing`, `/api/billing/checkout`, the hCaptcha label |
+| `/terms` beta copy | "aren’t on sale during the beta" |
+| demo | `/api/demos` non-empty; `/demo/<slug>` 200 with "Play along to <title>"; `/api/jobs/<demo id>` signed out is 200 `done`, `is_demo`, with no owner-only fields and no signed loop URLs |
+| private APIs | signed-out `GET` of `/api/library`, `/api/billing/credits/balance`, `/api/set-lists` is 401/403 |
+
+Bounds: 15 s per request (`SMOKE_TIMEOUT_MS`), 100 s overall
+(`SMOKE_DEADLINE_MS`); one retry, on a network error only (never on a timeout
+or an HTTP status). `SMOKE_BASE_URL` points it at another origin (e.g. a
+preview URL). When checkout is re-enabled in January, the "checkout hidden"
+and terms checks are expected to FAIL: update them in the same change.
+Tests (stub server, no network): `node --test scripts/smoke_prod_web.test.mjs`.

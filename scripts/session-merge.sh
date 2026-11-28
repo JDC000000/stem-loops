@@ -33,7 +33,7 @@
 set -uo pipefail
 
 # ==================== PROTOCOL CONFIG — PROTOCOL 2026-11-28 (24A, Jon L6 = LEDGER-24A row 10; replaces PROTOCOL 2026-11-25) ====================
-# Valid to 2026-12-18T16:00 Vancouver = 2026-12-19T00:00Z; after that every claim is refused (exit 3) until this section is renewed by PR.
+# Valid to 2026-12-18T17:00 Vancouver (UTC−7) = 2026-12-19T00:00Z; after that every claim is refused (exit 3) until this section is renewed by PR.
 # All times UTC, "HH:MM HH:MM" = [start, end) on every day.
 PROTOCOL_ID="PROTOCOL 2026-11-28"
 PROTOCOL_VALID_TO=2026-12-19T00:00:00Z

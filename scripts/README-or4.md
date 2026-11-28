@@ -222,7 +222,7 @@ SESSION_TAG=23A scripts/session-merge.sh <pr> <reviewed_sha_full> <review-1.md> 
 SESSION_TAG=23B scripts/session-merge.sh ack <comment-id>...                                   # post one "ACK 23B <id>,<id>" line on #414
 ```
 
-- **Protocol** (one marked CONFIG section in the script; `PROTOCOL 2026-11-28` (v1.1, Jon L6, LEDGER-24A row 10), valid to 2026-12-19T00:00Z = 2026-12-18 16:00 Vancouver,
+- **Protocol** (one marked CONFIG section in the script; `PROTOCOL 2026-11-28` (v1.1, Jon L6, LEDGER-24A row 10), valid to 2026-12-19T00:00Z = 2026-12-18 17:00 Vancouver,
   after which every claim is refused until the section is renewed by PR): an **A** session claims only when its whole 40-min window fits
   inside an A block (15:00–17:00Z, 21:00–22:00Z); a **B** session only when its window touches no A block; **both** refuse a window touching
   a DEPLOY slot (18:00–18:30Z, 23:00–23:30Z) and any other session's live CLAIM/DEPLOY (untagged lines count as another session's).

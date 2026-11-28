@@ -624,6 +624,7 @@ class Freeze(Harness):
     def test_freeze_ends(self):
         # frozen in [11-27T23:00Z, 12-03T01:00Z): 00:50Z on 12-03 is frozen, 01:00Z and later are not (B windows clear of blocks/slots)
         self.assertRefused(self.run_sm("23B", ts("2026-12-03T00:50:00Z")), text="freeze")
+        self.assertRefused(self.run_sm("23B", ts("2026-12-03T00:59:59Z")), text="freeze")  # last frozen second (R1 fable mutant 00:55Z)
         self.assertClaimed(self.run_sm("23B", ts("2026-12-03T01:00:00Z")), tag="23B")
         self.assertClaimed(self.run_sm("23A", at("15:00", "2026-12-03")))
 

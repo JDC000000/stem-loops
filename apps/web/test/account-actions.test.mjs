@@ -76,6 +76,9 @@ const SUPABASE = (mode) =>
       },
       signOut: async (opts) => {
         so.signOut.push(opts);
+        // auth-js 2.117.3 removes the local session even when POST /logout fails: a token read
+        // after this call finds nothing (the reason the route reads it first, #485).
+        so.token = null;
         const m = ${JSON.stringify(mode)};
         return { error: m === 'error' ? NET : m === 'api-error' ? API : null };
       },

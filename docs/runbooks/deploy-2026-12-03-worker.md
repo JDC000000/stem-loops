@@ -1,6 +1,8 @@
-# Runbook: worker deploy Thu 2026-12-03 11:00 Vancouver (18:00Z), 24B post-freeze batch
+# Runbook: worker deploy Thu 2026-12-03 18:00Z (11:00 on the protocol's UTC−7 Vancouver clock), 24B post-freeze batch
 
-One-off plan for session 24A. It documents; it grants nothing. Sources read 2026-11-28:
+One-off plan for session 24A. It documents; it grants nothing. Times: UTC is canonical. The
+#414 PROTOCOL in `scripts/session-merge.sh` reads Vancouver as UTC−7 (18:00Z = 11:00); if a
+local clock shows PST (UTC−8), 18:00Z is 10:00 there. Use the Z time. Sources read 2026-11-28:
 `.github/workflows/deploy.yml`, `scripts/ci_green_gate.py`, `scripts/session-merge.sh`
 (PROTOCOL 2026-11-28), `docs/runbooks/deploy-rollback.md`, `apps/worker/Dockerfile` and
 `apps/worker/fly.toml` at v3/main 75ea4e9, draft PRs #509 / #504 / #501, issues #511 / #502.
@@ -23,18 +25,36 @@ what is specific to this batch.
   rules apply). Nobody else runs it.
 - Web: #509 also allowlists provider `btc` in `apps/web` (`api/chord-edits`). That only matters
   once BTC is switched on; a web deploy is Jon's (A2 not active) and is not in this plan.
-- No migration. No open PR adds a file under `apps/worker/migrations/` (checked 2026-11-28 over
-  all 9 open PRs: #501 #503 #504 #506 #507 #508 #509 #510 #516). Repo last = `045_v3_jobs_retry_of.sql`.
+- Web-only PRs merged in the same window (#503 #506 #507 #508 #510) are **not** deployed by
+  `target=worker`; the ledger must not list them as shipped.
+- No migration. No open PR adds a file under `apps/worker/migrations/` (as of 2026-11-28: all
+  open PRs checked, #501–#521; only #501 #504 #509 #516 touch `apps/worker/`). Repo last =
+  `045_v3_jobs_retry_of.sql`. Re-check in §1 step 5.
 
 ## 0 · Authority (check before anything else)
 
-AGENTS.md (D-7, A2 row) says **A sessions never deploy** and **A2 is NOT ACTIVE** in the repo
-copy. This deploy is assigned to 24A by the 24A handover and the Klangio/BTC renewal brief.
-Before 17:30Z, the VERIFY row must cite the **Jon line (LEDGER-24A row) that lets 24A dispatch
-this worker deploy** and, for the smoke song, that A2 (hence A2b) is active or that Jon
-separately allowed the one smoke job. If neither is on the ledger: do not dispatch; hand the
-plan to Jon (or 24B's D-7 path) and stop. A refused dispatch is OR-1: record, tell Jon, no
-re-route (no `make deploy-worker`, no local `flyctl`).
+AGENTS.md (D-7, A2 row) and deploy-rollback.md say **A sessions never deploy**, and **A2 is NOT
+ACTIVE** in the repo copy. For this one deploy that rule is overridden **for 24A only**:
+
+- **Dispatch: Jon L4 (LEDGER-24A row 8)** authorises session 24A's orchestrator to dispatch
+  `deploy.yml` with `--ref v3/main -f target=worker` in the 2026-12-03 18:00Z slot, and then to
+  run one A2b smoke song (≤ 2/day) and record the VERIFY row (§7).
+- **Not covered by L4 (all stay Jon's):** web deploys and `target=web|all`; secrets and env;
+  Fly settings, `fly.toml`, scaling, `fly ssh`; `CHORDS_PROVIDER`; the Fly fast-path rollback;
+  any other session, day or slot.
+- **Before 17:30Z** the VERIFY row quotes L4 verbatim with its row number.
+
+Two separate rules:
+
+1. **Dispatch stop rule.** If L4 cannot be found on LEDGER-24A, or its words do not cover a
+   worker dispatch by 24A on 12-03: do not dispatch; hand this plan to Jon (or 24B's D-7 path)
+   and stop.
+2. **Smoke rule (§6).** Covered by L4's smoke clause. If, when read, L4 does not name the
+   smoke song and A2 is not active: still deploy, skip §6, write "unverified until next real
+   job" for A2 (3), and leave #511 open. The smoke rule never stops the dispatch.
+
+A refused dispatch is OR-1: record, tell Jon, no re-route (no `make deploy-worker`, no local
+`flyctl`).
 
 ## 1 · Pre-checks (17:30Z–18:00Z)
 
@@ -44,7 +64,8 @@ re-route (no `make deploy-worker`, no local `flyctl`).
 2. **Which SHA.** `SHA=$(gh api repos/JDC000000/stem-loops/commits/v3/main --jq .sha)`.
    The deploy uses the head of `v3/main` at dispatch time; record it in full and as sha7.
 3. **Main green on that SHA.** Every check-run complete and green:
-   `gh api "repos/JDC000000/stem-loops/commits/$SHA/check-runs?per_page=100" --jq '.check_runs[] | [.name,.status,.conclusion] | @tsv'`.
+   `gh api --paginate "repos/JDC000000/stem-loops/commits/$SHA/check-runs?filter=latest&per_page=100" --jq '.check_runs[] | [.name,.status,.conclusion] | @tsv'`
+   (`filter=latest`, as the gate uses, so an old failed attempt of a re-run job is not read as red).
    All `completed` + `success` (or `skipped` for non-required). Anything still running: wait;
    the gate (`scripts/ci_green_gate.py`) will fail it anyway, and a red gate is never re-run.
 4. **No merge pending behind the SHA.** No live CLAIM on #414 from either session; 24B has
@@ -59,10 +80,10 @@ re-route (no `make deploy-worker`, no local `flyctl`).
 6. **Idle-ish queue (A3, optional, same budget).**
    `SELECT status, count(*) FROM public.jobs WHERE status NOT IN ('done','failed') GROUP BY 1;`
    A job in flight is fine (graceful drain, `kill_timeout = 300`), but note it.
-7. **Fly baseline (Jon or anyone with read access to the Fly dashboard).** The current release
-   number and image ref (`fly releases --app stem-loops --image`, Jon) are the rollback target;
-   write them into the VERIFY row before dispatch. If nobody can read it, the rollback step
-   reads it afterwards from the release list (the one before ours).
+7. **Fly baseline (Jon).** The current release number and image ref
+   (`fly releases --app stem-loops --image`) are the fast-path rollback target. Ask Jon for them
+   before 17:50Z and write them into the VERIFY row. **No dispatch without them** unless Jon
+   says go without; then the rollback reads them from the release list (the one before ours).
 
 ## 2 · #414 DEPLOY claim (orchestrator only)
 
@@ -86,20 +107,37 @@ Real input names in `deploy.yml`: `target` (choice `all | web | worker`, default
 it must be given) and `gate_only` (boolean, default false).
 
 ```bash
-gh workflow run deploy.yml --repo JDC000000/stem-loops --ref v3/main -f target=worker
-sleep 10
-RUN=$(gh api "repos/JDC000000/stem-loops/actions/workflows/deploy.yml/runs?branch=v3/main&event=workflow_dispatch&per_page=1" --jq '.workflow_runs[0] | "\(.id) \(.head_sha)"')
-echo "$RUN"      # head_sha must equal $SHA
-gh run watch "${RUN%% *}" --repo JDC000000/stem-loops --exit-status
+R=JDC000000/stem-loops
+SHA=$(gh api repos/$R/commits/v3/main --jq .sha)   # re-read AFTER the DEPLOY post; if it moved, redo §1 step 3 on it
+T0=$(date -u +%Y-%m-%dT%H:%M:%SZ)                  # record T0 in the VERIFY row
+gh workflow run deploy.yml --repo $R --ref v3/main -f target=worker
+RUN=""
+for i in 1 2 3 4 5 6; do sleep 10
+  RUN=$(gh api "repos/$R/actions/workflows/deploy.yml/runs?branch=v3/main&event=workflow_dispatch&head_sha=$SHA&per_page=10" \
+    --jq "[.workflow_runs[] | select(.created_at >= \"$T0\")] | sort_by(.created_at) | .[0] // empty | \"\(.id) \(.head_sha) \(.created_at)\"")
+  [ -n "$RUN" ] && break; done
+echo "$RUN"
+[ -n "$RUN" ] || { echo "STOP: no new run within 60 s (do NOT dispatch again; tell Jon)"; exit 1; }
+[ "$(cut -d' ' -f2 <<<"$RUN")" = "$SHA" ] || { echo "STOP: head_sha != SHA"; exit 1; }
+gh run watch "${RUN%% *}" --repo $R --exit-status
+gh api "repos/$R/actions/runs/${RUN%% *}/jobs" --jq '.jobs[] | [.name,.conclusion] | @tsv'
 ```
 
+- The run is accepted only if **both** `head_sha = $SHA` and `created_at ≥ T0`. An older run
+  on the same SHA (a G-1 `gate_only` run, or a red-gate run) fails the `T0` filter. No new run
+  within 60 s, or a mismatch: stop and tell Jon; never dispatch a second time to "find" it.
+- A green run whose `Deploy Worker to Fly.io` job is **skipped** is the wrong run (or
+  `gate_only`): nothing was deployed.
 - Expected jobs: `CI green gate (deployed SHA on v3/main)` success, `Ruleset drift warning
   (non-blocking)` (warning only, ignored), `Deploy Web to Vercel` **skipped**, `Deploy Worker
   to Fly.io` success.
 - Red gate: wait for main CI, dispatch a **new** run. Never `gh run rerun`, never "re-run
   failed jobs" on a deploy run.
-- Deploy job red: the old image keeps running (Fly does not swap on a failed build). Release
-  the claim, ledger it, tell Jon; no retry before the cause is known.
+- Deploy job red: if the **build** failed, the old image keeps running. If it failed later
+  (release / Machine update), the worker may be down: `fly.toml` records 2026-11-09, when a
+  deploy left zero Machines. Probe `/health` (§5) at once; not 200 = tester-facing outage:
+  message Jon for the fast path (§8) now. In both cases release the claim, ledger it, tell
+  Jon; no retry before the cause is known.
 
 ## 4 · BTC weights really in the image (#509)
 
@@ -116,20 +154,23 @@ file). The build is green either way. Expected file: `/app/models/btc/btc_model_
 
 ```bash
 JOB=$(gh api "repos/JDC000000/stem-loops/actions/runs/${RUN%% *}/jobs" --jq '.jobs[] | select(.name=="Deploy Worker to Fly.io") | .id')
-gh api "repos/JDC000000/stem-loops/actions/jobs/$JOB/logs" > /tmp/24A-deploy-worker.log
-grep -nE 'btc weights (fetched and verified|already present|NOT installed)|fetch_btc_weights|CACHED' /tmp/24A-deploy-worker.log
+LOG=$(mktemp -p /home/claude/s24/deploy 24A-deploy-worker.XXXXXX.log)
+gh api "repos/JDC000000/stem-loops/actions/jobs/$JOB/logs" > "$LOG"
+grep -nE 'btc weights (fetched and verified|already present|NOT installed)|fetch_btc_weights|CACHED' "$LOG"
 ```
 
 | Log shows | Meaning | Next |
 |---|---|---|
 | `btc weights fetched and verified: /app/models/btc/btc_model_large_voca.pt` | size + sha256 matched at build | pass 4a; 4b still wanted |
 | `WARNING: btc weights NOT installed (…)` | soft failure: **no file** in the image | BTC unusable; Klangio unaffected; not a rollback. Tell Jon; see "sticky cache" below |
-| the `RUN … fetch_btc_weights.py` step marked `CACHED` (no print line) | layer reused from an earlier build; the log proves nothing | 4b is required |
+| a `CACHED` line with the same `#N` as the `#N … fetch_btc_weights` step header (no print line; other steps' `CACHED` lines don't count) | layer reused from an earlier build; the log proves nothing | 4b is required |
 | no line about the step at all | flyctl did not stream that output | 4b is required |
 
-**Sticky cache:** the layer's cache key is the `COPY`'d script plus the `RUN` line, not the
-download result. A soft-failed layer is cached **without** the file and every later build
-reuses it until the script or the line changes, or Jon deploys with `--no-cache`. So a
+**Sticky cache:** the layer's cache key is the `COPY`'d script, the `RUN` line and its parent
+layers (base image, `requirements.txt` / `constraints-prod.txt`), not the download result. A
+soft-failed layer is cached **without** the file and later builds reuse it until the script,
+the line or a parent layer changes, the remote builder's cache is dropped, or Jon deploys with
+`--no-cache`. So a
 WARNING (or a CACHED step after an earlier WARNING) is not fixed by re-dispatching.
 
 **4b · In the running Machine (Jon: `fly ssh console` is Fly access, not a session's).**
@@ -138,16 +179,20 @@ WARNING (or a CACHED step after an earlier WARNING) is not fixed by re-dispatchi
 fly ssh console -a stem-loops -C "ls -l /app/models/btc/btc_model_large_voca.pt"
 fly ssh console -a stem-loops -C "sha256sum /app/models/btc/btc_model_large_voca.pt"
 # or the worker's own check (raises BtcWeightsMissing on missing/mismatch):
-fly ssh console -a stem-loops -C "python -c 'from src.worker.chord_providers.btc import verify_weights, weights_path; print(weights_path(), verify_weights(weights_path()))'"
+fly ssh console -a stem-loops -C "env PYTHONPATH=/app python -c 'from src.worker.chord_providers.btc import verify_weights, weights_path; print(weights_path(), verify_weights(weights_path()))'"
 ```
 
-Pass: size `12229576` and the sha256 above. Either 4a "fetched and verified" or 4b pass is
-enough to record "weights present"; 4b is the only proof when the step was CACHED. A missing
+(`fly ssh console -C` may not start in the image's `WORKDIR` `/app`, hence absolute paths and
+`PYTHONPATH=/app`; the image runs `python -m src.worker.main` from `/app`.) Pass: size
+`12229576` and the sha256 above. Either 4a "fetched and verified" or 4b pass is enough to
+record "weights present"; 4b is the only proof when the step was CACHED or not shown. If 4a
+has no "fetched and verified" line and nobody with Fly access runs 4b before the VERIFY row is
+due, write **`weights present: UNVERIFIED`**; never infer it from a green build. A missing
 file never blocks the deploy result (prod is on Klangio) but blocks Jon's BTC switch.
 
 **Optional, Jon only, not part of the deploy check:** one BTC run on an already-separated
 song without changing the live setting, e.g. `python -m src.worker.chord_eval --provider btc …`
-inside `fly ssh console` (arguments per `chord_eval --help`). The live setting stays klangio.
+inside `fly ssh console` after `cd /app` (arguments per `chord_eval --help`). The live setting stays klangio.
 
 ## 5 · /health (liveness only)
 
@@ -155,44 +200,78 @@ inside `fly ssh console` (arguments per `chord_eval --help`). The live setting s
 curl -fsS https://stem-loops.fly.dev/health
 ```
 
-Pass: HTTP 200, `"status":"ok"`, `"sentry":"on"`, `fetch_canary.proxy.ok` true (or null right
-after boot; re-probe after 15 min). `/health` is DB-free and is **not** the post-deploy check
+Pass: HTTP 200, `"status":"ok"`, `"sentry":"on"`, top-level `fetch_canary.ok` true (it is
+false if either the proxy or the youtube check failed), or null right after boot. Record
+`fetch_canary.proxy.ok` and `fetch_canary.youtube.ok` too: the smoke depends on YouTube.
+Probe within 10 min of the deploy job going green (AGENTS.md D-7); if the canary is still
+null, re-probe at 15 min, because the proxy check runs every 900 s (`fetch_canary.py`
+`DEFAULT_INTERVAL_S`). This knowingly differs from D-7's 10 min for the canary value only. `/health` is DB-free and is **not** the post-deploy check
 (A2 (3)); it can only add a failure (deploy-rollback.md, "do the stricter").
 
 ## 6 · Smoke song: one >36-min video (A2b(a), #511)
 
-Only if §0 covers it (A2 active, or Jon's explicit allowance). ≤ 2 smoke jobs/day; this is 1.
+Covered by L4's smoke clause (§0 rule 2; if not covered, skip this section). ≤ 2 smoke
+jobs/day; this is 1.
 
-- **Primary:** Bach, Well-Tempered Clavier Book 1, Kimiko Ishizaka (channel OpenGoldberg),
-  `https://www.youtube.com/watch?v=nPHIZw7HZq4`, about 1 h 49 min (last chapter starts
-  1:41:01). Recording released into the public domain (Open Well-Tempered Clavier, 2015). First
-  5 min = Prelude + Fugue in C major and the start of C minor: clear tonal harmony.
-- **Backup:** Bach, Goldberg Variations, same pianist and channel,
-  `https://www.youtube.com/watch?v=15ezpwCHtJs`, about 1 h 22 min (last chapter "Aria da Capo"
-  starts 1:19:32). Recording CC0 (Open Goldberg Variations). First 5 min = the Aria in G major.
-- Record the link used in the ledger (A2b: a fixed public test song).
+**Target (album + channel, fixed):** Kimiko Ishizaka's public-domain Bach recordings on her
+official YouTube channel **OpenGoldberg**.
 
-Submit once, signed out, by pasting the link at `https://stem-loops.com`, after §3 is green and
-the new Machine is up. Then (A3 reads, logged):
+- **Primary:** *Well-Tempered Clavier (J.S. Bach), Book 1, Kimiko Ishizaka, piano*,
+  `https://www.youtube.com/watch?v=nPHIZw7HZq4`. ID checked 2026-11-28 by YouTube oEmbed
+  (fetched via Tavily extract): title as above, `author_name` OpenGoldberg. Chapters list 24
+  prelude/fugue pairs, the last (b minor) starting 1:41:01, so ≈ 1 h 49 min (not measured).
+  Licence: the Open Well-Tempered Clavier project released the recording into the public domain
+  (2015; Wikimedia Commons category "Open Well-Tempered Clavier"). First 5 min = Prelude and
+  Fugue in C major: clear tonal harmony.
+- **Backup:** *Goldberg Variations Complete (J.S. Bach BWV 988), with score, Kimiko Ishizaka
+  piano*, `https://www.youtube.com/watch?v=15ezpwCHtJs`. ID checked 2026-11-28 the same way
+  (title as above, `author_name` OpenGoldberg). Last chapter "Aria da Capo" starts 1:19:32, so
+  ≈ 1 h 22 min (not measured). Licence: CC0 (opengoldbergvariations.org). First 5 min = the
+  Aria in G major.
+- One reviewer's web fetch of the primary ID returned a different video, and no session can
+  play YouTube itself. So the IDs are **not trusted until the pre-flight below passes on
+  12-03**.
+
+**Pre-flight (24A, before submitting; no job created).** For the URL to be used, record in the
+VERIFY row: title, channel, exact duration in seconds, licence evidence, and how each was read
+(for example oEmbed for title/channel; a human opening the page, or the YouTube page's
+`lengthSeconds`, for the duration). Use the video only if **all** hold:
+1. the title is Ishizaka's *Well-Tempered Clavier Book 1* / *Goldberg Variations* and the
+   channel is OpenGoldberg;
+2. the duration is **≥ 2400 s** (40 min; margin over #504's 2160 s threshold);
+3. the licence evidence is CC0 / public domain (project page or Commons, as above).
+
+If the primary fails, try the backup. If both fail, do not submit: pick another
+OpenGoldberg full-album upload (for example *Art of Fugue, Complete*) that passes 1–3, or skip
+§6 and say why in the VERIFY row. Record the link used (A2b: a fixed public test song).
+
+Submit once, signed out, by pasting the link at `https://stem-loops.com`, after §3 is green,
+§5 passes and the new Machine is up. Then (A3 reads, logged; use the ID actually submitted):
 
 ```sql
 SELECT id, status, error_code, created_at, updated_at FROM public.jobs
- WHERE youtube_url LIKE '%nPHIZw7HZq4%' AND created_at > '<deploy finished, UTC>' ORDER BY created_at DESC LIMIT 1;
+ WHERE youtube_url LIKE '%<video id>%' AND created_at > '<deploy finished, UTC>' ORDER BY created_at DESC LIMIT 1;
 SELECT stage, phase, detail FROM public.job_events WHERE job_id = '<id>' AND detail ? 'trimmed';
 ```
 
-**Expected:** `status = 'done'` within 30 min; a `job_events.detail` of
-`{"trimmed": true, "source_sec": <≈ full length, e.g. ~6500>, "used_sec": ~300}`; the job page
-`/jobs/<id>` plays the first 5 min and shows the trimmed note with the **true** length (not
-5:00); chords present (`jobs/<id>/play.chords.json` in R2, provider klangio). This is the
-`--download-sections` leg through the sticky proxy that unit tests cannot prove.
+Also (no DB): `GET https://stem-loops.com/api/jobs/<id>` → `input_trim_used_sec`,
+`input_trim_source_sec`.
+
+**Expected:** `status = 'done'` within 30 min; `job_events.detail` =
+`{"trimmed": true, "source_sec": <within 2 s of the measured duration>, "used_sec": ~300}`
+(same values in `input_trim_*_sec`); the job page `/jobs/<id>` shows the trim note with the
+**true** length, which `input-trim.ts` `clock()` renders in minutes (for 6540 s:
+"Using the first 5:00 of a 109:00 track."), and its stems are listed; chords present
+(`jobs/<id>/play.chords.json` in R2, provider klangio). A signed-out page may not offer play;
+playing it is not part of the check. This is the `--download-sections` leg through the sticky
+proxy that unit tests cannot prove.
 
 | Result | Meaning | Action |
 |---|---|---|
 | `done`, trimmed, true length | #504 works live; also satisfies A2 (3)'s "real job" | close #511 with the evidence |
-| `failed`, `DOWNLOAD_TIMEOUT` / `FETCH_PROXY_FAILED` | section download did not work through the proxy | not a rollback by itself (≤ 36-min songs are unchanged); tell Jon, comment on #511 via 24A, try the backup only if the cause looks link-specific (2nd and last smoke of the day) |
+| `failed`, `DOWNLOAD_TIMEOUT` / `FETCH_PROXY_FAILED` | section download did not work through the proxy, **or** the length probe returned nothing (then no cut is made and the full fetch runs): check the worker log for a duration reading / `input_trimmed` before blaming the section download | not a rollback by itself (≤ 36-min songs are unchanged); tell Jon, comment on #511 via 24A, try the backup only if the cause looks link-specific (2nd and last smoke of the day) |
 | `failed`, `INTERNAL_ERROR` `r2_stage_timeout` | new 120 s R2 bound hit | refunded by design; tell Jon |
-| `done` but `source_sec` = ~300 (no true length) | trimming works, true-length report does not | file an issue; no rollback |
+| `done` but `source_sec` ≈ 300 or null (no true length) | trimming works, true-length report does not | file an issue; no rollback |
 | any ≤ 36-min tester job failing after the deploy | regression | deploy-rollback.md §1 failure → §2/§3 |
 
 ## 7 · Post-deploy check and VERIFY row
@@ -203,16 +282,16 @@ that job. Ledger (LEDGER-24A), one VERIFY row:
 
 | Field | Value |
 |---|---|
-| time | dispatch and finish, UTC |
-| authority | Jon row for 24A's dispatch; A2/A2b status or Jon's smoke allowance |
+| time | T0 (dispatch), run created_at, finish, UTC |
+| authority | Jon L4 (LEDGER-24A row 8), quoted verbatim; smoke covered by L4 (or "smoke skipped", why) |
 | #414 | DEPLOY comment id, RELEASE comment id |
 | SHA | dispatched `v3/main` head (full) = run `head_sha`; PRs included (#509 #504 #501 #516 + merge SHAs) |
 | run | deploy run URL; gate / worker job conclusions; web job skipped |
 | migrations | A3 query, result (`045_v3_jobs_retry_of.sql`), repo last at SHA |
 | Fly | release before (rollback target, image ref) and after |
-| BTC weights | 4a log line (verbatim) or CACHED; 4b size + sha256 (who ran it) or "not run (Jon)" |
-| /health | status, sentry, fetch_canary.proxy.ok |
-| smoke | link, job id, status, error_code, `source_sec` / `used_sec`, page shows true length (y/n), chords (y/n), minutes to done |
+| BTC weights | 4a log line (verbatim) or CACHED / absent; 4b size + sha256 (who ran it); else `weights present: UNVERIFIED` |
+| /health | status, sentry, fetch_canary.ok / .proxy.ok / .youtube.ok, probe time |
+| smoke | pre-flight (title, channel, duration s, licence evidence, how read), link, job id, status, error_code, `source_sec` / `used_sec`, page shows true length (y/n), chords (y/n), minutes to done |
 | A2 (3) check | pass / fail / "unverified until next real job" |
 | CHORDS_PROVIDER | `klangio`, unchanged (switch is Jon's) |
 | A3 count | queries used this session (≤ 20) |
@@ -226,7 +305,9 @@ Use [deploy-rollback.md](deploy-rollback.md) §2–§3; specifics for this batch
   `fly deploy --app stem-loops --image registry.fly.io/stem-loops:deployment-<previous ID> --ha=false`
   from `apps/worker/`. Allow up to 5 min drain. No migration to reverse.
 - **If Jon had already switched to BTC:** set `CHORDS_PROVIDER=klangio` first (Jon); the
-  pre-#509 image has no working `btc` provider.
+  pre-#509 image has no working `btc` provider. `fly secrets set --stage CHORDS_PROVIDER=klangio`
+  then the `fly deploy --image …` does both in one restart (one drain instead of two); Jon's
+  call.
 - **Slow path:** pure `git revert` PR of the offending merge (likely #504 if long or link jobs
   fail; #501 if chord submits misbehave; #509 only if the image itself breaks), through the
   gate with the same reviewers/score bar (all three are money class), main CI green, then a

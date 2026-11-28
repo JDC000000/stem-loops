@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import io
 import json
 import os
 import sys
@@ -103,8 +104,19 @@ def _segments_to_lab(result: Any) -> str:
     )
 
 
+_MIR_METRICS = ("root", "majmin", "sevenths")
+
+
 def _mir_eval_row(predicted_lab_text: str, ground_truth_path: Path) -> dict[str, float]:
-    """Compute MajMin / sevenths / root metrics via ``mir_eval`` if installed."""
+    """Compute root / MajMin / sevenths via ``mir_eval`` if installed.
+
+    ``mir_eval.chord.evaluate(ref_intervals, ref_labels, est_intervals, est_labels,
+    **kwargs)`` returns ONE dict holding every chord metric as a float, so it is called
+    once and the wanted keys are picked out. (#522: passing ``[metric]`` as a 5th
+    positional argument raised TypeError, and every row silently recorded
+    ``*_error_len`` instead of a score.) Reference first, estimate second: the scores are
+    weighted by, and the vocabulary is filtered on, the reference.
+    """
     try:
         from mir_eval import chord as mir_chord  # noqa: PLC0415
         from mir_eval.io import load_labeled_intervals  # noqa: PLC0415
@@ -112,19 +124,14 @@ def _mir_eval_row(predicted_lab_text: str, ground_truth_path: Path) -> dict[str,
         return {"_skipped": 1.0, "_reason": 0.0}  # pragma: no cover — optional dep
 
     ref_intervals, ref_labels = load_labeled_intervals(str(ground_truth_path))
-    tmp = ground_truth_path.with_suffix(".pred.lab")
-    tmp.write_text(predicted_lab_text)
-    est_intervals, est_labels = load_labeled_intervals(str(tmp))
-    out: dict[str, float] = {}
-    for metric in ("root", "majmin", "sevenths"):
-        try:
-            scored = mir_chord.evaluate(  # type: ignore[attr-defined]
-                ref_intervals, ref_labels, est_intervals, est_labels, [metric]
-            )
-            out[metric] = float(scored[metric][0])
-        except Exception as exc:  # noqa: BLE001
-            out[f"{metric}_error_len"] = float(len(str(exc)))
-    return out
+    # Parse the prediction from memory: it used to be written next to the ground truth
+    # (``<gt>.pred.lab``), leaving a stray file beside a checked-in fixture.
+    est_intervals, est_labels = load_labeled_intervals(io.StringIO(predicted_lab_text))
+    try:
+        scored = mir_chord.evaluate(ref_intervals, ref_labels, est_intervals, est_labels)
+    except Exception as exc:  # noqa: BLE001
+        return {f"{metric}_error_len": float(len(str(exc))) for metric in _MIR_METRICS}
+    return {metric: float(scored[metric]) for metric in _MIR_METRICS}
 
 
 def _row_for_error(row: dict[str, Any], source: Any, error: str, model_ms: int = 0) -> EvalRow:

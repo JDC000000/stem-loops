@@ -7,6 +7,7 @@ the worker's own ``pipeline._choose_chord_input``).
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
 import io
 import json
@@ -286,6 +287,9 @@ def test_limit_and_since_are_applied(guard):
         "SELECT nextval('s')",
         "WITH d AS (DELETE FROM jobs RETURNING id) SELECT id FROM d",
         "SET default_transaction_read_only = off",
+        "SELECT 1; SET default_transaction_read_only = off",
+        "SELECT 1; COMMIT",
+        "SELECT 1; SELECT 2",
     ],
 )
 def test_write_sql_raises_before_reaching_the_connection(sql):
@@ -453,3 +457,52 @@ def test_defaults_reuse_the_worker_klangio_input_path():
     assert deps.preferred == pipeline.CHORDS_DEFAULT_STEM
     assert deps.extra["stems"] == (*pipeline._HARMONIC_STEMS, *pipeline._MIX_EXTRA_STEMS)
     assert bcb.Deps.__dataclass_fields__["btc_runner"].default is bcb.run_btc_child
+
+
+def test_chords_load_error_prints_class_only(guard, capsys):
+    h = _standard_harness()
+    real_get = h.s3.get_object
+
+    def get_object(Bucket, Key):  # noqa: N803
+        if Key == f"jobs/{JOB_B}/play.chords.json":
+            raise RuntimeError(f"{JOB_B} {LINK_B} {TITLE} {EMAIL}")
+        return real_get(Bucket=Bucket, Key=Key)
+
+    h.s3.get_object = get_object
+    assert bcb.main([], deps=h.deps()) == 0
+    out = capsys.readouterr()
+    assert "errors=chords_RuntimeError:1" in out.out
+    assert not _FORBIDDEN.search(out.out + out.err), out.out + out.err
+
+
+def test_klangio_attempt_in_a_song_stops_the_run(guard, capsys):
+    h = _standard_harness()
+    deps = h.deps()
+
+    def chooser(stem_paths, preferred):
+        klangio.KlangioChordSource()  # raises KlangioForbidden
+        return "harmonic_mix", next(iter(stem_paths.values()))
+
+    deps.chooser = chooser
+    with pytest.raises(bcb.KlangioForbidden):
+        bcb.run(deps, limit=None, since=None, timeout=5.0)
+    assert bcb.main([], deps=deps) == 2
+    out = capsys.readouterr()
+    assert out.out == ""
+    assert "fatal error_class=KlangioForbidden" in out.err
+
+
+def test_swallowed_klangio_attempt_still_fails_the_run(guard, capsys):
+    """Even if code below run() catches the KlangioForbidden, the end-of-run check fails."""
+    h = _standard_harness()
+    deps = h.deps()
+
+    def btc(audio, timeout):
+        with contextlib.suppress(bcb.KlangioForbidden):
+            klangio.KlangioChordSource()
+        return {"segments": [list(s) for s in h.btc_segments]}
+
+    deps.btc_runner = btc
+    with pytest.raises(bcb.KlangioForbidden):
+        bcb.run(deps, limit=None, since=None, timeout=5.0)
+    bcb._KLANGIO_CONSTRUCTED = 0

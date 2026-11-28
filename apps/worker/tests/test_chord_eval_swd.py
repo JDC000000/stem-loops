@@ -151,3 +151,47 @@ def test_download_checks_audio_sha256(tmp_path, monkeypatch, matches):
             chord_eval._download_if_missing(row, tmp_path)
         assert not target.exists()
         assert not (tmp_path / "swd-x.part").exists()
+
+
+def test_run_eval_resolves_a_relative_ground_truth_lab(tmp_path, monkeypatch):
+    """run_eval must use resolve_ground_truth: a relative lab is found from any cwd."""
+    _require_mir_eval()
+    from types import SimpleNamespace  # noqa: PLC0415
+
+    monkeypatch.delenv("CHORD_EVAL_FETCH", raising=False)
+    monkeypatch.chdir(tmp_path)  # NOT apps/worker
+    row = _swd_rows()[3]
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    (cache / "song.audio").write_bytes(b"")
+    lab = chord_eval.resolve_ground_truth(row["ground_truth_lab"])
+    segs = [ln.split("\t") for ln in lab.read_text(encoding="utf-8").splitlines()]
+
+    class _Echo:
+        def recognize(self, _path, *, stem="mix"):  # noqa: ARG002
+            return SimpleNamespace(
+                provider="stub",
+                provider_version="0",
+                key=None,
+                segments=[
+                    SimpleNamespace(start_sec=float(a), end_sec=float(b), label=c)
+                    for a, b, c in segs
+                ],
+            )
+
+    manifest = tmp_path / "m.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "songs": [
+                    {
+                        "fma_id_or_jamendo_id": "song",
+                        "url": "https://example.invalid/x.wav",
+                        "ground_truth_lab": row["ground_truth_lab"],
+                    }
+                ]
+            }
+        )
+    )
+    report = chord_eval.run_eval(_Echo(), manifest, cache)
+    assert report.rows[0].mir_eval.get("majmin") == pytest.approx(1.0)

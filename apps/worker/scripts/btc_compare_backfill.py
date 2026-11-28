@@ -401,6 +401,8 @@ def run(deps: Deps, *, limit: int | None, since: dt.date | None, timeout: float)
             break
         try:
             ref, clock = load_klangio_rows(deps.r2, job_id)
+        except KlangioForbidden:
+            raise  # never a counted error: the run must stop
         except SongSkipped as skip:
             errors[str(skip)] += 1
             continue  # an older job for the same link may still have Klangio chords
@@ -411,11 +413,13 @@ def run(deps: Deps, *, limit: int | None, since: dt.date | None, timeout: float)
         clocks[clock] += 1
         try:
             scores.append(score_song(deps, job_id, ref, timeout))
+        except KlangioForbidden:
+            raise
         except SongSkipped as skip:
             errors[str(skip)] += 1
         except Exception as exc:  # noqa: BLE001
             errors["score_" + type(exc).__name__] += 1
-    assert_no_klangio()
+    assert_no_klangio()  # also catches an attempt something below swallowed
     return format_report(scores, errors, clocks)
 
 

@@ -585,13 +585,14 @@
     "verified": 19,
     "failed": 0,
     "replace_recommended": 0,
-    "pending": 1,
-    "total_rows": 20,
+    "pending": 5,
+    "total_rows": 24,
     "verified_in_pr_y1_eval_verify": 4,
     "verified_in_pr_y1_eval_verify_2": 15,
     "replaced_rows": [0, 4, 5, 6, 7, 8, 11, 12, 13, 15, 16, 18, 19],
     "same_url_track_verified_rows": [10, 14],
-    "still_pending_rows": [17]
+    "still_pending_rows": [17, 20, 21, 22, 23],
+    "added_in_s24b_swd": {"rows": [20, 21, 22, 23], "status": "pending", "reason": "SWD audio licence (Zenodo 4122060) not verified; ChoCo labels CC BY 4.0"}
   },
   "fetch_notes": [
     "freemusicarchive.org continues to return client_error on many /music/<Artist>/ landing pages, but specific /music/<Artist>/<Album>/ album pages and /music/<Artist>/<Album>/<Track> track pages generally load when the slug is exact. Tavily's tavily_extract succeeded on several pages FMA's WebFetch bounced in-session — use it as a fallback when a per-track WebFetch bounces.",
@@ -602,8 +603,8 @@
   ],
   "gate_status": {
     "CHORD_EVAL_FETCH_1_recommended": false,
-    "reason": "19/20 rows verified against a WebFetch-reachable CC license page (up from 4/20 in PR-Y1.eval-verify). Row 17 (wildcard-metal) is still pending — no WebFetch-confirmable CC BY-SA 4.0 metal track could be substituted in this session. Per the manifest's hard rule ('CHORD_EVAL_FETCH=1 stays gated until every row is verified'), the CI flag should remain off until row 17 is resolved. However, the README's 'gate open' progress marker is updated to reflect 19/20 (≥18/20) so reviewers can see the second verification pass brought the gate most of the way open.",
-    "rows_pending": [17],
-    "next_action": "PR-Y1.eval-verify-3: resolve or replace row 17 (CC BY-SA 4.0 metal wildcard). Candidate paths listed in the row's last_check_note."
+    "reason": "19/24 rows verified; 5 pending (row 17, plus SWD rows 20-23 added 2026-11-28 whose audio licence, Zenodo 4122060, could not be checked). History: 19/20 rows verified against a WebFetch-reachable CC license page (up from 4/20 in PR-Y1.eval-verify). Row 17 (wildcard-metal) is still pending — no WebFetch-confirmable CC BY-SA 4.0 metal track could be substituted in this session. Per the manifest's hard rule ('CHORD_EVAL_FETCH=1 stays gated until every row is verified'), the CI flag should remain off until row 17 is resolved. However, the README's 'gate open' progress marker is updated to reflect 19/20 (≥18/20) so reviewers can see the second verification pass brought the gate most of the way open.",
+    "rows_pending": [17, 20, 21, 22, 23],
+    "next_action": "PR-Y1.eval-verify-3: resolve or replace row 17 (CC BY-SA 4.0 metal wildcard). Candidate paths listed in the row's last_check_note. Rows 20-23: confirm the SWD Zenodo 4122060 audio terms for HU33/SC06."
   }
 }

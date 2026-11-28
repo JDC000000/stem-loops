@@ -988,6 +988,10 @@ test('a fresh job whose encoder failed does NOT get the "processed before" sente
   assert.equal(notice.retryable, false, 'a reload does not re-encode: do not offer it as the cure');
   assert.doesNotMatch(notice.message, /processed before|aged|old|24 hours|no longer/i);
   assert.match(notice.message, /could not prepare/i);
+  // #494 item 1 (Jon, 11-26): a re-paste after our encode failure is not charged again.
+  assert.doesNotMatch(notice.message, /counts as a new track/i);
+  assert.match(notice.message, /same stems and loop length/);
+  assert.match(notice.message, /does not use up another song/);
 });
 
 test('a browser that cannot reach storage (CORS-shaped) gets a network sentence, retryable', async () => {

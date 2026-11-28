@@ -148,10 +148,13 @@ export const NO_STEMS_MESSAGE =
  * `state: 'encode_failed'` — the stems were separated and uploaded for download,
  * and converting them for playback failed. A fault, not a fallback, and NOT a
  * reload-fixes-it one: it will answer the same until the track is submitted again.
+ * #494 item 1 (Jon, 11-26): our fault, so the re-paste of the same selection is
+ * free once (lib/jobs/create-link-job.ts, FREE RE-PASTE).
  */
 export const ENCODE_FAILED_MESSAGE =
   'We separated this track but could not prepare its audio for play along. ' +
-  'To retry, add the track again on the home page. It counts as a new track.';
+  'To retry, add the track again on the home page with the same stems and loop length. ' +
+  'One retry like this is on us: it does not use up another song.';
 
 /** Stems were offered and the browser never got a response (CORS / CSP / offline). */
 export const FETCH_NETWORK_MESSAGE =

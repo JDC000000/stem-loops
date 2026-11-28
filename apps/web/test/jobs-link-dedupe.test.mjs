@@ -34,6 +34,7 @@ const S = () => globalThis.__dd;
 // parameters ('done' is retained here; the retention arithmetic is proven on real PG), so a
 // lookup that passes 'failed' among its statuses reuses a failed job — the mutant is visible.
 const DB = `
+import assert from 'node:assert/strict';
 const S = () => globalThis.__dd;
 let seq = 0;
 const LIVE = /SELECT jobs\\.id::text AS id(, jobs\\.status)? FROM jobs/;
@@ -53,8 +54,21 @@ function lookup(visible, sql, p) {
     .sort((a, b) => b.created - a.created)[0];
   return { rows: hit ? [{ id: hit.id, status: hit.status }] : [], rowCount: hit ? 1 : 0 };
 }
+// #494 item 1: job_allowance_debits rows, { [job_id]: { user_id, restored_at } }. The eligible
+// source is the newest DONE job of p[0] owned by p[1] whose row is still unclaimed.
+const SOURCE = /FROM public\\.job_allowance_debits d\\s+JOIN jobs j ON j\\.id = d\\.job_id/;
+function source(rows, p) {
+  const s = S();
+  if (s.noDebitTable) { const e = new Error('relation does not exist'); e.code = '42P01'; throw e; }
+  const hit = rows
+    .filter((r) => p[0].includes(r.id) && r.user_id === p[1] && r.status === 'done'
+      && s.debitRows[r.id] && s.debitRows[r.id].user_id === p[1] && s.debitRows[r.id].restored_at === null)
+    .sort((a, b) => b.created - a.created)[0];
+  return hit ? { rows: [{ job_id: hit.id }], rowCount: 1 } : { rows: [], rowCount: 0 };
+}
 async function outside(sql, p) {
   const s = S();
+  if (SOURCE.test(sql)) { s.log.push('db.query:source'); return source(s.rows, p); }
   s.log.push('db.query:' + (LIVE.test(sql) ? 'lookup' : sql.slice(0, 30)));
   if (LIVE.test(sql)) {
     const r = lookup(s.hideFromOutside ? [] : s.rows, sql, p);
@@ -67,7 +81,7 @@ export const db = {
   query: outside,
   tx: async (fn) => {
     const s = S();
-    const tx = { pending: [], held: [] };
+    const tx = { pending: [], held: [], claims: [] };
     s.txs += 1;
     const client = { query: async (sql, p) => {
       if (LOCK.test(sql)) {
@@ -81,6 +95,15 @@ export const db = {
         return { rows: [{}], rowCount: 1 };
       }
       if (LIVE.test(sql)) { s.log.push('tx:lookup'); return lookup([...s.rows, ...tx.pending], sql, p); }
+      if (/^(SAVEPOINT|RELEASE SAVEPOINT|ROLLBACK TO SAVEPOINT) /.test(sql)) return { rows: [], rowCount: 0 };
+      if (/^WITH src AS/.test(sql)) {
+        s.log.push('tx:claim');
+        assert(/FOR UPDATE OF d/.test(sql) && /SET restored_at = now\\(\\), allowance_restored = false, trial_restored = false/.test(sql));
+        const r = source(s.rows, p);
+        const id = r.rows[0]?.job_id;
+        if (id && !tx.claims.includes(id)) { tx.claims.push(id); return r; }
+        return { rows: [], rowCount: 0 };
+      }
       if (/^INSERT INTO jobs/.test(sql)) {
         s.log.push('tx:insert');
         // authed link insert: [id, url, stems, bars, ipHash, window, limit, user_id]; anon: no user_id.
@@ -94,6 +117,7 @@ export const db = {
     try {
       const r = await fn(client);
       s.rows.push(...tx.pending);
+      for (const id of tx.claims) { s.debitRows[id].restored_at = 'now'; s.claimed.push(id); }
       s.log.push('tx:commit');
       end();
       return r;
@@ -114,7 +138,8 @@ const graph = buildModuleGraph({
       const L = (n) => globalThis.__dd.log.push(n);
       export const IN_FLIGHT_STATUSES = ${JSON.stringify(IN_FLIGHT)};
       export const RATE_LIMIT = 10, RATE_WINDOW_MS = 60000;
-      export const checkAdmission = async () => { L('checkAdmission'); return { allowed: true }; };
+      export const checkAdmission = async () => { L('checkAdmission');
+        return globalThis.__dd.admissionRefused ? { allowed: false, error_code: 'RATE_LIMITED', message: 'ADM' } : { allowed: true }; };
       export const anonJobCapsWhere = () => 'TRUE', anonPresignedWhere = () => 'TRUE', presignRecordKey = () => 'k';
       export const anonJobDailyCap = () => 10, anonJobMaxInFlight = () => 2;
       export const hasAnonPresign = async () => true;
@@ -129,7 +154,7 @@ const graph = buildModuleGraph({
     'lib/auth/supabase.ts': `export const getUser = async () => globalThis.__dd.user;`,
     'lib/billing/rate-limit.ts': `
       const L = (n) => globalThis.__dd.log.push(n);
-      export const checkBurstLimit = async () => { L('checkBurstLimit'); return null; };
+      export const checkBurstLimit = async () => { L('checkBurstLimit'); return globalThis.__dd.burst ?? null; };
       export const checkMonthlyQuota = async () => { L('checkMonthlyQuota'); return globalThis.__dd.quota ?? null; };
       export const bumpJobsUsed = async () => { L('bumpJobsUsed'); };
       export const bumpJobsUsedWithinQuota = async () => { L('bumpJobsUsedWithinQuota'); return true; };
@@ -160,6 +185,7 @@ function reset(state = {}) {
     log: [], lookups: [], locks: [], debits: [], sentry: [], rows: [], mutex: new Map(), txs: 0,
     user: { user_id: USER_ID, email: 'a@b.co' }, trial: false, hideFromOutside: false, outsideBarrier: null,
     quota: null, insertBlocked: false, broken: [], probes: [], probeNull: false,
+    debitRows: {}, claimed: [], noDebitTable: false, admissionRefused: false, burst: null,
     ...state,
   };
 }
@@ -377,7 +403,7 @@ test('R2 SF: refusals with the REAL hooks on — 402 quota and in-tx 429 still a
 const NEW_JOB_CHARGES = ['enforceEntitlement', 'checkAdmission', 'consumeTrialInTx', 'checkBurstLimit',
   'checkMonthlyQuota', 'rollPeriodIfStale', 'bumpJobsUsedWithinQuota', 'recordAllowanceDebit'];
 
-test('QW-2: re-paste of a done job with NO playable stems (encode_failed / gone) → a new job, charged normally', async () => {
+test('QW-2: re-paste of a done job with NO playable stems and no debit row to fund it → a new job, charged normally', async () => {
   reset({ broken: ['broken-job'], rows: [{ id: 'broken-job', user_id: USER_ID, url: CANON, status: 'done', created: 0 }] });
   const r = await paste();
   assert.equal(r.status, 201, JSON.stringify(r.body));
@@ -434,4 +460,145 @@ test('QW-2: at most PASTE_MAX_SKIPPED (3) broken jobs are probed per lookup, the
   assert.equal(r.status, 201, JSON.stringify(r.body));
   assert.deepEqual(S().probes.map((p) => p[0]), ['b4', 'b3', 'b2']);
   assert.deepEqual(charged(), NEW_JOB_CHARGES);
+});
+
+// ── #494 item 1 (Jon, 11-26): a re-paste after OUR encode failure is not charged again ─────────
+// The paste probe found a DONE job of the same selection unplayable, and that job's
+// job_allowance_debits row is still unclaimed: the new job is free (admission + burst only), the
+// source's row is claimed (restored_at set, nothing given back), and the new job gets NO debit
+// row. One free re-paste per charged job: a free job has no row, so it can never fund another.
+const FREE_GATES = ['checkAdmission', 'checkBurstLimit', 'rollPeriodIfStale'];
+const brokenDone = (extra = {}) => ({
+  broken: ['enc-failed'],
+  rows: [{ id: 'enc-failed', user_id: USER_ID, url: CANON, status: 'done', created: 0 }],
+  debitRows: { 'enc-failed': { user_id: USER_ID, restored_at: null } },
+  ...extra,
+});
+
+test('#494-1: re-paste after an encode failure (charged source) → a new job, NOT charged; source claimed', async () => {
+  reset(brokenDone());
+  const r = await paste();
+  assert.equal(r.status, 201, JSON.stringify(r.body));
+  assert.notEqual(r.body.id, 'enc-failed');
+  assert.deepEqual(charged(), FREE_GATES, 'no entitlement, trial, quota, bump or debit');
+  assert.deepEqual(S().debits, [], 'the free job has no debit row (an our-fault failure of it gives nothing back)');
+  assert.deepEqual(S().claimed, ['enc-failed']);
+  assert.equal(S().debitRows['enc-failed'].restored_at, 'now');
+  assert.equal(S().rows.length, 2);
+  // Lock order: link-dedupe lock + in-tx lookup (beforeInsert; it skips the cached unplayable
+  // job and looks again) → claim → INSERT. Probed once.
+  const tx = S().log.filter((n) => n.startsWith('tx:'));
+  assert.deepEqual(tx, ['tx:lock', 'tx:lookup', 'tx:lookup', 'tx:claim', 'tx:insert', 'tx:commit']);
+  assert.deepEqual(S().probes, [['enc-failed', 'iphash']]);
+});
+
+test('#494-1: a trial user who spent the trial, or a free user at quota, is not refused (no 402)', async () => {
+  reset(brokenDone({ trial: false, quota: { resets_at: '2026-12-01T00:00:00Z' } }));
+  const r = await paste();
+  assert.equal(r.status, 201, JSON.stringify(r.body));
+  assert.ok(!S().log.includes('checkMonthlyQuota') && !S().log.includes('consumeTrialInTx'));
+});
+
+test('#494-1 abuse bound: ONE free re-paste per charged job — the free job cannot fund another', async () => {
+  reset(brokenDone());
+  const free = await paste();
+  assert.equal(free.status, 201);
+  // Idempotent: the free job is queued, so the next re-paste reuses it.
+  S().log.length = 0;
+  const again = await paste();
+  assert.deepEqual([again.status, again.body], [200, HIT(free.body.id)]);
+  assert.deepEqual(charged(), []);
+  // The free job ALSO ends done-unplayable: it has no debit row and the source is claimed → charged.
+  S().rows.find((x) => x.id === free.body.id).status = 'done';
+  S().broken.push(free.body.id);
+  S().log.length = 0;
+  const third = await paste();
+  assert.equal(third.status, 201, JSON.stringify(third.body));
+  assert.deepEqual(charged(), NEW_JOB_CHARGES);
+  assert.deepEqual(S().debits, [third.body.id]);
+  assert.deepEqual(S().claimed, ['enc-failed'], 'claimed once, never twice');
+});
+
+test('#494-1: two concurrent re-pastes → ONE free job, one claim, both answer its id', async () => {
+  let arrived = 0;
+  let open;
+  const gate = new Promise((r) => (open = r));
+  reset(brokenDone({
+    outsideBarrier: async () => {
+      arrived += 1;
+      if (arrived === 2) open();
+      await Promise.race([gate, new Promise((r) => setTimeout(r, 2000))]);
+    },
+  }));
+  const results = await Promise.all([paste(), paste()]);
+  assert.deepEqual(results.map((r) => r.status).sort(), [200, 201], JSON.stringify(results.map((r) => r.body)));
+  assert.equal(results[0].body.id, results[1].body.id);
+  assert.equal(S().rows.length, 2);
+  assert.deepEqual(S().claimed, ['enc-failed']);
+  assert.deepEqual(S().debits, []);
+});
+
+test('#494-1: no free re-paste when the source row is already claimed, absent, another user\'s, or 042 is missing', async () => {
+  for (const extra of [
+    { debitRows: { 'enc-failed': { user_id: USER_ID, restored_at: 'earlier' } } },
+    { debitRows: {} },
+    { debitRows: { 'enc-failed': { user_id: OTHER_USER, restored_at: null } } },
+    { noDebitTable: true },
+  ]) {
+    reset(brokenDone(extra));
+    const r = await paste();
+    assert.equal(r.status, 201, JSON.stringify(r.body));
+    assert.deepEqual(charged(), NEW_JOB_CHARGES, JSON.stringify(extra));
+    assert.deepEqual(S().claimed, []);
+  }
+});
+
+test('#494-1: a PLAYABLE done job (probe true) or "could not tell" (null) is reused — nothing claimed', async () => {
+  reset(brokenDone({ broken: [] }));
+  const r = await paste();
+  assert.deepEqual([r.status, r.body], [200, HIT('enc-failed')]);
+  assert.deepEqual(S().claimed, []);
+  reset(brokenDone({ probeNull: true }));
+  const n = await paste();
+  assert.deepEqual([n.status, n.body], [200, HIT('enc-failed')]);
+  assert.deepEqual(S().claimed, []);
+});
+
+test('#494-1: refusals spend nothing — admission, burst, the per-IP INSERT window (claim rolled back)', async () => {
+  reset(brokenDone({ admissionRefused: true }));
+  const a = await paste();
+  assert.equal(a.status, 429, JSON.stringify(a.body));
+  assert.deepEqual(S().claimed, []);
+  assert.equal(S().rows.length, 1);
+
+  reset(brokenDone({ burst: { retry_after_s: 30 } }));
+  const b = await paste();
+  assert.equal(b.status, 429, JSON.stringify(b.body));
+  assert.equal(b.body.code, 'rate_limit_burst');
+  assert.deepEqual(S().claimed, []);
+
+  reset(brokenDone({ insertBlocked: true }));
+  const c = await paste();
+  assert.equal(c.status, 429, JSON.stringify(c.body));
+  assert.equal(c.body.error_code, 'RATE_LIMITED');
+  assert.ok(S().log.includes('tx:claim') && S().log.includes('tx:rollback'));
+  assert.deepEqual(S().claimed, [], 'the claim rolled back with the refused INSERT');
+  assert.equal(S().debitRows['enc-failed'].restored_at, null);
+  assert.deepEqual(S().debits, []);
+});
+
+test('#494-1: of several unplayable done jobs the NEWEST with an unclaimed row funds the re-paste', async () => {
+  reset({
+    broken: ['old', 'mid', 'new'],
+    rows: [
+      { id: 'old', user_id: USER_ID, url: CANON, status: 'done', created: 0 },
+      { id: 'mid', user_id: USER_ID, url: CANON, status: 'done', created: 1 },
+      { id: 'new', user_id: USER_ID, url: CANON, status: 'done', created: 2 },
+    ],
+    debitRows: { old: { user_id: USER_ID, restored_at: null }, mid: { user_id: USER_ID, restored_at: null } },
+  });
+  const r = await paste();
+  assert.equal(r.status, 201, JSON.stringify(r.body));
+  assert.deepEqual(S().claimed, ['mid']);
+  assert.deepEqual(charged(), FREE_GATES);
 });

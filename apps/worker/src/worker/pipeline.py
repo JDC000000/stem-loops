@@ -73,8 +73,11 @@ from .logger import log_structured
 from .replicate_client import SeparationTimeout, poll_until_done, submit_or_reattach
 from .shutdown import abandoned as _drain_abandoned
 from .storage.r2_uploader import (
+    delete_objects,
     download_object,
     loop_r2_key,
+    stem_download_r2_key,
+    stem_play_r2_key,
     upload_input,
     upload_loop,
     upload_loop_to_key,
@@ -1778,6 +1781,7 @@ async def run_pipeline(job_id: str) -> None:
 async def _run_pipeline(job_id: str) -> None:
     """Real pipeline. download_audio + Replicate are gated (S1 bake-off / P2-12+);
     the audio core runs against the produced stems. Typed errors set status=failed."""
+    short_stem_report: dict | None = None  # #490: set only while a short stem set is failing
     try:
         row = await asyncio.to_thread(_fetch_job, job_id)
         url, requested_stems, bars, input_kind, upload_r2_key, original_filename = row
@@ -1974,7 +1978,11 @@ async def _run_pipeline(job_id: str) -> None:
         # loops, so a stem-upload problem can never cost us the loops.
         async with _stage_heartbeat(job_id):
             stem_report = await asyncio.to_thread(retain_stems, job_id, stem_paths)
-        _require_a_playable_stem(stem_report)
+        # #490: if the set is short, the StemLoopsError branch below fails the job and, only
+        # when THIS run marked it failed, deletes what this report uploaded (review B-1).
+        short_stem_report = stem_report
+        _require_a_full_stem_set(stem_report)
+        short_stem_report = None
         await emit_event(job_id, "uploading", "completed", pct=100, detail={"stems": stem_report})
 
         await set_status(job_id, "done")
@@ -1999,7 +2007,14 @@ async def _run_pipeline(job_id: str) -> None:
         # OUR-fault codes (provider outage, our storage) ARE reported, at warning level:
         # 2026-11-14 two Replicate-502 SEPARATION_FAILED jobs never reached Sentry at all.
         _report_our_fault(exc)
-        await _fail(job_id, exc.error_code, exc.user_message)
+        marked = await _fail(job_id, exc.error_code, exc.user_message)
+        if marked and short_stem_report is not None:
+            # #490: the failed job's stems are unreachable; delete them rather than leave them
+            # in R2 until the retention sweep. Review B-1: only after THIS run marked the job
+            # failed. A run that found it already terminal ('done' by another run of the same
+            # job, whose objects share these deterministic keys; or failed by the reaper)
+            # deletes nothing. Best-effort, never masks the failure.
+            await asyncio.to_thread(_discard_retained_stems, job_id, short_stem_report)
         raise
     except Exception as exc:  # noqa: BLE001 — surface as typed INTERNAL_ERROR
         # This IS worth reporting — an exception that fell through every typed error
@@ -2011,32 +2026,68 @@ async def _run_pipeline(job_id: str) -> None:
         raise
 
 
-def _require_a_playable_stem(stem_report: dict) -> None:
-    """QK-2: a job whose stem retention saved NO playable (Opus) stem is not 'done'.
+def _require_a_full_stem_set(stem_report: dict) -> None:
+    """QK-2 + #490: a job is 'done' only with ALL of the htdemucs_6s stems playable.
+
+    N = ``len(ALL_STEMS)`` = 6: the separation model (htdemucs_6s) emits six stems and the
+    pipeline fetches and retains all six whatever ``requested_stems`` says, so any shorter
+    playable set is a defect of ours (an Opus encode or R2 PUT that failed), never the input.
 
     ``retain_stems`` swallows each failed R2 PUT / encode, so an R2 outage or rotated
-    credentials used to end the job ``done`` with 0/6 stems: the mixer had nothing to play
-    and the credit / monthly song was kept. Zero playable stems now raises
-    ``UploadFailedError`` (UPLOAD_FAILED, in OUR_FAULT_CODES): the job fails through the
-    normal path, the credit or allowance unit is returned (idempotent, job_failure), and the
-    failure is reported to Sentry by ``_report_our_fault``.
+    credentials used to end the job ``done`` with 0/6 stems (QK-2), and a partial set (1-5
+    playable) still ended ``done`` with the credit / monthly song kept (#490). Both now raise
+    ``UploadFailedError`` (UPLOAD_FAILED, in OUR_FAULT_CODES): the job fails through the normal
+    path, the credit or allowance unit is returned (idempotent, job_failure), and the failure
+    is reported to Sentry by ``_report_our_fault``. Jon, E2 = (a): refund a partial set.
 
-    Playable, not downloadable: the mixer streams the Opus ``play`` artifact only, so six WAVs
-    with zero Opus (the encoder case) is still a song the player cannot present.
-
-    Unchanged on purpose: a PARTIAL set (1-5 playable) still finishes ``done``, as before,
-    with retain_stems' own "stem retention incomplete" Sentry error. A report marked
-    ``abandoned`` (QA-63: a drain put the job back in the queue and is deleting its scratch
-    files) is never failed here: the rerun uploads all six again.
+    Counted on the PLAYABLE (Opus) artifact, the one the mixer streams: six WAVs with zero
+    Opus (the encoder case) is still a song the player cannot present. Names are counted as a
+    set against ALL_STEMS, so a duplicate or unknown name cannot make a short set look full.
+    A report marked ``abandoned`` (QA-63: a drain put the job back in the queue and is deleting
+    its scratch files) is never failed here: the rerun uploads all six again.
     """
     if stem_report.get("abandoned"):
         return
-    if not stem_report.get("play"):
+    expected = len(ALL_STEMS)
+    playable = len(set(stem_report.get("play") or []) & set(ALL_STEMS))
+    if playable < expected:
         downloadable = len(stem_report.get("download") or [])
         raise UploadFailedError(
-            f"no playable stem retained (0 playable, {downloadable} downloadable)",
-            failure_reason="no_playable_stems",
+            (
+                f"stem set incomplete ({playable}/{expected} playable, {downloadable} downloadable)"
+                if playable
+                else f"no playable stem retained (0 playable, {downloadable} downloadable)"
+            ),
+            failure_reason="partial_stem_set" if playable else "no_playable_stems",
         )
+
+
+def _discard_retained_stems(job_id: str, stem_report: dict) -> int:
+    """#490: delete the stem objects a failing job DID upload (Opus and WAV), one key at a
+    time so one refused delete never skips the rest. Never raises: what is left is still
+    removed by the retention sweep. Returns the count deleted."""
+    keys = [stem_play_r2_key(job_id, n) for n in (stem_report.get("play") or []) if n in ALL_STEMS]
+    keys += [
+        stem_download_r2_key(job_id, n)
+        for n in (stem_report.get("download") or [])
+        if n in ALL_STEMS
+    ]
+    deleted = 0
+    for key in dict.fromkeys(keys):
+        try:
+            delete_objects([key])
+            deleted += 1
+        except Exception as exc:  # noqa: BLE001 — cleanup must not mask the job's failure
+            log_structured(
+                "WARN",
+                "stem_discard_failed",
+                job_id=job_id,
+                r2_key=key,
+                error_type=type(exc).__name__,
+                error=str(exc)[:200],
+            )
+    log_structured("INFO", "stems_discarded_for_failed_job", job_id=job_id, deleted=deleted)
+    return deleted
 
 
 # Failures that are OUR fault: the credit the web route debited for this job is returned.
@@ -2073,13 +2124,11 @@ def _report_our_fault(exc: StemLoopsError) -> None:
             log_structured("WARN", "sentry_report_failed", error=str(report_exc)[:120])
         return
     reason = getattr(exc, "failure_reason", None)
-    if reason in _ONCE_PER_PROCESS_REASONS:
-        # QK-4: a standing state (kill switch engaged, worker flag off), not a per-job event:
-        # every link job fails the same way until it changes, so one event per process.
-        if reason in _reported_once:
-            log_structured("WARN", "our_fault_repeat_not_reported", failure_reason=reason)
-            return
-        _reported_once.add(reason)
+    # QK-4: a standing state (kill switch engaged, worker flag off), not a per-job event:
+    # every link job fails the same way until it changes, so one event per process.
+    if reason in _ONCE_PER_PROCESS_REASONS and reason in _reported_once:
+        log_structured("WARN", "our_fault_repeat_not_reported", failure_reason=reason)
+        return
     tags = {"error_code": exc.error_code}
     if reason:
         tags["failure_reason"] = str(reason)[:64]
@@ -2087,9 +2136,14 @@ def _report_our_fault(exc: StemLoopsError) -> None:
         sentry_sdk.capture_exception(exc, level="warning", tags=tags)
     except Exception as report_exc:  # noqa: BLE001
         log_structured("WARN", "sentry_report_failed", error=str(report_exc)[:120])
+        return
+    if reason in _ONCE_PER_PROCESS_REASONS:
+        # #490: marked only AFTER a capture that did not raise, so a Sentry transport error
+        # does not silence the standing state for the rest of the process.
+        _reported_once.add(reason)
 
 
-async def _fail(job_id: str, error_code: str, user_message: str) -> None:
+async def _fail(job_id: str, error_code: str, user_message: str) -> bool:
     """Mark the job failed and return its credit / link allowance unit if owed
-    (job_failure.fail_job)."""
-    await fail_job(DATABASE_URL, job_id, error_code, user_message)
+    (job_failure.fail_job). True if THIS call marked the job failed."""
+    return await fail_job(DATABASE_URL, job_id, error_code, user_message)

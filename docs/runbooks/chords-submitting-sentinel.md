@@ -3,7 +3,8 @@
 One page. Every claim cites `file:line` at `v3/main` b98f12c (after #466, K-1/K-2), except
 the lines marked **#501**, which cite `klangio.py` at #501's head b9aec15 (K-2 after #501:
 connect failures and 5xx/429 submit POSTs count; #467, #462). This runbook documents; it
-grants nothing. **Jon only** writes `jobs.klangio_job_id`. Sessions and subagents never write it (COMMON-RULES: no DB access; any prod SELECT is an orchestrator's A3
+grants nothing. **Jon only** writes `jobs.klangio_job_id`. Sessions and subagents never write it
+(COMMON-RULES: no DB access; any prod SELECT is an orchestrator's A3
 read). Paths below are under `apps/worker/`.
 
 ## 1 · What `klangio_job_id = 'submitting'` means

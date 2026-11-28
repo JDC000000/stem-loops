@@ -238,6 +238,34 @@ def _ffmpeg_decode_timeout_sec() -> float:
     return _env_positive_float("FFMPEG_DECODE_TIMEOUT_SEC", FFMPEG_DECODE_TIMEOUT_SEC_DEFAULT)
 
 
+# #491: wall-clock bound on the R2 PUT that stages a fetched LINK track for Replicate. boto's
+# timeouts are per socket operation, so a trickling PUT had no bound at all. A trimmed WAV is
+# at most ~53 MB (300 s stereo 16-bit); 120 s is ~0.45 MB/s, far below a healthy R2. Past it
+# the job fails INTERNAL_ERROR (our fault, in OUR_FAULT_CODES: the song is given back) before
+# anything is billed. The abandoned PUT thread may still finish later; its object sits under
+# the job's own prefix, which the retention sweep deletes.
+LINK_R2_STAGE_TIMEOUT_SEC_DEFAULT = 120.0
+
+
+def _link_r2_stage_timeout_sec() -> float:
+    return _env_positive_float("LINK_R2_STAGE_TIMEOUT_SEC", LINK_R2_STAGE_TIMEOUT_SEC_DEFAULT)
+
+
+async def _stage_link_input(job_id: str, staged: str) -> str:
+    """``upload_input`` for a link track, bounded by ``_link_r2_stage_timeout_sec()`` (#491)."""
+    limit = _link_r2_stage_timeout_sec()
+    try:
+        return await asyncio.wait_for(
+            asyncio.to_thread(upload_input, job_id, staged), timeout=limit
+        )
+    except TimeoutError as exc:
+        log_structured("WARN", "link_r2_stage_timeout", job_id=job_id, timeout_s=limit)
+        raise InternalError(
+            f"R2 staging of the link input exceeded {limit:g}s",
+            failure_reason="r2_stage_timeout",
+        ) from exc
+
+
 # Total wall-clock budget for downloading ONE stem, across every retry (QA C-06). httpx's
 # `timeout` is per network operation, so a CDN trickling a byte at a time never tripped the
 # old per-read 180 s and could hold the job (and, inline, the whole queue) for hours. Real
@@ -399,7 +427,9 @@ def _prepare_upload_source(job_id: str, upload_r2_key: str) -> tuple[str, dict |
     return upload_input(job_id, wav), trim
 
 
-def _trim_link_source(job_id: str, path: str) -> tuple[str, dict | None]:
+def _trim_link_source(
+    job_id: str, path: str, source_sec: float | None = None
+) -> tuple[str, dict | None]:
     """Cut a fetched LINK track to its first ``MAX_UPLOAD_DURATION_SEC`` seconds, on bytes we
     hold, before it is staged for Replicate. Returns ``(path_to_stage, trim_detail)``.
 
@@ -415,11 +445,18 @@ def _trim_link_source(job_id: str, path: str) -> tuple[str, dict | None]:
     Deliberately the SAME accessor (``_max_upload_duration_sec()``) and the same measuring
     code (``_probe_duration_sec()``) as the upload path, so a link and an upload cannot end up
     cut to different lengths.
+
+    ``source_sec`` (#491): the declared length of a video yt-dlp already cut AT DOWNLOAD
+    (``download_audio``'s ``meta["download_trimmed_from_sec"]``). The file is then measured and
+    re-cut exactly as above, but it is reported as trimmed from ``source_sec``: its own length
+    no longer says the song was longer.
     """
     max_sec = _max_upload_duration_sec()
     measured = _probe_duration_sec(path)
     if measured is not None and measured <= max_sec:
-        return path, None
+        if source_sec is None:
+            return path, None
+        return path, _trim_detail(job_id, "youtube", source_sec, measured, max_sec)
 
     out = os.path.join(tmpdirs.mkdtemp(prefix="sl_linktrim_"), "trimmed.wav")
     try:
@@ -458,11 +495,12 @@ def _trim_link_source(job_id: str, path: str) -> tuple[str, dict | None]:
         raise LinkUnmeasurableError(
             f"trimmed link measured {used!r}, cannot show it is within {max_sec:g}s"
         )
-    if measured is None and used < max_sec - TRIM_TOLERANCE_SEC:
+    if source_sec is None and measured is None and used < max_sec - TRIM_TOLERANCE_SEC:
         # The original could not be measured but turned out shorter than the cap: nothing
         # was cut, so there is nothing to tell the user. Stage the re-encoded (readable) copy.
         return out, None
-    return out, _trim_detail(job_id, "youtube", measured, used, max_sec)
+    reported = measured if source_sec is None else source_sec
+    return out, _trim_detail(job_id, "youtube", reported, used, max_sec)
 
 
 def _update_job_tags(job_id: str, tags: dict) -> None:
@@ -1790,7 +1828,7 @@ async def _run_pipeline(job_id: str) -> None:
             link_meta: dict = {}
             # QK-1 review F2 (#477): fetch + trim + R2 staging run with nothing else bumping
             # updated_at, and their paper worst case (probe 15 + 2 x (live 15 + bound 120 +
-            # kill waits 15) + 2 + trim 30+120+30 + an R2 PUT with no wall bound) is past the
+            # kill waits 15) + 2 + trim 30+120+30 + the R2 PUT, bounded since #491) is past the
             # reaper's 300 s stale window. Heartbeated like every other long stage; a hang
             # here is still cut by the consumer's per-job wall deadline.
             async with _stage_heartbeat(job_id):
@@ -1810,8 +1848,13 @@ async def _run_pipeline(job_id: str) -> None:
                     # below, i.e. before a single billed GPU-second: a track over the cap is cut
                     # to its first MAX_UPLOAD_DURATION_SEC seconds, and one that cannot be cut or
                     # measured fails closed (LinkUnmeasurableError).
-                    staged, trim = await asyncio.to_thread(_trim_link_source, job_id, dl_result)
-                    audio_src = await asyncio.to_thread(upload_input, job_id, staged)
+                    staged, trim = await asyncio.to_thread(
+                        _trim_link_source,
+                        job_id,
+                        dl_result,
+                        link_meta.get("download_trimmed_from_sec"),
+                    )
+                    audio_src = await _stage_link_input(job_id, staged)
                 else:
                     # Cobalt returns a public tunnel URL and no local bytes, so there is nothing
                     # here to measure OR to trim. The ceiling for this leg is therefore enforced

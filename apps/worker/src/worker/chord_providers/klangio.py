@@ -1028,6 +1028,39 @@ def _coerce_time(value: Any) -> float | None:
     return f if math.isfinite(f) else None
 
 
+# #524 frame clock. Klangio's served times are exact multiples of 10/108 s (BTC's
+# 10 s / 108-frame chunk period), but its frames are a contiguous hop-2048 CQT at
+# 22.05 kHz, i.e. 2048/22050 s each (frame counts match our audio exactly; fitted
+# served->audio scale 1.00304-1.00314 on 3 songs vs (2048/22050)/(10/108) = 1.003102).
+# Served as-is, chords drift early (~0.9 s by 300 s). We re-stamp each time by its frame
+# index. Only a response whose EVERY time is on the 10/108 grid is re-stamped; anything
+# else (e.g. a provider-side fix) passes through, so we never correct twice.
+_SERVED_FRAME_SEC = 10 / 108
+_AUDIO_HOP_SEC = 2048 / 22050
+_GRID_TOL_FRAMES = 1e-6  # served demo songs: max off-grid 2.3e-13 frames
+CLOCK_RESTAMPED = "frame_10_108_restamped"
+CLOCK_PASSTHROUGH = "passthrough"
+
+
+def _restamp_frame_clock(
+    rows: list[tuple[float, float, str]],
+) -> tuple[list[tuple[float, float, str]], str]:
+    """Map served 10/108 s frame times onto the audio's 2048/22050 s frames (see #524)."""
+
+    def frames(t: float) -> float:
+        return t / _SERVED_FRAME_SEC
+
+    on_grid = bool(rows) and all(
+        abs(frames(t) - round(frames(t))) <= _GRID_TOL_FRAMES for s, e, _ in rows for t in (s, e)
+    )
+    if not on_grid:
+        return rows, CLOCK_PASSTHROUGH
+    return [
+        (round(frames(s)) * _AUDIO_HOP_SEC, round(frames(e)) * _AUDIO_HOP_SEC, label)
+        for s, e, label in rows
+    ], CLOCK_RESTAMPED
+
+
 def _parse_klangio_response(payload: Any, *, model_ms: int) -> ChordResult:
     """Map Klangio's result array ``[[start, end, label], ...]`` onto ChordResult.
 
@@ -1080,6 +1113,9 @@ def _parse_klangio_response(payload: Any, *, model_ms: int) -> ChordResult:
             label = "X"
         parsed.append((start, end, label))
 
+    # Monotone map, so the ordering / overlap repairs below are unaffected by it.
+    parsed, time_clock = _restamp_frame_clock(parsed)
+
     if any(parsed[i][0] > parsed[i + 1][0] for i in range(len(parsed) - 1)):
         parsed.sort(key=lambda t: t[0])  # stable: ties keep wire order
         repaired["reordered"] = 1
@@ -1120,6 +1156,7 @@ def _parse_klangio_response(payload: Any, *, model_ms: int) -> ChordResult:
         repaired_by_kind=repaired,
         bad_row_samples=bad_samples,
         x_label_samples=x_examples,
+        time_clock=time_clock,
     )
     if payload and not segments:
         raise ChordProviderError(

@@ -49,9 +49,12 @@ Two separate rules:
 1. **Dispatch stop rule.** If L4 cannot be found on LEDGER-24A, or its words do not cover a
    worker dispatch by 24A on 12-03: do not dispatch; hand this plan to Jon (or 24B's D-7 path)
    and stop.
-2. **Smoke rule (§6).** Covered by L4's smoke clause. If, when read, L4 does not name the
-   smoke song and A2 is not active: still deploy, skip §6, write "unverified until next real
-   job" for A2 (3), and leave #511 open. The smoke rule never stops the dispatch.
+2. **Smoke rule (§6).** L4 allows A2b smoke songs (≤ 2/day). Two links are authorised: (a) the fixed
+   A2b link Jon recorded, LEDGER-24A row 21, `https://www.youtube.com/watch?v=x8iqG12KUto`; (b) for
+   #511, the >36-min video picked under Jon's typed answer "You pick one" (LEDGER-24A row 57), i.e.
+   the §6 target, only once its pre-flight passes. Any other link needs a new Jon row. If neither
+   can run: still deploy, skip §6, write "unverified until next real job" for A2 (3), and leave
+   #511 open. The smoke rule never stops the dispatch.
 
 A refused dispatch is OR-1: record, tell Jon, no re-route (no `make deploy-worker`, no local
 `flyctl`).
@@ -210,8 +213,8 @@ null, re-probe at 15 min, because the proxy check runs every 900 s (`fetch_canar
 
 ## 6 · Smoke song: one >36-min video (A2b(a), #511)
 
-Covered by L4's smoke clause (§0 rule 2; if not covered, skip this section). ≤ 2 smoke
-jobs/day; this is 1.
+Authority: §0 rule 2 (L4 + Jon's "You pick one", LEDGER-24A row 57). ≤ 2 smoke jobs/day; this is 1.
+If time allows, the second may be the fixed A2b link (row 21) as a normal-length check.
 
 **Target (album + channel, fixed):** Kimiko Ishizaka's public-domain Bach recordings on her
 official YouTube channel **OpenGoldberg**.
@@ -241,9 +244,9 @@ VERIFY row: title, channel, exact duration in seconds, licence evidence, and how
 2. the duration is **≥ 2400 s** (40 min; margin over #504's 2160 s threshold);
 3. the licence evidence is CC0 / public domain (project page or Commons, as above).
 
-If the primary fails, try the backup. If both fail, do not submit: pick another
-OpenGoldberg full-album upload (for example *Art of Fugue, Complete*) that passes 1–3, or skip
-§6 and say why in the VERIFY row. Record the link used (A2b: a fixed public test song).
+If the primary fails, try the backup. If both fail, do not submit any other link (it would need a
+new Jon row): skip the #511 smoke, run the fixed A2b link (row 21) instead, and say why in the
+VERIFY row. Record the link used (A2b: a fixed public test song).
 
 Submit once, signed out, by pasting the link at `https://stem-loops.com`, after §3 is green,
 §5 passes and the new Machine is up. Then (A3 reads, logged; use the ID actually submitted):

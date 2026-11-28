@@ -153,6 +153,29 @@ def test_mir_eval_row_leaves_no_file_beside_the_reference(tmp_path: Path) -> Non
     assert sorted(p.name for p in tmp_path.iterdir()) == ["ref.lab"]
 
 
+def test_mir_eval_row_records_error_len_keys_when_evaluate_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If mir_eval raises, every metric gets a ``*_error_len`` key and no score key."""
+    _require_mir_eval()
+    import mir_eval.chord  # noqa: PLC0415
+
+    message = "boom: bad labels"
+
+    def _raise(*_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
+        raise ValueError(message)
+
+    monkeypatch.setattr(mir_eval.chord, "evaluate", _raise)
+    ref = tmp_path / "ref.lab"
+    ref.write_text(TINY_REF_LAB.read_text())
+    scores = _mir_eval_row(_tiny_est_lab(), ref)
+    assert scores == {
+        "root_error_len": float(len(message)),
+        "majmin_error_len": float(len(message)),
+        "sevenths_error_len": float(len(message)),
+    }
+
+
 class _TinySource:
     def recognize(self, _path, *, stem="mix"):  # noqa: ANN001
         return SimpleNamespace(
